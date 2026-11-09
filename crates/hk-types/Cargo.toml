@@ -1,0 +1,9 @@
+[package]
+name = "hk-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Havok base types: hkReal, handles, refcounted pointers, bit operations"
+
+[dependencies]

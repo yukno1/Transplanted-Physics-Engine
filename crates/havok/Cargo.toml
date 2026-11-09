@@ -1,0 +1,21 @@
+[package]
+name = "havok"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Facade crate re-exporting the public API of the Havok Rust port"
+
+[dependencies]
+hk-types = { path = "../hk-types" }
+hk-math = { path = "../hk-math" }
+hk-memory = { path = "../hk-memory" }
+hk-container = { path = "../hk-container" }
+hk-thread = { path = "../hk-thread" }
+hk-geometry = { path = "../hk-geometry" }
+hknp-types = { path = "../hknp-types" }
+hknp-shape = { path = "../hknp-shape" }
+hknp-collide = { path = "../hknp-collide" }
+hknp-body = { path = "../hknp-body" }
+hknp-solver = { path = "../hknp-solver" }
+hknp-world = { path = "../hknp-world" }

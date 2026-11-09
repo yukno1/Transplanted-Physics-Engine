@@ -1,0 +1,28 @@
+# Havok Physics 2021.2 — Rust workspace (virtual manifest)
+#
+# Migration plan: see README.md at the repository root.
+# Crate layout: crates/*, dependency direction is strictly one-way
+# (types -> math -> memory -> container -> ... -> world -> extensions).
+
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+# Source derived from proprietary Havok code: never publish to crates.io.
+publish = false
+
+# Floating-point determinism note:
+# Havok's simulation relies on bit-exact float32 reproduction. Rust does not
+# reorder or contract FP expressions by default - keep it that way. Never
+# enable fast-math style optimizations (FMA contraction, reassociation) in
+# math or solver code, and validate against the C++ golden traces (Phase 9).
+#
+# External dependencies are introduced per phase (see README):
+#   Phase 2+: none planned for hk-math (hand-ported for determinism)
+#   Phase 4+: rayon (candidate for the multithreaded simulation)
+#   Phase 3+: bytemuck, hashbrown
+#   Phase 1+: thiserror

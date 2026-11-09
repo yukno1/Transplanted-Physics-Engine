@@ -1,0 +1,13 @@
+[package]
+name = "hknp-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "hknp core types: body/motion/material IDs, motion types, collision flags"
+
+[dependencies]
+hk-types = { path = "../hk-types" }
+hk-math = { path = "../hk-math" }
+hk-container = { path = "../hk-container" }
+hk-memory = { path = "../hk-memory" }

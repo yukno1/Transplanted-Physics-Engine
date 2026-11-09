@@ -1,0 +1,10 @@
+[package]
+name = "hk-thread"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Havok threading: atomics, spinlocks, thread pool, task graph"
+
+[dependencies]
+hk-types = { path = "../hk-types" }

@@ -1,0 +1,11 @@
+[package]
+name = "hk-container"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Havok containers: arrays, hash maps, block streams"
+
+[dependencies]
+hk-types = { path = "../hk-types" }
+hk-memory = { path = "../hk-memory" }
