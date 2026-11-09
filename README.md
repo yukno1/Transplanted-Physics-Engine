@@ -98,9 +98,9 @@ havok/                             # 本仓库根目录
 | crate | 职责 | 状态（2026-11-09） |
 |---|---|---|
 | `hk-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
-| `hk-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | 🚧 骨架 |
-| `hk-memory` | 内存系统：块流分配器、堆分配器 | 🚧 骨架 |
-| `hk-container` | hkArray/hkMap/hkBlockStream 的 Rust 封装 | 🚧 骨架 |
+| `hk-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
+| `hk-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
+| `hk-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `hk-thread` | 线程池、任务图（可先用 rayon） | 🚧 骨架 |
 | `hk-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
 | `hk-serialize` | [P1] hkx tagfile / packfile | 🚧 骨架（P1 未启动） |
@@ -146,20 +146,39 @@ havok/                             # 本仓库根目录
 - 跳过反射宏、`hkVarArgs`、`hkPtrAndInt`、`hkHandleMap`
 - 验证：`cargo fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 2：`hk-math`（关键阶段，下一步）
-- `hkVector4f/d`：**从 C++ 直译**（已定，不用 glam）
-- `hkQuaternion`、`hkQsTransform`、`hkQTransform`、`hkTransform`、`hkAabb`
-- `hkHalf16`/`hknpHalf` → `half` crate 或手写位转换（优先手写以保持确定性）
-- **SIMD 后端选型判据（确定性优先）**：
-  - 基线 SSE2（x86-64 必需）+ `std::arch` 手写 intrinsics；标量回退必须与 SSE 后端逐位一致
-  - 每个后端跑同一组 bit-exact 用例（含 `-0.0`、denormal、round-to-nearest 边界）
-  - 禁止 FMA 收缩与运算重排；`std::simd` 仅作可选实验，引入需固定通道宽度与运算顺序
-  - AVX / NEON 作为后续可选后端，Phase 9 基准验证后再启用
+### Phase 2：`hk-math`（✅ 核心已完成，2026-11-09；标量后端）
+交付位于 `crates/hk-math/src/`（52 个单元测试 + 5 个文档测试）：
 
-### Phase 3：`hk-memory` + `hk-container`
-- 块流分配器（`hkBlockStream`）→ 初期可用 `Vec` + 索引池，后续按需自研 arena
-- `hkArray` → `Vec` 或自定义 SoA 容器
-- `hkHashMap/hkHashSet` → `hashbrown`
+| 模块 | 内容 |
+|---|---|
+| `vector.rs` | `Vector4`（`hkVector4f`）/ `Vector4d`：16 字节对齐存储、`+ - * /`、dot/cross、length/normalize、min/max/abs、interpolate、比较掩码与 select |
+| `quaternion.rs` | `Quaternion`：Hamilton 乘法、`_setRotatedDir` 旋转公式、逆、归一化、轴角构造、与旋转矩阵互转 |
+| `matrix3.rs` | `Matrix3`（列主序，`hkRotationf` 存储）：矩阵/向量乘法、转置、逆（SDK 的缩放 epsilon 判据 + 奇异置零）、四元数互转 |
+| `transform.rs` | `Transform`（`hkTransformf`）：旋转+平移组装、`setInverse` 语义、点/方向变换 |
+| `qtransform.rs` | `QTransform`（`hkQTransformf`）：四元数 + 平移 |
+| `qstransform.rs` | `QsTransform`（`hkQsTransformf`）：缩放/旋转/平移，`setMul` 与 `setMulScaled` 两种复合语义 |
+| `aabb.rs` | `Aabb`（`hkAabb`）：overlaps/contains/containsPoint、expand/include、中心/半长/体积、顶点/支撑点 |
+| `half.rs` | `Half`（`hkFloat16`）：C++ 位运算逐字移植，含 round-to-nearest 与去规范化 |
+
+决策与偏差：
+- **先标量后端**：直接按 C++ 标量（Fpu）公式书写运算顺序，暂不引入 SSE/AVX；公开 API 不暴露平台类型，后续替换后端无需改签名
+- SIMD 优化推迟到 Phase 9 基准之后：SSE2 为基线，AVX/NEON 可选；每个后端必须跑同一组 bit-exact 用例（`-0.0`、denormal、round-to-nearest），并与标量后端对齐
+- `sqrt`/`sin`/`cos` 来自 Rust 标准库：`+ - * /` 与比较逐位等价，超越函数仅保证容差（C++ 端同样依赖平台 libm；最终以 Phase 9 黄金轨迹为准）
+- 未纳入本阶段：`hkVector2f/d`、`hkIntVector`、`hkPackedVector3`、`hkMatrix4f`、`hkMatrix6f/d`、`hkMathFuncs`、独立 `hkSimdFloat32/d` 包装
+
+### Phase 3：`hk-memory` + `hk-container`（✅ 已完成，2026-11-09）
+交付（`hk-memory` 8 个单元测试；`hk-container` 27 个单元测试 + 5 个文档测试）：
+
+| crate | 内容 |
+|---|---|
+| `hk-memory` | `Allocator` trait（`Layout` 风格 `alloc`/`alloc_zeroed`/`dealloc`/`realloc`）、`AllocStats`、`SystemAllocator`（转发全局分配器 + 原子统计/峰值）、`global()` 进程实例；失败即 panic，与 SDK 的 fail-fast 语义一致 |
+| `hk-container` | `Array`（`hkArray`：`removeAt` 无序换尾、`removeAtAndCopy` 有序前移、`reserve`/`expandBy`/`insertAt`/`append`/`optimizeCapacity`/`indexOf`）、`BlockStream`（`hkBlockStream` 单线程子集：4000 字节定长块、确定性迭代、随机访问、`clear` 复用块、字节统计）、`HashMap`/`HashSet`（`std::collections` + 固定种子 FNV-1a；`insert`/`tryInsert`/`tryGet`/`getOrInsertDefault`/`getWithDefault`/`at`） |
+
+决策与偏差：
+- **保持零外部依赖**：`hashbrown` 暂缓，使用 `std::collections`；禁用 `RandomState`，改固定种子 FNV-1a，保证跨运行可复现。迭代顺序确定，但**不等同于** C++ `hkHashBase` 的数组序；依赖顺序的代码请用 `Array`
+- `Array` 底层直接用 `Vec<T>`（容量倍增与 SDK 一致）；保留 `as_ptr`/`as_mut_ptr` 供 FFI 风格代码
+- `BlockStream` 仅移植单线程 append/iterate/random-access 子集；reader/consumer/range、块头原子计数与线程局部块分配器留给 Phase 10
+- 未纳入：`hkLocalArray`/`hkInplaceArray`、`hkArrayView`、`hkString*`、`hkPointerMap`/`hkRelArray`/`hkTree`、并发容器；内存路由、`hkMemoryDebug`、FreeList/Lifo/Thread allocator 按 README 策略待性能分析后再引入
 - **核心原则**：指针访问全面改为 ID/索引访问，天然契合 Rust 借用检查
 
 ### Phase 4：`hk-thread` + 任务系统
@@ -212,6 +231,8 @@ havok/                             # 本仓库根目录
 | 反射系统（HK_DECLARE_CLASS） | P0 阶段不需要；序列化阶段用 `serde` + 自定义 hkx 格式层 |
 | 内存布局（AABB 16 字节对齐等） | 关键结构用 `#[repr(C, align(16))]` + `bytemuck` |
 | 多线程任务图 | 先单线程跑通，再并行化，避免过早优化 |
+| SIMD 与确定性 | 标量直译先行；SSE2/AVX 后端必须与标量后端逐位一致，禁止 FMA 收缩与重排；用 Phase 9 基准验收 |
+| 哈希容器确定性 | 禁用 `RandomState`，固定种子 FNV-1a；迭代顺序跨运行可复现但不等于 C++ 表序，依赖顺序的逻辑用 `Array` |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -237,7 +258,7 @@ cargo test --workspace
 cargo build --workspace --release
 
 # 文档链接检查（可选）
-$env:RUSTDOCFLAGS='-D warnings'; cargo doc -p hk-types --no-deps
+$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps
 ```
 
 CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地或外部流水线执行。
@@ -255,11 +276,13 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 迁移计划制定
 - [x] Phase 0：工程脚手架 —— workspace 根 + 15 个 crate 骨架 + `.gitignore`（检查命令见第 7 节；CI 未配置）
 - [x] Phase 1：`hk-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
-- [ ] Phase 2：`hk-math`（下一步，待定 SIMD 后端实现顺序）
+- [x] Phase 2：`hk-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
+- [x] Phase 3：`hk-memory` + `hk-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
+- [ ] Phase 4：`hk-thread` + 任务系统（下一步）
 - [ ] 其余阶段待启动
 
 仓库现状（2026-11-09）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：`791887c Initial commit` 仅含 LICENSE，其余文件尚未跟踪
+- git：最新提交 `1cba108 类型系统`；`hk-math` / `hk-memory` / `hk-container` 的新增源码尚未提交
 - 外部依赖：0

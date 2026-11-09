@@ -23,10 +23,6 @@ dependencies = [
 [[package]]
 name = "hk-container"
 version = "0.1.0"
-dependencies = [
- "hk-memory",
- "hk-types",
-]
 
 [[package]]
 name = "hk-geometry"
@@ -39,16 +35,10 @@ dependencies = [
 [[package]]
 name = "hk-math"
 version = "0.1.0"
-dependencies = [
- "hk-types",
-]
 
 [[package]]
 name = "hk-memory"
 version = "0.1.0"
-dependencies = [
- "hk-types",
-]
 
 [[package]]
 name = "hk-serialize"

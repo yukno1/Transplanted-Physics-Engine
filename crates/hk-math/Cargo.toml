@@ -7,4 +7,3 @@ publish.workspace = true
 description = "Havok math: vectors, matrices, quaternions, transforms, Aabb (hand-ported for bit-exact determinism)"
 
 [dependencies]
-hk-types = { path = "../hk-types" }
