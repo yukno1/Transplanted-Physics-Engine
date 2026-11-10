@@ -96,12 +96,7 @@ dependencies = [
 name = "hknp-solver"
 version = "0.1.0"
 dependencies = [
- "hk-container",
  "hk-math",
- "hk-memory",
- "hk-types",
- "hknp-body",
- "hknp-types",
 ]
 
 [[package]]
@@ -114,6 +109,8 @@ version = "0.1.0"
 dependencies = [
  "hk-math",
  "hknp-body",
+ "hknp-collide",
  "hknp-shape",
+ "hknp-solver",
  "hknp-types",
 ]

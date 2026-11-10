@@ -4,10 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
-description = "hknp world: World, WorldCinfo, simulation step skeleton"
+description = "hknp world: World, WorldCinfo, collide-solve-integrate step pipeline"
 
 [dependencies]
 hk-math = { path = "../hk-math" }
 hknp-types = { path = "../hknp-types" }
 hknp-shape = { path = "../hknp-shape" }
 hknp-body = { path = "../hknp-body" }
+hknp-collide = { path = "../hknp-collide" }
+hknp-solver = { path = "../hknp-solver" }

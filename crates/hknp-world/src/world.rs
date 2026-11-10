@@ -1,41 +1,53 @@
-//! `hknpWorld` — world assembly and step skeleton.
+//! `hknpWorld` — world assembly and single-threaded step pipeline.
+
+use std::collections::HashMap;
 
 use hk_math::{Transform, Vector4};
 use hknp_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
+use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
+use hknp_solver::{ContactConstraint, Solver, SolverBody, SolverSettings};
 use hknp_types::{BodyId, CollisionFlags, MotionId, MotionType};
 
-use crate::{WorldCinfo, WorldStats};
+use crate::{ContactManifold, WorldCinfo, WorldStats};
 
 /// Physics world (`hknpWorld`).
 ///
-/// Owns body/motion managers and the world-level simulation settings. Phase 6
-/// provides the assembly and kinematic step skeleton: bodies can be created,
-/// destroyed, transformed and queried, and [`World::step`] integrates dynamic
-/// motions with their velocities. Collision detection (Phase 7) and contact
-/// solving (Phase 8) are not wired in yet, so `step` does not resolve contacts.
+/// Owns body/motion managers, the broad phase and the contact solver. Phase 8
+/// [`World::step`] runs collide → solve → integrate over convex shapes using a
+/// deterministic single-threaded pipeline.
 #[derive(Debug)]
 pub struct World {
     cinfo: WorldCinfo,
     gravity: Vector4,
     bodies: BodyManager,
     motions: MotionManager,
+    broad_phase: BroadPhase,
+    solver: Solver,
     step_count: u64,
     last_delta_time: f32,
+    last_manifold_count: usize,
+    last_contact_count: usize,
 }
 
 impl World {
     /// Create a world from construction info.
     pub fn new(cinfo: WorldCinfo) -> Self {
         let gravity = cinfo.gravity;
-        let bodies = BodyManager::with_capacity(cinfo.body_buffer_capacity);
-        let motions = MotionManager::with_capacity(cinfo.motion_buffer_capacity);
+        let solver_settings = SolverSettings {
+            iterations: cinfo.solver_iterations,
+            ..SolverSettings::default()
+        };
         Self {
+            bodies: BodyManager::with_capacity(cinfo.body_buffer_capacity),
+            motions: MotionManager::with_capacity(cinfo.motion_buffer_capacity),
+            broad_phase: BroadPhase::new(BroadPhaseConfig::default()),
+            solver: Solver::new(solver_settings),
             cinfo,
             gravity,
-            bodies,
-            motions,
             step_count: 0,
             last_delta_time: 0.0,
+            last_manifold_count: 0,
+            last_contact_count: 0,
         }
     }
 
@@ -243,26 +255,134 @@ impl World {
         self.bodies.get(body_id).map(|body| body.aabb)
     }
 
+    /// Manifolds generated during the most recent step.
+    pub fn last_manifold_count(&self) -> usize {
+        self.last_manifold_count
+    }
+
+    /// Contact points generated during the most recent step.
+    pub fn last_contact_count(&self) -> usize {
+        self.last_contact_count
+    }
+
     /// Advance the world by `delta_time`.
     ///
-    /// This is the Phase 6 kinematic skeleton: dynamic motions integrate their
-    /// linear/angular velocity, and body transforms/AABBs are refreshed. There is
-    /// no collision detection or contact solving yet (Phases 7–8); gravity is
-    /// stored but does not act on bodies until the solver/integrator phase.
+    /// Single-threaded pipeline: gravity → broad phase → narrow phase →
+    /// sequential-impulse contact solve → semi-implicit Euler integration.
+    /// Collision pairs are sampled from the body AABBs cached at the end of the
+    /// previous step; bodies are then integrated and their AABBs refreshed for
+    /// the next step.
     pub fn step(&mut self, delta_time: f32) {
         debug_assert!(
             delta_time >= 0.0 && delta_time.is_finite(),
             "invalid step delta time"
         );
 
-        // Collect first to avoid holding a body borrow while mutating motions.
+        let contacts = self.collect_contacts();
+        self.last_manifold_count = contacts.len();
+        self.last_contact_count = contacts
+            .iter()
+            .map(|contact| contact.manifold.num_points())
+            .sum();
+
+        let gravity = self.gravity;
+        if delta_time > 0.0 {
+            let dynamic_motions: Vec<MotionId> = self
+                .bodies
+                .iter()
+                .filter(|body| body.is_dynamic())
+                .map(|body| body.motion_id)
+                .collect();
+            for motion_id in dynamic_motions {
+                if let Some(motion) = self.motions.get_mut(motion_id) {
+                    motion.linear_velocity += gravity * delta_time;
+                }
+            }
+        }
+
+        // Solver bodies are ordered like the body manager; contacts reference
+        // these indices.
+        let body_ids: Vec<BodyId> = self.bodies.iter().map(|body| body.id).collect();
+        let index_map: HashMap<BodyId, usize> = body_ids
+            .iter()
+            .enumerate()
+            .map(|(index, body_id)| (*body_id, index))
+            .collect();
+        let mut solver_bodies: Vec<SolverBody> = Vec::with_capacity(body_ids.len());
+        for body in self.bodies.iter() {
+            let motion = self.motions.get(body.motion_id);
+            let (inverse_mass, inverse_inertia) = if body.is_dynamic() {
+                (
+                    motion.map(Motion::inverse_mass).unwrap_or(0.0),
+                    motion
+                        .map(|motion| motion.inverse_inertia)
+                        .unwrap_or(Vector4::ZERO),
+                )
+            } else {
+                (0.0, Vector4::ZERO)
+            };
+            let linear_velocity = motion
+                .map(|motion| motion.linear_velocity)
+                .unwrap_or(Vector4::ZERO);
+            let angular_velocity = motion
+                .map(|motion| motion.angular_velocity)
+                .unwrap_or(Vector4::ZERO);
+            solver_bodies.push(SolverBody::new(
+                inverse_mass,
+                inverse_inertia,
+                body.transform.translation,
+                linear_velocity,
+                angular_velocity,
+            ));
+        }
+
+        let mut constraints = Vec::with_capacity(self.last_contact_count);
+        for contact in &contacts {
+            let (Some(&body_a), Some(&body_b)) = (
+                index_map.get(&contact.body_a),
+                index_map.get(&contact.body_b),
+            ) else {
+                continue;
+            };
+            for point in &contact.manifold.points {
+                // Contact point midway between the two surfaces.
+                let constraint_point =
+                    point.position + contact.manifold.normal * (point.distance * 0.5);
+                let penetration = (-point.distance).max(0.0);
+                constraints.push(ContactConstraint::new(
+                    body_a,
+                    body_b,
+                    contact.manifold.normal,
+                    constraint_point,
+                    penetration,
+                    0.5,
+                ));
+            }
+        }
+        self.solver
+            .solve(&mut solver_bodies, &constraints, delta_time);
+
+        // Write solved velocities back to dynamic motions.
+        for (index, body_id) in body_ids.iter().enumerate() {
+            let Some(body) = self.bodies.get(*body_id) else {
+                continue;
+            };
+            let solved = solver_bodies[index];
+            if solved.inverse_mass > 0.0 {
+                if let Some(motion) = self.motions.get_mut(body.motion_id) {
+                    motion.linear_velocity = solved.linear_velocity;
+                    motion.angular_velocity = solved.angular_velocity;
+                }
+            }
+        }
+
+        // Integrate and refresh body transforms/AABBs for the next step.
         let dynamic_bodies: Vec<(BodyId, MotionId)> = self
             .bodies
             .iter()
             .filter(|body| body.is_dynamic())
             .map(|body| (body.id, body.motion_id))
             .collect();
-
         for (body_id, motion_id) in dynamic_bodies {
             let Some(motion) = self.motions.get_mut(motion_id) else {
                 continue;
@@ -278,12 +398,58 @@ impl World {
         self.last_delta_time = delta_time;
     }
 
+    /// Run the collide stage and return contact manifolds for the current
+    /// body positions.
+    ///
+    /// Static-static and keyframed/keyframed pairs are skipped, as are bodies
+    /// carrying `DONT_COLLIDE`. Narrow-phase generation is convex-only; shape
+    /// pairs without a support function yield no manifold.
+    pub fn collect_contacts(&self) -> Vec<ContactManifold> {
+        let entries: Vec<BodyAabb> = self
+            .bodies
+            .iter()
+            .map(|body| BodyAabb::new(body.id, body.aabb))
+            .collect();
+        let pairs = self.broad_phase.find_pairs(&entries);
+        let mut contacts = Vec::new();
+        for pair in pairs {
+            let (Some(body_a), Some(body_b)) = (self.bodies.get(pair.a), self.bodies.get(pair.b))
+            else {
+                continue;
+            };
+            if !body_a.is_dynamic() && !body_b.is_dynamic() {
+                continue;
+            }
+            if body_a.flags.contains(CollisionFlags::DONT_COLLIDE)
+                || body_b.flags.contains(CollisionFlags::DONT_COLLIDE)
+            {
+                continue;
+            }
+            if let Some(manifold) = collide_with_tolerance(
+                body_a.shape.as_ref(),
+                &body_a.transform,
+                body_b.shape.as_ref(),
+                &body_b.transform,
+                self.cinfo.collision_tolerance,
+            ) {
+                contacts.push(ContactManifold {
+                    body_a: pair.a,
+                    body_b: pair.b,
+                    manifold,
+                });
+            }
+        }
+        contacts
+    }
+
     /// Snapshot of world counters.
     pub fn stats(&self) -> WorldStats {
         WorldStats {
             body_count: self.bodies.len(),
             motion_count: self.motions.len(),
             step_count: self.step_count,
+            last_manifold_count: self.last_manifold_count,
+            last_contact_count: self.last_contact_count,
         }
     }
 }
@@ -292,13 +458,17 @@ impl World {
 mod tests {
     use super::*;
     use hk_math::Quaternion;
-    use hknp_shape::{Shape, SphereShape};
+    use hknp_shape::{BoxShape, Shape, SphereShape};
     use hknp_types::{BodyQualityId, MaterialId, ShapeType};
     use std::f32::consts::FRAC_PI_2;
     use std::sync::Arc;
 
     fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
         Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    }
+
+    fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+        Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
     }
 
     fn dynamic_cinfo(radius: f32) -> BodyCinfo {
@@ -348,11 +518,14 @@ mod tests {
 
     #[test]
     fn step_integrates_dynamic_bodies_only() {
-        let mut world = World::new(WorldCinfo::new());
-        let static_id = world.create_body(&BodyCinfo::new(sphere_shape(1.0)));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let static_id = world.create_body(
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(100.0, 0.0, 0.0)),
+        );
         let keyframed_id = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Keyframed)
+                .with_position(Vector4::from_xyz(0.0, 100.0, 0.0))
                 .with_linear_velocity(Vector4::UNIT_X),
         );
         let dynamic_id =
@@ -363,10 +536,20 @@ mod tests {
         assert!((world.last_delta_time() - 0.5).abs() < 1e-6);
 
         let static_body = world.body(static_id).unwrap();
-        assert_eq!(static_body.transform.translation, Vector4::ZERO);
+        assert!(
+            static_body
+                .transform
+                .translation
+                .all_equal3(Vector4::from_xyz(100.0, 0.0, 0.0), 1e-6)
+        );
 
         let keyframed_body = world.body(keyframed_id).unwrap();
-        assert_eq!(keyframed_body.transform.translation, Vector4::ZERO);
+        assert!(
+            keyframed_body
+                .transform
+                .translation
+                .all_equal3(Vector4::from_xyz(0.0, 100.0, 0.0), 1e-6)
+        );
 
         let dynamic_body = world.body(dynamic_id).unwrap();
         assert!(
@@ -386,7 +569,7 @@ mod tests {
 
     #[test]
     fn step_integrates_angular_velocity() {
-        let mut world = World::new(WorldCinfo::new());
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let id = world.create_body(
             &dynamic_cinfo(1.0).with_angular_velocity(Vector4::from_xyz(0.0, 0.0, FRAC_PI_2)),
         );
@@ -395,6 +578,67 @@ mod tests {
         let mapped = body.transform.transform_point(Vector4::UNIT_X);
         assert!(mapped.all_equal3(Vector4::UNIT_Y, 1e-5));
         assert!((body.transform.rotation_quaternion().length() - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn gravity_accelerates_dynamic_body() {
+        let mut world = World::new(WorldCinfo::new());
+        let id = world
+            .create_body(&dynamic_cinfo(1.0).with_position(Vector4::from_xyz(0.0, 100.0, 0.0)));
+        world.step(0.5);
+        let velocity = world.body_linear_velocity(id).unwrap();
+        assert!((velocity.y + 9.81 * 0.5).abs() < 1e-4, "vy {}", velocity.y);
+        let position = world.body_position(id).unwrap();
+        assert!(position.y < 100.0);
+    }
+
+    #[test]
+    fn falling_sphere_settles_on_static_ground() {
+        let mut world = World::new(WorldCinfo::new());
+        let ground = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let sphere =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+
+        for _ in 0..240 {
+            world.step(1.0 / 60.0);
+        }
+
+        assert!(world.last_manifold_count() > 0);
+        assert!(world.last_contact_count() > 0);
+        let sphere_position = world.body_position(sphere).unwrap();
+        assert!(
+            sphere_position.y > 0.35 && sphere_position.y < 0.75,
+            "sphere y {}",
+            sphere_position.y
+        );
+        let velocity = world.body_linear_velocity(sphere).unwrap();
+        assert!(velocity.y.abs() < 0.2, "sphere vy {}", velocity.y);
+        let ground_position = world.body_position(ground).unwrap();
+        assert!(ground_position.all_equal3(Vector4::from_xyz(0.0, -0.5, 0.0), 1e-6));
+    }
+
+    #[test]
+    fn collect_contacts_finds_overlapping_pair() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let a = world.create_body(
+            &BodyCinfo::new(sphere_shape(1.0))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let b = world.create_body(
+            &BodyCinfo::new(sphere_shape(1.0))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+        );
+        let contacts = world.collect_contacts();
+        assert_eq!(contacts.len(), 1);
+        assert_eq!(contacts[0].body_a, a.min(b));
+        assert_eq!(contacts[0].body_b, a.max(b));
+        assert!(!contacts[0].manifold.points.is_empty());
     }
 
     #[test]
@@ -454,6 +698,8 @@ mod tests {
                 body_count: 0,
                 motion_count: 0,
                 step_count: 0,
+                last_manifold_count: 0,
+                last_contact_count: 0,
             }
         );
     }

@@ -108,8 +108,8 @@ havok/                             # 本仓库根目录
 | `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `hknp-collide` | 宽相/窄相/Manifold | ✅ 已实现（Phase 7） |
 | `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `hknp-solver` | 约束原子/接触求解/积分器 | 🚧 骨架 |
-| `hknp-world` | hknpWorld 组装 + 单线程步进骨架 | ✅ 已实现（Phase 6） |
+| `hknp-solver` | 迭代式接触求解器（SolverBody/ContactConstraint） | ✅ 已实现（Phase 8） |
+| `hknp-world` | hknpWorld 组装 + collide→solve→integrate 单线程管线 | ✅ 已实现（Phase 8） |
 | `hknp-extensions` | [P1] Ragdoll/Vehicle/Character | 🚧 骨架（P1 未启动） |
 | `havok` | 门面 crate，重导出公共 API | 🚧 骨架（重导出已接好） |
 
@@ -221,14 +221,14 @@ havok/                             # 本仓库根目录
 | crate | 内容 |
 |---|---|
 | `hknp-body` | `Body`/`BodyCinfo`（shape、flags、material/quality、filter info、user data、位置/朝向/速度/质量）；`BodyManager` 索引池（24 位索引 + 8 位 serial，free-list 复用槽，复用后旧 `BodyId` 失效）；`Motion`（orientation、质心、线/角速度、mass/inverse inertia、积分与冲量）；`MotionManager`（slot 0 固定静态 motion `PRESET_STATIC`，动态槽复用） |
-| `hknp-world` | `WorldCinfo` builder（gravity、body/motion 容量、collisionTolerance、solverTau/Damp/Iterations、deactivation、expectedDeltaTime）；`World` 组装 body/motion manager，`create_body`/`destroy_body`、transform/position/velocity/AABB 访问器、`set_gravity`、`stats`；`step()` 单线程运动学骨架：动态 motion 做平移 + 旋转积分并同步 body transform/AABB，静态/Keyframed 保持不动 |
+| `hknp-world` | `WorldCinfo` builder（gravity、body/motion 容量、collisionTolerance、solverTau/Damp/Iterations、deactivation、expectedDeltaTime）；`World` 组装 body/motion manager，`create_body`/`destroy_body`、transform/position/velocity/AABB 访问器、`set_gravity`、`stats`；`step()` 单线程运动学骨架：动态 motion 做平移 + 旋转积分并同步 body transform/AABB，静态/Keyframed 保持不动（Phase 8 已扩展为 gravity→collide→solve→integrate 完整管线） |
 
 决策与偏差：
 - `Body::transform` 暂用 f32 `hkTransform`；SDK 的 `hkPreciseTransform`（double 平移）留到 Phase 10 大世界/shift 工作
 - Motion 角速度按**世界空间**暴露（SDK 内部存局部/惯量空间并在访问时转换）；积分采用 `q' = normalize(Δq * q)`，对世界空间输入等价
 - `create_body` 把 SDK 的 `allocateBody` + `addBody` 折叠为一步；质量 `<0`（使用 shape 质量）暂按无限质量处理，形状质量属性随 Phase 8 求解器一起接入
 - `destroy_body` 会释放非静态 body 的 motion；暂不支持 `allocateAttachedBody` 的 motion 共享；`MotionId` 本身无 serial（与 SDK 一致），跨销毁持有需先用 `BodyId` 校验
-- `step()` 目前**只做运动学积分**：不碰撞、不求解、不施加重力；Phase 7 接宽窄相、Phase 8 接接触求解与重力积分
+- `step()` 在 Phase 6 时仅做运动学积分；Phase 8 已接入重力、宽窄相碰撞与接触求解（见 Phase 8 段）
 - 未纳入：broadphase/space splitter、body 添加/延迟队列、command queue 与确定性检查、deactivation manager、collision filter、事件/modifier、用户 body buffer、`hknpWorldReader`/`hknpWorldWriter` traits
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
@@ -250,11 +250,20 @@ havok/                             # 本仓库根目录
 - 未纳入：射线/AABB/形状投射查询、连续碰撞、SDF/粒子碰撞、复合形状窄相、接触缓存与 welding；这些留到 Phase 8+ 与查询阶段
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 8：`hknp-solver` + 完整步进（技术核心）
-- 约束原子系统（`Solver/ConstraintAtom`，49 文件）
-- 接触约束求解器（迭代式）
-- 积分器（半隐式欧拉）
-- 组装 `hknpWorld::step()`：Collide → Solve → Integrate，对齐 SimulationStage 状态机
+### Phase 8：`hknp-solver` + 完整步进（✅ 已完成，2026-11-10）
+交付（`hknp-solver` 5 个单元测试；`hknp-world` 13 个单元测试 + 1 个文档测试）：
+
+| crate | 内容 |
+|---|---|
+| `hknp-solver` | `SolverBody`（inverse mass/inertia、质心、线/角速度、点冲量）；`ContactConstraint`（body 索引、B→A 法线、世界接触点、穿透、摩擦）；`SolverSettings`（iterations/baumgarte/max_recovery_speed/friction）；`Solver` 顺序脉冲 Gauss-Seidel：法向累积冲量非负 clamp、Baumgarte 穿透恢复速度上限、单切向摩擦按 `μ * 累积法向冲量` clamp；`SolverStats` |
+| `hknp-world` | `World::step` 完整管线：重力 → `collect_contacts`（网格宽相 + GJK/EPA 窄相）→ 构建 SolverBody/接触约束 → 求解 → 写回速度 → 半隐式欧拉积分并刷新 transform/AABB；`collect_contacts` 公开 API；`WorldStats` 增加 `last_manifold_count`/`last_contact_count`；静态-静态与 `DONT_COLLIDE` 过滤 |
+
+决策与偏差：
+- 接触仍是**单点**（Phase 7 限制）；材质库未接入，摩擦系数固定 0.5、restitution 0，`WorldCinfo.solverTau/solverDamp` 暂时只保留字段，稳定化使用固定 Baumgarte 0.2
+- 未移植 `Solver/ConstraintAtom` 的约束原子/Jacobian 系统、warm starting、island 分区、deactivation；当前是“每对单点约束 + 4 次顺序脉冲”的简化求解器
+- 质量 `< 0` 仍按无限质量处理（Phase 6 决策），动态 body 需要显式 `with_mass`；shape 质量属性/惯量张量尚未接入，因此球的 inverse inertia 默认为 0（只做平动响应）
+- `step` 的宽相使用上一步缓存的 AABB，积分后刷新；确定性依赖 body slot 顺序、宽相 `(a,b)` 顺序与求解器插入顺序
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 9：测试与验证（持续）
 - 移植 `Physics/Test/UnitTest/`（41 个测试）
@@ -284,6 +293,7 @@ havok/                             # 本仓库根目录
 | 形状 support/AABB | 凸体 support 与 AABB 按 SDK 语义包含 convex radius；体积按名义实体（不含圆角）；Cylinder 用精确有限圆柱范围公式 |
 | Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
+| 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、单切向摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -333,11 +343,13 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 5：`hknp-types` + `hknp-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
 - [x] Phase 6：`hknp-body` + `hknp-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
 - [x] Phase 7：`hknp-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
-- [ ] Phase 8：`hknp-solver` + 完整步进（下一步）
-- [ ] 其余阶段待启动
+- [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
+- [ ] Phase 9：测试与验证（下一步）
+- [ ] Phase 10：多线程 + 序列化 + 扩展
 
 仓库现状（2026-11-10）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `dc732ce hknp-body & hknp-world`；`hknp-collide` 的新增源码尚未提交
+- git：最新提交 `45c092a hknp-collide`；`hknp-solver` / `hknp-world` 的 Phase 8 源码尚未提交
 - 外部依赖：0
+

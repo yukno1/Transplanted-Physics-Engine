@@ -1,15 +1,25 @@
-//! `hknp-solver` — hknp constraint solver.
+//! `hknp-solver` — iterative contact solver.
 //!
-//! Rust port of `original/Physics/Source/Physics/Physics/Dynamics/Solver/`.
+//! Rust port of the contact branch of
+//! `original/Physics/Source/Physics/Physics/Dynamics/Solver/` (migration
+//! Phase 8, README §4).
 //!
-//! Planned contents (migration Phase 8):
-//! - constraint atom system (`ConstraintAtom/*`)
-//! - iterative contact constraint solver (`Contact/*`)
-//! - integrators (semi-implicit Euler, `Integrator/*`)
-//! - solver info/data, velocity buffers, solver results
+//! This phase ports the sequential-impulse contact solver and the integrator
+//! wiring used by [`crate::Solver`]. The full constraint-atom system, friction
+//! caching, warm starting, restitution modifiers and islands are not part of
+//! this first iteration (see the crate-level table below and README §4).
 //!
-//! Determinism is critical here: keep the exact operation order of the C++
-//! solver (accumulation order, iteration order) and validate against golden
-//! traces in Phase 9.
+//! | Module | Contents |
+//! |---|---|
+//! | `solver` | `SolverBody`, `ContactConstraint`, `SolverSettings`, `Solver`, `SolverStats` |
 //!
-//! This crate is currently a scaffold.
+//! # Determinism
+//!
+//! Contacts are solved in insertion order and within each sweep in that same
+//! order, with only scalar-then-vector arithmetic. The world builds bodies in
+//! body-slot order and contacts in broad-phase pair order, so a given scene
+//! produces the same impulse sequence every step.
+
+pub mod solver;
+
+pub use solver::{ContactConstraint, Solver, SolverBody, SolverSettings, SolverStats};
