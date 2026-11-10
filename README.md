@@ -107,9 +107,9 @@ havok/                             # 本仓库根目录
 | `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `hknp-collide` | 宽相/窄相/Manifold/查询 | 🚧 骨架 |
-| `hknp-body` | hknpBody/BodyManager/Motion | 🚧 骨架 |
+| `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `hknp-solver` | 约束原子/接触求解/积分器 | 🚧 骨架 |
-| `hknp-world` | hknpWorld 组装 + 步进管线（单线程优先） | 🚧 骨架 |
+| `hknp-world` | hknpWorld 组装 + 单线程步进骨架 | ✅ 已实现（Phase 6） |
 | `hknp-extensions` | [P1] Ragdoll/Vehicle/Character | 🚧 骨架（P1 未启动） |
 | `havok` | 门面 crate，重导出公共 API | 🚧 骨架（重导出已接好） |
 
@@ -215,10 +215,22 @@ havok/                             # 本仓库根目录
 - 未纳入：`hknpCompressedMeshShape`、`hknpExternMeshShape`、`hknpBreakableCompoundShape`、LOD、decorator/masked 形状、shape tag codec、shape key mask/iterator、`hknpShapeMassProperties`
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 6：`hknp-body` + `hknp-world`
-- `hknpBody` 结构体、`hknpBodyManager`（索引池管理生命周期）
-- `hknpWorldCinfo` → builder pattern
-- `hknpWorld`：`setGravity`/`setCollisionFilter`/`step()` 骨架
+### Phase 6：`hknp-body` + `hknp-world`（✅ 已完成，2026-11-10）
+交付（`hknp-body` 18 个单元测试 + 1 个文档测试；`hknp-world` 10 个单元测试 + 1 个文档测试）：
+
+| crate | 内容 |
+|---|---|
+| `hknp-body` | `Body`/`BodyCinfo`（shape、flags、material/quality、filter info、user data、位置/朝向/速度/质量）；`BodyManager` 索引池（24 位索引 + 8 位 serial，free-list 复用槽，复用后旧 `BodyId` 失效）；`Motion`（orientation、质心、线/角速度、mass/inverse inertia、积分与冲量）；`MotionManager`（slot 0 固定静态 motion `PRESET_STATIC`，动态槽复用） |
+| `hknp-world` | `WorldCinfo` builder（gravity、body/motion 容量、collisionTolerance、solverTau/Damp/Iterations、deactivation、expectedDeltaTime）；`World` 组装 body/motion manager，`create_body`/`destroy_body`、transform/position/velocity/AABB 访问器、`set_gravity`、`stats`；`step()` 单线程运动学骨架：动态 motion 做平移 + 旋转积分并同步 body transform/AABB，静态/Keyframed 保持不动 |
+
+决策与偏差：
+- `Body::transform` 暂用 f32 `hkTransform`；SDK 的 `hkPreciseTransform`（double 平移）留到 Phase 10 大世界/shift 工作
+- Motion 角速度按**世界空间**暴露（SDK 内部存局部/惯量空间并在访问时转换）；积分采用 `q' = normalize(Δq * q)`，对世界空间输入等价
+- `create_body` 把 SDK 的 `allocateBody` + `addBody` 折叠为一步；质量 `<0`（使用 shape 质量）暂按无限质量处理，形状质量属性随 Phase 8 求解器一起接入
+- `destroy_body` 会释放非静态 body 的 motion；暂不支持 `allocateAttachedBody` 的 motion 共享；`MotionId` 本身无 serial（与 SDK 一致），跨销毁持有需先用 `BodyId` 校验
+- `step()` 目前**只做运动学积分**：不碰撞、不求解、不施加重力；Phase 7 接宽窄相、Phase 8 接接触求解与重力积分
+- 未纳入：broadphase/space splitter、body 添加/延迟队列、command queue 与确定性检查、deactivation manager、collision filter、事件/modifier、用户 body buffer、`hknpWorldReader`/`hknpWorldWriter` traits
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 7：`hknp-collide`（技术核心）
 - 宽相：网格宽相（CsGrid）
@@ -258,6 +270,7 @@ havok/                             # 本仓库根目录
 | 哈希容器确定性 | 禁用 `RandomState`，固定种子 FNV-1a；迭代顺序跨运行可复现但不等于 C++ 表序，依赖顺序的逻辑用 `Array` |
 | 任务图确定性 | 单线程按 priority→id 调度；并行按拓扑层 barrier，层内任务必须彼此独立；环在执行前检出 |
 | 形状 support/AABB | 凸体 support 与 AABB 按 SDK 语义包含 convex radius；体积按名义实体（不含圆角）；Cylinder 用精确有限圆柱范围公式 |
+| Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -305,11 +318,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 3：`hk-memory` + `hk-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
 - [x] Phase 4：`hk-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
 - [x] Phase 5：`hknp-types` + `hknp-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
-- [ ] Phase 6：`hknp-body` + `hknp-world`（下一步）
+- [x] Phase 6：`hknp-body` + `hknp-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
+- [ ] Phase 7：`hknp-collide`（下一步）
 - [ ] 其余阶段待启动
 
 仓库现状（2026-11-10）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `40df1bd hk-thread`；`hknp-types` / `hknp-shape` 的新增源码尚未提交
+- git：最新提交 `fe28dff hknp-types & hknp-shape`；`hknp-body` / `hknp-world` 的新增源码尚未提交
 - 外部依赖：0

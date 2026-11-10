@@ -60,9 +60,7 @@ version = "0.1.0"
 name = "hknp-body"
 version = "0.1.0"
 dependencies = [
- "hk-container",
  "hk-math",
- "hk-types",
  "hknp-shape",
  "hknp-types",
 ]
@@ -117,14 +115,8 @@ version = "0.1.0"
 name = "hknp-world"
 version = "0.1.0"
 dependencies = [
- "hk-container",
  "hk-math",
- "hk-memory",
- "hk-thread",
- "hk-types",
  "hknp-body",
- "hknp-collide",
  "hknp-shape",
- "hknp-solver",
  "hknp-types",
 ]
