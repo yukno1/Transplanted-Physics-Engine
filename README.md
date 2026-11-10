@@ -106,7 +106,7 @@ havok/                             # 本仓库根目录
 | `hk-serialize` | [P1] hkx tagfile / packfile | 🚧 骨架（P1 未启动） |
 | `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
-| `hknp-collide` | 宽相/窄相/Manifold/查询 | 🚧 骨架 |
+| `hknp-collide` | 宽相/窄相/Manifold | ✅ 已实现（Phase 7） |
 | `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `hknp-solver` | 约束原子/接触求解/积分器 | 🚧 骨架 |
 | `hknp-world` | hknpWorld 组装 + 单线程步进骨架 | ✅ 已实现（Phase 6） |
@@ -232,11 +232,23 @@ havok/                             # 本仓库根目录
 - 未纳入：broadphase/space splitter、body 添加/延迟队列、command queue 与确定性检查、deactivation manager、collision filter、事件/modifier、用户 body buffer、`hknpWorldReader`/`hknpWorldWriter` traits
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 7：`hknp-collide`（技术核心）
-- 宽相：网格宽相（CsGrid）
-- 窄相：GJK 单纯形求解器、凸-凸 Manifold 生成、各形状对检测器
-- 查询：RayCast / AabbQuery / ClosestPointsQuery / ShapeCast
-- 碰撞过滤：`hknpCollisionFilter` trait + 默认组过滤
+### Phase 7：`hknp-collide`（✅ 已完成，2026-11-10）
+交付（22 个单元测试）：
+
+| 模块 | 内容 |
+|---|---|
+| `broadphase.rs` | 均匀网格宽相（`cell_size` 默认 2.0，`BTreeMap` 保证确定性）；AABB 插入多 cell、单元格内候选对、按 `(a,b)` 排序去重；`BodyPair` 规范化；超大 AABB（>4096 cell）退化为线性扫描 |
+| `gjk.rs` | 世界空间 support 映射（`R^T * dir` → 局部 support → 世界点）；GJK 最近点/相交，1–4 点 simplex 归约（点/线段/三角形/四面体重心 + 区域测试），输出 A/B witness 点与 B→A 法线 |
+| `epa.rs` | 从 GJK simplex 与轴向/中心方向 support 采样构造**严格包含原点**的四面体，再做 EPA 面扩展求穿透深度、法线、接触点；退化或迭代失败时按 support 方向采样最小深度回退 |
+| `manifold.rs` | `Manifold`/`ContactPoint`：法线 B→A、位置在 B、负距离=穿透，`point_a = position + normal*distance`，与 `hkcdManifold4` 约定一致 |
+| `narrowphase.rs` | sphere-sphere 解析特化；一般凸体走 GJK/EPA 生成单点接触；`collide_with_tolerance` 支持推测接触（正距离容差）；非凸（Mesh/HeightField/Compound）返回 `None` |
+
+决策与偏差：
+- **单点流形**：SDK 的 4 点 face clipping、contact cache、welding 留到求解器/manifold 阶段；当前每对凸体最多 1 个接触点
+- GJK 对光滑形状常在原点落在线段时提前判定相交，simplex 维度小于 4；EPA 因此增加“外采样构造四面体”步骤，并要求重心权重 > 1e-4，避免原点落在四面体边界导致深度 0
+- 宽相为均匀网格简化实现，不是 SDK 的 SIMD tree/CsGrid 分层宽相；未实现 broadphase layer、`hknpCollisionFilter`、`DONT_COLLIDE` 过滤（由调用方/后续阶段处理）
+- 未纳入：射线/AABB/形状投射查询、连续碰撞、SDF/粒子碰撞、复合形状窄相、接触缓存与 welding；这些留到 Phase 8+ 与查询阶段
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 8：`hknp-solver` + 完整步进（技术核心）
 - 约束原子系统（`Solver/ConstraintAtom`，49 文件）
@@ -271,6 +283,7 @@ havok/                             # 本仓库根目录
 | 任务图确定性 | 单线程按 priority→id 调度；并行按拓扑层 barrier，层内任务必须彼此独立；环在执行前检出 |
 | 形状 support/AABB | 凸体 support 与 AABB 按 SDK 语义包含 convex radius；体积按名义实体（不含圆角）；Cylinder 用精确有限圆柱范围公式 |
 | Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
+| 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -319,11 +332,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 4：`hk-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
 - [x] Phase 5：`hknp-types` + `hknp-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
 - [x] Phase 6：`hknp-body` + `hknp-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
-- [ ] Phase 7：`hknp-collide`（下一步）
+- [x] Phase 7：`hknp-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
+- [ ] Phase 8：`hknp-solver` + 完整步进（下一步）
 - [ ] 其余阶段待启动
 
 仓库现状（2026-11-10）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `fe28dff hknp-types & hknp-shape`；`hknp-body` / `hknp-world` 的新增源码尚未提交
+- git：最新提交 `dc732ce hknp-body & hknp-world`；`hknp-collide` 的新增源码尚未提交
 - 外部依赖：0

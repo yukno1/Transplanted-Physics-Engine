@@ -69,10 +69,7 @@ dependencies = [
 name = "hknp-collide"
 version = "0.1.0"
 dependencies = [
- "hk-container",
  "hk-math",
- "hk-memory",
- "hk-types",
  "hknp-shape",
  "hknp-types",
 ]
