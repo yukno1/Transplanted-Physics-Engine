@@ -51,9 +51,6 @@ dependencies = [
 [[package]]
 name = "hk-thread"
 version = "0.1.0"
-dependencies = [
- "hk-types",
-]
 
 [[package]]
 name = "hk-types"

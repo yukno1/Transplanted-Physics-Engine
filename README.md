@@ -95,13 +95,13 @@ havok/                             # 本仓库根目录
 ├── crates/
 ```
 
-| crate | 职责 | 状态（2026-11-09） |
+| crate | 职责 | 状态（2026-11-10） |
 |---|---|---|
 | `hk-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
 | `hk-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
 | `hk-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
 | `hk-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
-| `hk-thread` | 线程池、任务图（可先用 rayon） | 🚧 骨架 |
+| `hk-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `hk-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
 | `hk-serialize` | [P1] hkx tagfile / packfile | 🚧 骨架（P1 未启动） |
 | `hknp-types` | hknpTypes：ID、MotionType、标志位 | 🚧 骨架 |
@@ -181,9 +181,23 @@ havok/                             # 本仓库根目录
 - 未纳入：`hkLocalArray`/`hkInplaceArray`、`hkArrayView`、`hkString*`、`hkPointerMap`/`hkRelArray`/`hkTree`、并发容器；内存路由、`hkMemoryDebug`、FreeList/Lifo/Thread allocator 按 README 策略待性能分析后再引入
 - **核心原则**：指针访问全面改为 ID/索引访问，天然契合 Rust 借用检查
 
-### Phase 4：`hk-thread` + 任务系统
-- 先用 `rayon` 替代 hkJobQueue/hkTaskGraph 的单线程场景
-- `hknpSimulation` 先实现单线程版本，多线程留到 Phase 10
+### Phase 4：`hk-thread` + 任务系统（✅ 已完成，2026-11-10）
+交付位于 `crates/hk-thread/src/`（29 个单元测试 + 5 个文档测试）：
+
+| 模块 | 内容 |
+|---|---|
+| `spin_lock.rs` | `SpinLock<T>`/`SpinGuard`：`compare_exchange` + `spin_loop()` 自旋，无公平性（与 C++ 一致） |
+| `thread_pool.rs` | `ThreadPool`：固定 worker + 共享 `mpsc` 队列、`JobHandle`（完成等待/panic 检测）、池内 `parallel_for`；Drop 时排空队列后 join |
+| `job_queue.rs` | `JobQueue`：`hkJobQueue`/`hkTaskQueue` 的单线程 FIFO 子集 |
+| `task_graph.rs` | `TaskGraph`/`TaskId`/`Priority`：一次性闭包任务 + 依赖边；`execute_sequential` 按 **priority → id** 确定性调度；`execute_layered` 拓扑分层 + 线程池层内并行/层间屏障；环检测 |
+| `parallel.rs` | 作用域 `parallel_for`（原子游标动态分发）与 `parallel_for_chunks`（确定性连续分块）；`num_hardware_threads` |
+
+决策与偏差：
+- **未引入 `rayon`**：实施时 crates.io 不可达（SSL 错误），且工作区保持零依赖；改用 `std::thread` 自建池。后续可通过同一 `ThreadPool`/`parallel_for` API 替换后端
+- **确定性优先**：顺序执行固定按 priority→id；并行执行只在拓扑层内并发、层间 barrier，层内任务不得有共享写（与 SDK 多线程任务队列的约束一致）
+- 未移植：`hkThread` 优先级/亲和性、`hkJobQueue` 工作窃取与任务类型队列、`hkSemaphore`/`ReadersWriterLock`/`hkCriticalSection`、`hkReferencedTask`/多样性/图合并
+- `hknpMultithreadedSimulation` 与物理 `hknpTaskGraph` 仍留 Phase 10；Phase 6/8 的 `hknpSimulation` 先走单线程路径
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 5：`hknp-types` + `hknp-shape`
 - `hknpTypes.h`：ShapeKey / SolverId / ImmediateConstraintId 等 `HK_DECLARE_HANDLE` 句柄；Body/Motion/Material 等 Id 分布在模块头文件，`hknpMotionType`
@@ -233,6 +247,7 @@ havok/                             # 本仓库根目录
 | 多线程任务图 | 先单线程跑通，再并行化，避免过早优化 |
 | SIMD 与确定性 | 标量直译先行；SSE2/AVX 后端必须与标量后端逐位一致，禁止 FMA 收缩与重排；用 Phase 9 基准验收 |
 | 哈希容器确定性 | 禁用 `RandomState`，固定种子 FNV-1a；迭代顺序跨运行可复现但不等于 C++ 表序，依赖顺序的逻辑用 `Array` |
+| 任务图确定性 | 单线程按 priority→id 调度；并行按拓扑层 barrier，层内任务必须彼此独立；环在执行前检出 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -267,7 +282,7 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - 所有 crate 设为 `publish = false`（源码衍生自专有 Havok 代码，防止误发布）
 - crate 间依赖严格单向，方向见第 3 节
 - 当前零外部依赖，`rayon`/`thiserror`/`bytemuck` 按阶段引入
-- `Cargo.lock` 应提交入库（应用型 workspace，锁定依赖；当前尚未跟踪）
+- `Cargo.lock` 已提交入库（应用型 workspace，锁定依赖）
 - `../original/` 与 `target/` 不纳入仓库（后者已由 `.gitignore` 忽略）
 
 ## 8. 当前状态
@@ -278,11 +293,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 1：`hk-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
 - [x] Phase 2：`hk-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
 - [x] Phase 3：`hk-memory` + `hk-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
-- [ ] Phase 4：`hk-thread` + 任务系统（下一步）
+- [x] Phase 4：`hk-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
+- [ ] Phase 5：`hknp-types` + `hknp-shape`（下一步）
 - [ ] 其余阶段待启动
 
-仓库现状（2026-11-09）：
+仓库现状（2026-11-10）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `1cba108 类型系统`；`hk-math` / `hk-memory` / `hk-container` 的新增源码尚未提交
+- git：最新提交 `3ed142f hk-memory/hk-container`；`hk-thread` 新增源码尚未提交
 - 外部依赖：0
