@@ -104,8 +104,8 @@ havok/                             # 本仓库根目录
 | `hk-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `hk-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
 | `hk-serialize` | [P1] hkx tagfile / packfile | 🚧 骨架（P1 未启动） |
-| `hknp-types` | hknpTypes：ID、MotionType、标志位 | 🚧 骨架 |
-| `hknp-shape` | 形状体系（Sphere/Box/Capsule/Hull/Mesh/HeightField） | 🚧 骨架 |
+| `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
+| `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `hknp-collide` | 宽相/窄相/Manifold/查询 | 🚧 骨架 |
 | `hknp-body` | hknpBody/BodyManager/Motion | 🚧 骨架 |
 | `hknp-solver` | 约束原子/接触求解/积分器 | 🚧 骨架 |
@@ -199,12 +199,21 @@ havok/                             # 本仓库根目录
 - `hknpMultithreadedSimulation` 与物理 `hknpTaskGraph` 仍留 Phase 10；Phase 6/8 的 `hknpSimulation` 先走单线程路径
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 5：`hknp-types` + `hknp-shape`
-- `hknpTypes.h`：ShapeKey / SolverId / ImmediateConstraintId 等 `HK_DECLARE_HANDLE` 句柄；Body/Motion/Material 等 Id 分布在模块头文件，`hknpMotionType`
-- 形状体系（173 文件）：
-  - Convex：Sphere → Box → Capsule → Cylinder → Triangle → ConvexHull
-  - Composite：Mesh（含 BVH）→ HeightField → Compound
-- 统一 trait 设计（对应 C 的 `hknpShapeFunctions` 虚表分发）
+### Phase 5：`hknp-types` + `hknp-shape`（✅ 已完成，2026-11-10）
+交付（`hknp-types` 16 个单元测试；`hknp-shape` 41 个单元测试）：
+
+| crate | 内容 |
+|---|---|
+| `hknp-types` | `BodyId`（u64，MSB 区分内部索引/用户 ID）与 `BodyIndex`（24 位索引 + 8 位 serial）；`MotionId`/`MaterialId`/`ShapeKey`/`SolverId`/`ImmediateConstraintId`/`BodyQualityId`/`MotionPropertiesId`/`ConstraintSolverId` 等句柄（invalid 哨兵与 SDK 完全一致）；`MotionType`、完整 `ShapeType`、`CollisionDispatchType`；`CollisionFlags`/`ShapeFlags`/`WorldAddedState` |
+| `hknp-shape` | 统一 `Shape` trait（`shape_type`/`dispatch_type`/`flags`/`aabb`/`bounding_radius`/`calc_aabb`/`volume`/`support`/`is_convex`/`as_any`）；`SphereShape`、`BoxShape`、`CapsuleShape`、`CylinderShape`、`TriangleShape`、`ConvexHullShape`；`CompoundShape`（`ShapeInstance` + `Arc<dyn Shape>`）；`MeshShape`（顶点+三角形+中值分割 BVH，叶子 4 个三角形）；`HeightFieldShape`（XZ 网格 + 高度采样） |
+
+决策与偏差：
+- **Box**：本阶段为“局部轴对齐半长 + convex radius”，OBB 变换由 body/实例携带（Phase 6）；**Cylinder** 的 AABB 使用有限圆柱精确支撑公式（`h*|axis_i| + r*sqrt(1-axis_i²)`），而非保守球扫掠
+- **凸体 support 语义**：盒取方向符号角点 + `radius*dir`、胶囊取两端点中的极值点 + `radius*dir`（共线 tie 取 A/正向轴）、圆柱为轴向分量 + 径向投影；**体积按名义实体计算**（不含 convex radius），与 SDK 的“几何 + 圆角分离”一致
+- `ConvexHullShape` 未实现点云凸包构建（`hknpConvexHullUtil`），仅支持外部给定顶点 + 可选三角面；Mesh 暂不含 section/material/compressed-mesh；Compound 的 BVH 留 Phase 7
+- `HeightFieldShape` 简化为 XZ 网格 + `(x,y,z)` scale，未含每 cell BVH/SDF；`hknpShapeFunctions` 的查询/GSK/face 接口留 Phase 7
+- 未纳入：`hknpCompressedMeshShape`、`hknpExternMeshShape`、`hknpBreakableCompoundShape`、LOD、decorator/masked 形状、shape tag codec、shape key mask/iterator、`hknpShapeMassProperties`
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 6：`hknp-body` + `hknp-world`
 - `hknpBody` 结构体、`hknpBodyManager`（索引池管理生命周期）
@@ -248,6 +257,7 @@ havok/                             # 本仓库根目录
 | SIMD 与确定性 | 标量直译先行；SSE2/AVX 后端必须与标量后端逐位一致，禁止 FMA 收缩与重排；用 Phase 9 基准验收 |
 | 哈希容器确定性 | 禁用 `RandomState`，固定种子 FNV-1a；迭代顺序跨运行可复现但不等于 C++ 表序，依赖顺序的逻辑用 `Array` |
 | 任务图确定性 | 单线程按 priority→id 调度；并行按拓扑层 barrier，层内任务必须彼此独立；环在执行前检出 |
+| 形状 support/AABB | 凸体 support 与 AABB 按 SDK 语义包含 convex radius；体积按名义实体（不含圆角）；Cylinder 用精确有限圆柱范围公式 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -294,11 +304,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 2：`hk-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
 - [x] Phase 3：`hk-memory` + `hk-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
 - [x] Phase 4：`hk-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
-- [ ] Phase 5：`hknp-types` + `hknp-shape`（下一步）
+- [x] Phase 5：`hknp-types` + `hknp-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
+- [ ] Phase 6：`hknp-body` + `hknp-world`（下一步）
 - [ ] 其余阶段待启动
 
 仓库现状（2026-11-10）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `3ed142f hk-memory/hk-container`；`hk-thread` 新增源码尚未提交
+- git：最新提交 `40df1bd hk-thread`；`hknp-types` / `hknp-shape` 的新增源码尚未提交
 - 外部依赖：0

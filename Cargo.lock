@@ -93,11 +93,7 @@ dependencies = [
 name = "hknp-shape"
 version = "0.1.0"
 dependencies = [
- "hk-container",
- "hk-geometry",
  "hk-math",
- "hk-memory",
- "hk-types",
  "hknp-types",
 ]
 
@@ -116,12 +112,6 @@ dependencies = [
 [[package]]
 name = "hknp-types"
 version = "0.1.0"
-dependencies = [
- "hk-container",
- "hk-math",
- "hk-memory",
- "hk-types",
-]
 
 [[package]]
 name = "hknp-world"
