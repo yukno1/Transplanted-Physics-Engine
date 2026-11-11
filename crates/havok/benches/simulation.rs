@@ -38,7 +38,8 @@ fn main() {
     benchmark_gjk(gjk_iterations);
     benchmark_narrowphase(narrowphase_iterations);
     benchmark_solver(solver_iterations);
-    benchmark_world_fall(fall_bodies, fall_steps);
+    benchmark_world_fall(fall_bodies, fall_steps, 1, "world_fall_n");
+    benchmark_world_fall(fall_bodies, fall_steps, 4, "world_fall_n_parallel");
     benchmark_world_stack(stack_steps);
 }
 
@@ -158,7 +159,7 @@ fn benchmark_solver(iterations: u32) {
     );
 }
 
-fn benchmark_world_fall(body_count: usize, steps: usize) {
+fn benchmark_world_fall(body_count: usize, steps: usize, threads: usize, name: &str) {
     let mut world = World::new(WorldCinfo::new());
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
         Vector4::from_xyz(6.0, 0.5, 6.0),
@@ -180,12 +181,16 @@ fn benchmark_world_fall(body_count: usize, steps: usize) {
     }
     let start = Instant::now();
     for _ in 0..steps {
-        world.step(1.0 / 60.0);
+        if threads > 1 {
+            world.step_with_threads(1.0 / 60.0, threads);
+        } else {
+            world.step(1.0 / 60.0);
+        }
     }
     let elapsed = start.elapsed();
     let contacts = world.last_contact_count();
     report(
-        "world_fall_n",
+        name,
         elapsed,
         steps as u32,
         "ms/step",

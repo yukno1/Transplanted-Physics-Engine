@@ -8,6 +8,7 @@ description = "hknp world: World, WorldCinfo, collide-solve-integrate step pipel
 
 [dependencies]
 hk-math = { path = "../hk-math" }
+hk-thread = { path = "../hk-thread" }
 hknp-types = { path = "../hknp-types" }
 hknp-shape = { path = "../hknp-shape" }
 hknp-body = { path = "../hknp-body" }

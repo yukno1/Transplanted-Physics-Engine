@@ -1,14 +1,27 @@
 //! `hknpWorld` — world assembly and single-threaded step pipeline.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use hk_math::{Transform, Vector4};
 use hknp_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
 use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
+use hknp_shape::Shape;
 use hknp_solver::{ContactConstraint, Solver, SolverBody, SolverSettings};
 use hknp_types::{BodyId, CollisionFlags, MotionId, MotionType};
 
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
+
+/// Immutable narrow-phase candidate (body pair plus shape/transform copies).
+#[derive(Clone)]
+struct ContactCandidate {
+    body_a: BodyId,
+    body_b: BodyId,
+    shape_a: Arc<dyn Shape>,
+    transform_a: Transform,
+    shape_b: Arc<dyn Shape>,
+    transform_b: Transform,
+}
 
 /// Physics world (`hknpWorld`).
 ///
@@ -265,20 +278,33 @@ impl World {
         self.last_contact_count
     }
 
-    /// Advance the world by `delta_time`.
+    /// Advance the world by `delta_time` using one thread.
     ///
-    /// Single-threaded pipeline: gravity → broad phase → narrow phase →
-    /// sequential-impulse contact solve → semi-implicit Euler integration.
-    /// Collision pairs are sampled from the body AABBs cached at the end of the
-    /// previous step; bodies are then integrated and their AABBs refreshed for
-    /// the next step.
+    /// Shortcut for [`World::step_with_threads(delta_time, 1)`].
     pub fn step(&mut self, delta_time: f32) {
+        self.step_with_threads(delta_time, 1);
+    }
+
+    /// Advance the world by `delta_time`, parallelizing narrow-phase contact
+    /// generation over `threads` workers.
+    ///
+    /// The pipeline remains gravity → broad phase → narrow phase → solve →
+    /// integrate. Broad phase and the sequential-impulse solver are unchanged;
+    /// each broad-phase candidate is evaluated independently and the per-chunk
+    /// results are re-sorted by candidate index, so the contact/manifold order
+    /// (and therefore the solver impulse order) is identical to the
+    /// single-threaded path.
+    pub fn step_with_threads(&mut self, delta_time: f32, threads: usize) {
         debug_assert!(
             delta_time >= 0.0 && delta_time.is_finite(),
             "invalid step delta time"
         );
 
-        let contacts = self.collect_contacts();
+        let contacts = if threads > 1 {
+            self.collect_contacts_parallel(threads)
+        } else {
+            self.collect_contacts()
+        };
         self.last_manifold_count = contacts.len();
         self.last_contact_count = contacts
             .iter()
@@ -405,13 +431,55 @@ impl World {
     /// carrying `DONT_COLLIDE`. Narrow-phase generation is convex-only; shape
     /// pairs without a support function yield no manifold.
     pub fn collect_contacts(&self) -> Vec<ContactManifold> {
+        contacts_from_candidates(&self.contact_candidates(), self.cinfo.collision_tolerance)
+    }
+
+    /// Parallel narrow-phase variant of [`World::collect_contacts`].
+    ///
+    /// Work is partitioned into deterministic contiguous chunks with
+    /// `hk_thread::parallel_for_chunks`; chunk results are sorted back into
+    /// broad-phase pair order before returning.
+    pub fn collect_contacts_parallel(&self, threads: usize) -> Vec<ContactManifold> {
+        let candidates = self.contact_candidates();
+        // Spawning scoped workers per step costs more than a small narrow phase;
+        // below this threshold the sequential path is used.
+        const MIN_PARALLEL_CANDIDATES: usize = 32;
+        if candidates.len() < MIN_PARALLEL_CANDIDATES || threads <= 1 {
+            return contacts_from_candidates(&candidates, self.cinfo.collision_tolerance);
+        }
+
+        let results: Mutex<Vec<(usize, ContactManifold)>> = Mutex::new(Vec::new());
+        let tolerance = self.cinfo.collision_tolerance;
+        hk_thread::parallel::parallel_for_chunks(candidates.len(), threads, |start, end| {
+            let mut local = Vec::new();
+            for (index, candidate) in candidates.iter().enumerate().take(end).skip(start) {
+                if let Some(manifold) = collide_candidate(candidate, tolerance) {
+                    local.push((index, manifold));
+                }
+            }
+            if !local.is_empty() {
+                results
+                    .lock()
+                    .expect("parallel contact worker panicked")
+                    .extend(local);
+            }
+        });
+
+        let mut results = results
+            .into_inner()
+            .expect("parallel contact worker panicked");
+        results.sort_unstable_by_key(|(index, _)| *index);
+        results.into_iter().map(|(_, manifold)| manifold).collect()
+    }
+
+    fn contact_candidates(&self) -> Vec<ContactCandidate> {
         let entries: Vec<BodyAabb> = self
             .bodies
             .iter()
             .map(|body| BodyAabb::new(body.id, body.aabb))
             .collect();
         let pairs = self.broad_phase.find_pairs(&entries);
-        let mut contacts = Vec::new();
+        let mut candidates = Vec::new();
         for pair in pairs {
             let (Some(body_a), Some(body_b)) = (self.bodies.get(pair.a), self.bodies.get(pair.b))
             else {
@@ -425,21 +493,16 @@ impl World {
             {
                 continue;
             }
-            if let Some(manifold) = collide_with_tolerance(
-                body_a.shape.as_ref(),
-                &body_a.transform,
-                body_b.shape.as_ref(),
-                &body_b.transform,
-                self.cinfo.collision_tolerance,
-            ) {
-                contacts.push(ContactManifold {
-                    body_a: pair.a,
-                    body_b: pair.b,
-                    manifold,
-                });
-            }
+            candidates.push(ContactCandidate {
+                body_a: pair.a,
+                body_b: pair.b,
+                shape_a: Arc::clone(&body_a.shape),
+                transform_a: body_a.transform,
+                shape_b: Arc::clone(&body_b.shape),
+                transform_b: body_b.transform,
+            });
         }
-        contacts
+        candidates
     }
 
     /// Snapshot of world counters.
@@ -485,6 +548,31 @@ impl World {
     }
 }
 
+fn contacts_from_candidates(
+    candidates: &[ContactCandidate],
+    tolerance: f32,
+) -> Vec<ContactManifold> {
+    candidates
+        .iter()
+        .filter_map(|candidate| collide_candidate(candidate, tolerance))
+        .collect()
+}
+
+fn collide_candidate(candidate: &ContactCandidate, tolerance: f32) -> Option<ContactManifold> {
+    collide_with_tolerance(
+        candidate.shape_a.as_ref(),
+        &candidate.transform_a,
+        candidate.shape_b.as_ref(),
+        &candidate.transform_b,
+        tolerance,
+    )
+    .map(|manifold| ContactManifold {
+        body_a: candidate.body_a,
+        body_b: candidate.body_b,
+        manifold,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -500,6 +588,23 @@ mod tests {
 
     fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
         Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
+    }
+
+    fn parallel_scene() -> World {
+        let mut world = World::new(WorldCinfo::new());
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(1.0, 0.5, 0.0)));
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(-1.0, 0.5, 0.0)),
+        );
+        world
     }
 
     fn dynamic_cinfo(radius: f32) -> BodyCinfo {
@@ -733,5 +838,40 @@ mod tests {
                 last_contact_count: 0,
             }
         );
+    }
+
+    #[test]
+    fn parallel_contact_collection_matches_single_threaded() {
+        let world = parallel_scene();
+        let single = world.collect_contacts();
+        assert!(!single.is_empty(), "scene must generate contacts");
+        for threads in [1, 2, 4, 8] {
+            assert_eq!(
+                world.collect_contacts_parallel(threads),
+                single,
+                "parallel narrow phase differs at {threads} threads"
+            );
+        }
+    }
+
+    #[test]
+    fn step_with_threads_matches_single_threaded() {
+        let mut single = parallel_scene();
+        let mut parallel = parallel_scene();
+        for step in 0..120 {
+            single.step(1.0 / 60.0);
+            parallel.step_with_threads(1.0 / 60.0, 4);
+            assert_eq!(
+                single.last_manifold_count(),
+                parallel.last_manifold_count(),
+                "manifold count differs at step {step}"
+            );
+            assert_eq!(
+                single.last_contact_count(),
+                parallel.last_contact_count(),
+                "contact count differs at step {step}"
+            );
+        }
+        assert_eq!(single.snapshot(), parallel.snapshot());
     }
 }

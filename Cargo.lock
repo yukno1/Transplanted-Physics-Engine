@@ -43,10 +43,6 @@ version = "0.1.0"
 [[package]]
 name = "hk-serialize"
 version = "0.1.0"
-dependencies = [
- "hk-math",
- "hk-types",
-]
 
 [[package]]
 name = "hk-thread"
@@ -79,7 +75,6 @@ name = "hknp-extensions"
 version = "0.1.0"
 dependencies = [
  "hk-math",
- "hk-types",
  "hknp-types",
  "hknp-world",
 ]
@@ -108,6 +103,7 @@ name = "hknp-world"
 version = "0.1.0"
 dependencies = [
  "hk-math",
+ "hk-thread",
  "hknp-body",
  "hknp-collide",
  "hknp-shape",

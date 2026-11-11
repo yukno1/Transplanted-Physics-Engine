@@ -103,14 +103,14 @@ havok/                             # 本仓库根目录
 | `hk-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `hk-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `hk-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
-| `hk-serialize` | [P1] hkx tagfile / packfile | 🚧 骨架（P1 未启动） |
+| `hk-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
 | `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `hknp-collide` | 宽相/窄相/Manifold | ✅ 已实现（Phase 7） |
 | `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `hknp-solver` | 迭代式接触求解器（SolverBody/ContactConstraint） | ✅ 已实现（Phase 8） |
 | `hknp-world` | hknpWorld 组装 + collide→solve→integrate 单线程管线 | ✅ 已实现（Phase 8） |
-| `hknp-extensions` | [P1] Ragdoll/Vehicle/Character | 🚧 骨架（P1 未启动） |
+| `hknp-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `havok` | 门面 crate，重导出公共 API | 🚧 骨架（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -196,7 +196,7 @@ havok/                             # 本仓库根目录
 - **未引入 `rayon`**：实施时 crates.io 不可达（SSL 错误），且工作区保持零依赖；改用 `std::thread` 自建池。后续可通过同一 `ThreadPool`/`parallel_for` API 替换后端
 - **确定性优先**：顺序执行固定按 priority→id；并行执行只在拓扑层内并发、层间 barrier，层内任务不得有共享写（与 SDK 多线程任务队列的约束一致）
 - 未移植：`hkThread` 优先级/亲和性、`hkJobQueue` 工作窃取与任务类型队列、`hkSemaphore`/`ReadersWriterLock`/`hkCriticalSection`、`hkReferencedTask`/多样性/图合并
-- `hknpMultithreadedSimulation` 与物理 `hknpTaskGraph` 仍留 Phase 10；Phase 6/8 的 `hknpSimulation` 先走单线程路径
+- `hknpMultithreadedSimulation` 与物理 `hknpTaskGraph`：Phase 10 已交付并行窄相子集（`step_with_threads`），完整任务图/求解器调度仍待
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 5：`hknp-types` + `hknp-shape`（✅ 已完成，2026-11-10）
@@ -279,10 +279,21 @@ havok/                             # 本仓库根目录
 
 黄金基准状态：`../original` 是源码分发，没有生成好的 `.sln`/Physics 测试可执行文件，完整构建依赖原版 MSBuild 工具链，当前环境无法运行 C++ 场景。因此**不宣称 C++ 逐位对齐**；已实现 Rust 侧逐位确定性与 trace 格式，待原版 SDK 可构建后按矩阵 §5 执行对比。criterion 因 crates.io 不可达改用自研 harness。
 
-### Phase 10：多线程 + 序列化 + 扩展（后续迭代）
-- `hknpMultithreadedSimulation`：任务图并行化
-- `hk-serialize`：hkx tagfile 解析
-- `hknp-extensions`：Ragdoll → Vehicle → CharacterControl
+### Phase 10：多线程 + 序列化 + 扩展（🚧 部分完成，2026-11-11）
+已交付子集：
+
+- **多线程窄相**（`hknp-world`）：新增 `World::collect_contacts_parallel(threads)` 与 `World::step_with_threads(dt, threads)`；使用 `hk_thread::parallel_for_chunks` 做确定性连续分块，chunk 结果按宽相 pair 索引回排，因此接触顺序与单线程完全一致。求解器与积分仍为串行；候选数 <32 时回退单线程（避免每步创建线程的开销）。新增测试：并行接触结果 == 单线程、双 world 120 步逐位一致（`hknp-world` 15 个单元测试）。
+- **`hk-serialize` 容器层**：HFF 结构化流解析（branch/leaf、30 位 size、FourCC、错误）与 Tagfile 容器（`TAG0`/`TCM0` 根、`SDKV` 版本、`DATA`/`TYPE`/`INDX` 访问），10 个单元测试。仅容器解析，不做反射对象重建。
+- **`hknp-extensions` WorldHash**：对 `WorldSnapshot` 做 FNV-1a 64 位确定性哈希（浮点按 `to_bits`），5 个单元测试。
+- 基准新增 `world_fall_n_parallel` 场景（同一 step 管线，4 线程窄相）。
+
+未完成/阻塞项：
+
+- **完整 `hknpMultithreadedSimulation`**：任务图/求解器/积分并行、work stealing、`hknpTaskGraph` 物理调度未移植；当前只并行窄相，且每步重建 scoped worker（小场景并行反而更慢，见 bench）。
+- **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`hk-serialize` 不能替代资产加载。
+- **Ragdoll / Vehicle / CharacterControl**：依赖约束/joint 系统、shape cast/射线查询、碰撞过滤与 action 调度，均未移植。
+- 大世界 `hkPreciseTransform`（double 平移）仍待（当前 f32 Transform）。
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标。
 
 ---
 
@@ -304,6 +315,7 @@ havok/                             # 本仓库根目录
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
 | 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、单切向摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
+| 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -358,11 +370,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 7：`hknp-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
 - [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
 - [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
-- [ ] Phase 10：多线程 + 序列化 + 扩展（下一步）
+- [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
+- [ ] 后续：约束/joint 与查询系统 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
 仓库现状（2026-11-11）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `6537020 hknp-solver & hknp-world`；Phase 9 的 `docs/`、`crates/havok/tests|benches` 与 `hknp-world` 快照改动尚未提交
+- git：最新提交 `927b8fd havok/tests & havok/benches & hknp-world`；Phase 10 改动（`hk-serialize`/`hknp-extensions`/并行窄相/bench/README）尚未提交
 - 外部依赖：0
 
