@@ -19,3 +19,7 @@ hknp-collide = { path = "../hknp-collide" }
 hknp-body = { path = "../hknp-body" }
 hknp-solver = { path = "../hknp-solver" }
 hknp-world = { path = "../hknp-world" }
+
+[[bench]]
+name = "simulation"
+harness = false

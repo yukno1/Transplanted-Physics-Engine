@@ -8,7 +8,7 @@ use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_toleranc
 use hknp_solver::{ContactConstraint, Solver, SolverBody, SolverSettings};
 use hknp_types::{BodyId, CollisionFlags, MotionId, MotionType};
 
-use crate::{ContactManifold, WorldCinfo, WorldStats};
+use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Physics world (`hknpWorld`).
 ///
@@ -450,6 +450,37 @@ impl World {
             step_count: self.step_count,
             last_manifold_count: self.last_manifold_count,
             last_contact_count: self.last_contact_count,
+        }
+    }
+
+    /// Capture a deterministic snapshot of all bodies in slot order.
+    ///
+    /// This is the Rust-side input for `hvk-trace v1` golden traces and for
+    /// bitwise determinism checks.
+    pub fn snapshot(&self) -> WorldSnapshot {
+        let bodies = self
+            .bodies
+            .iter()
+            .map(|body| {
+                let motion = self.motions.get(body.motion_id);
+                BodySnapshot {
+                    body: body.id,
+                    position: body.transform.translation,
+                    orientation: motion
+                        .map(|motion| motion.orientation)
+                        .unwrap_or_else(|| body.transform.rotation_quaternion()),
+                    linear_velocity: motion
+                        .map(|motion| motion.linear_velocity)
+                        .unwrap_or(Vector4::ZERO),
+                    angular_velocity: motion
+                        .map(|motion| motion.angular_velocity)
+                        .unwrap_or(Vector4::ZERO),
+                }
+            })
+            .collect();
+        WorldSnapshot {
+            step_count: self.step_count,
+            bodies,
         }
     }
 }

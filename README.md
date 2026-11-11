@@ -265,10 +265,19 @@ havok/                             # 本仓库根目录
 - `step` 的宽相使用上一步缓存的 AABB，积分后刷新；确定性依赖 body slot 顺序、宽相 `(a,b)` 顺序与求解器插入顺序
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 9：测试与验证（持续）
-- 移植 `Physics/Test/UnitTest/`（41 个测试）
-- 黄金基准：原 C++ 版跑场景记录每步 body transform，Rust 版逐位对比
-- 性能 benchmark：`criterion`
+### Phase 9：测试与验证（✅ Rust 侧完成；C++ 黄金基准外部阻塞，2026-11-11）
+交付：
+
+- **测试矩阵**：[docs/phase9-test-matrix.md](docs/phase9-test-matrix.md)——41 个原版 UnitTest 的逐项映射（6 个 Ported、3 个 Partial、32 个 Blocked 并注明前置系统），以及 S1–S12 场景矩阵、基准矩阵与验收标准
+- **新增集成测试 19 个**（`crates/havok/tests/`）：
+  - `simulation_scenarios.rs`（10）：自由落体解析解、球/盒堆叠/胶囊/圆柱落地、摩擦滑动、流形约定、宽相确定性、DONT_COLLIDE、transform/orientation
+  - `original_unit_tests.rs`（6）：`NpBodyAllocationTest`、`NpBoxShapeUnitTest`、`NpBoundingSphereTest`、`NpMeshShapeUnitTest`（结构）、`NpHeightFieldShapeUnitTest`（结构）、`NpManyBodiesTest`
+  - `determinism.rs`（3）：同场景两次运行逐位一致（`f32::to_bits`）、`hvk-trace v1` 文本稳定、`NpWorldSnapshotTest` 部分映射
+- **确定性快照**：`hknp-world` 新增 `World::snapshot()` / `WorldSnapshot` / `BodySnapshot` 与 `to_text()`，浮点用 `to_bits()` 输出，格式 `hvk-trace v1`
+- **基准 harness**：`crates/havok/benches/simulation.rs`（`harness = false`，仅 `std::time`，无 criterion）；覆盖宽相、GJK 球/盒、窄相盒对、求解器、`world_fall_n`、`world_stack_10`
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标
+
+黄金基准状态：`../original` 是源码分发，没有生成好的 `.sln`/Physics 测试可执行文件，完整构建依赖原版 MSBuild 工具链，当前环境无法运行 C++ 场景。因此**不宣称 C++ 逐位对齐**；已实现 Rust 侧逐位确定性与 trace 格式，待原版 SDK 可构建后按矩阵 §5 执行对比。criterion 因 crates.io 不可达改用自研 harness。
 
 ### Phase 10：多线程 + 序列化 + 扩展（后续迭代）
 - `hknpMultithreadedSimulation`：任务图并行化
@@ -294,6 +303,7 @@ havok/                             # 本仓库根目录
 | Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
 | 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、单切向摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
+| 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -317,6 +327,9 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo build --workspace --release
+
+# Phase 9 benchmark（无外部依赖；--quick 为小规模冒烟）
+cargo bench -p havok --bench simulation -- --quick
 
 # 文档链接检查（可选）
 $env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps
@@ -344,12 +357,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 6：`hknp-body` + `hknp-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
 - [x] Phase 7：`hknp-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
 - [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
-- [ ] Phase 9：测试与验证（下一步）
-- [ ] Phase 10：多线程 + 序列化 + 扩展
+- [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
+- [ ] Phase 10：多线程 + 序列化 + 扩展（下一步）
 
-仓库现状（2026-11-10）：
+仓库现状（2026-11-11）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `45c092a hknp-collide`；`hknp-solver` / `hknp-world` 的 Phase 8 源码尚未提交
+- git：最新提交 `6537020 hknp-solver & hknp-world`；Phase 9 的 `docs/`、`crates/havok/tests|benches` 与 `hknp-world` 快照改动尚未提交
 - 外部依赖：0
 

@@ -42,6 +42,7 @@
 //! `hknpWorldReader`/`hknpWorldWriter` traits, body attachment and motion
 //! sharing.
 
+use hk_math::{Quaternion, Vector4};
 use hknp_collide::Manifold;
 use hknp_types::BodyId;
 
@@ -50,6 +51,68 @@ pub mod world;
 
 pub use cinfo::WorldCinfo;
 pub use world::World;
+
+/// Deterministic per-body state captured by [`World::snapshot`].
+///
+/// Bodies are listed in body-manager slot order. The orientation is taken from
+/// the motion when available, otherwise from the cached body transform.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodySnapshot {
+    /// Body identifier.
+    pub body: BodyId,
+    /// World position (body transform translation).
+    pub position: Vector4,
+    /// World orientation.
+    pub orientation: Quaternion,
+    /// World linear velocity.
+    pub linear_velocity: Vector4,
+    /// World angular velocity.
+    pub angular_velocity: Vector4,
+}
+
+/// Debug snapshot of a world, used for determinism checks and golden traces.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldSnapshot {
+    /// Number of completed steps.
+    pub step_count: u64,
+    /// Body states in slot order.
+    pub bodies: Vec<BodySnapshot>,
+}
+
+impl WorldSnapshot {
+    /// Render the snapshot in `hvk-trace v1` format.
+    ///
+    /// Floats are written as raw `f32::to_bits()` hex to make text traces
+    /// bit-exact and independent of `Display` formatting.
+    pub fn to_text(&self) -> String {
+        use std::fmt::Write as _;
+
+        let mut output = String::from("# hvk-trace v1\n");
+        writeln!(output, "step {}", self.step_count).expect("writing to a String cannot fail");
+        for body in &self.bodies {
+            writeln!(
+                output,
+                "body {:016x} p {:08x} {:08x} {:08x} q {:08x} {:08x} {:08x} {:08x} v {:08x} {:08x} {:08x} w {:08x} {:08x} {:08x}",
+                body.body.value(),
+                body.position.x.to_bits(),
+                body.position.y.to_bits(),
+                body.position.z.to_bits(),
+                body.orientation.x.to_bits(),
+                body.orientation.y.to_bits(),
+                body.orientation.z.to_bits(),
+                body.orientation.w.to_bits(),
+                body.linear_velocity.x.to_bits(),
+                body.linear_velocity.y.to_bits(),
+                body.linear_velocity.z.to_bits(),
+                body.angular_velocity.x.to_bits(),
+                body.angular_velocity.y.to_bits(),
+                body.angular_velocity.z.to_bits(),
+            )
+            .expect("writing to a String cannot fail");
+        }
+        output
+    }
+}
 
 /// One body pair with a generated contact manifold.
 #[derive(Clone, Debug, PartialEq)]
