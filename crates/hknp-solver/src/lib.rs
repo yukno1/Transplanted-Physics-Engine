@@ -20,6 +20,10 @@
 //! body-slot order and contacts in broad-phase pair order, so a given scene
 //! produces the same impulse sequence every step.
 
+pub mod constraint;
 pub mod solver;
 
+pub use constraint::{
+    BallAndSocketJoint, FixedJoint, HingeJoint, JointConstraint, JointSolverStats,
+};
 pub use solver::{ContactConstraint, Solver, SolverBody, SolverSettings, SolverStats};

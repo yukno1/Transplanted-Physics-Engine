@@ -286,12 +286,21 @@ havok/                             # 本仓库根目录
 - **`hk-serialize` 容器层**：HFF 结构化流解析（branch/leaf、30 位 size、FourCC、错误）与 Tagfile 容器（`TAG0`/`TCM0` 根、`SDKV` 版本、`DATA`/`TYPE`/`INDX` 访问），10 个单元测试。仅容器解析，不做反射对象重建。
 - **`hknp-extensions` WorldHash**：对 `WorldSnapshot` 做 FNV-1a 64 位确定性哈希（浮点按 `to_bits`），5 个单元测试。
 - 基准新增 `world_fall_n_parallel` 场景（同一 step 管线，4 线程窄相）。
+- **约束/joint 系统**（2026-11-12，Phase 10 后续子集）：
+  - `hknp-types`：新增 `ConstraintIndex`（u32，invalid `HK_INT32_MAX`）与 `ConstraintId`（u64，MSB 区分内部索引/用户 ID，语义照抄 `hknpConstraintId.h`）。
+  - `hknp-solver`：新增 `constraint.rs`——世界空间 solver 级 joint（`BallAndSocketJoint` / `HingeJoint` / `FixedJoint`），顺序脉冲求解：线性 3 轴拉拢 pivot（分离量 Baumgarte bias）、铰链轴对齐（垂直轴角速度 + 轴误差 bias）、固定关节锁相对角速度（世界 X/Y/Z 轴 + 朝向误差 bias）。joint 在 slice 顺序、固定轴序下求解，确定性。新增 14 个单元测试。
+  - `hknp-world`：新增 `constraint.rs`——`BallAndSocketCinfo` / `HingeCinfo` / `FixedCinfo`（pivot/axis 存 body 局部空间；`FixedCinfo::between_bodies` 按当前位姿绑定）+ `WorldJoint` 槽表（**槽不复用**，ID 永不重指）与 `create_*_constraint` / `destroy_constraint` / `set_constraint_enabled` API；`step` 在接触求解后按槽序构建 solver joints 并求解；`destroy_body` 级联删除关联约束。新增 6 个约束单元测试。
+  - 局限：速度级求解（无位置修正投影）、无 limits/motors/springs、无约束岛与 warm starting；球的 inverse inertia 默认 0，摆动类场景需手动设置 `motion.inverse_inertia`。
+- **查询系统**（2026-11-12，Phase 10 后续子集）：
+  - `hknp-collide`：新增 `query.rs`——凸体 raycast（**conservative advancement**：GJK 点-形状距离除以射线与法线夹角推进，sphere/box/capsule/cylinder/hull 单一实现路径；射线起点在内部按 fraction 0 命中）、`point_distance`（点-形状 GJK 距离，供最近点查询）、`ray_aabb` slab 粗测（固定 x/y/z 轴序）。新增 10 个单元测试。
+  - `hknp-world`：新增 `query.rs`——`World::raycast`（最近命中，槽序遍历 + AABB 粗测 + 同 fraction 低 `BodyId` 优先，确定性）与 `World::closest_point`（凸体最近表面点/距离，内部点返回 distance 0）、`World::body_transform`。查询不受碰撞过滤影响（与 SDK 一致）；非凸形状（Mesh/Compound/HeightField）暂不参与。
+  - 新增集成测试 `crates/havok/tests/constraints_and_queries.rs`（9 个）。
 
 未完成/阻塞项：
 
 - **完整 `hknpMultithreadedSimulation`**：任务图/求解器/积分并行、work stealing、`hknpTaskGraph` 物理调度未移植；当前只并行窄相，且每步重建 scoped worker（小场景并行反而更慢，见 bench）。
 - **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`hk-serialize` 不能替代资产加载。
-- **Ragdoll / Vehicle / CharacterControl**：依赖约束/joint 系统、shape cast/射线查询、碰撞过滤与 action 调度，均未移植。
+- **Ragdoll / Vehicle / CharacterControl**：前置的约束/joint 系统与射线查询已交付（见上）；仍缺 limits/motors、shape cast（非 raycast）、碰撞过滤、action 调度、多体约束岛。均未移植。
 - 大世界 `hkPreciseTransform`（double 平移）仍待（当前 f32 Transform）。
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标。
 
@@ -371,11 +380,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
 - [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
 - [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
-- [ ] 后续：约束/joint 与查询系统 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）与查询系统（world raycast / closest point）完成
+- [ ] 后续：约束 limits/motors、shape cast 与 AABB cast 查询、碰撞过滤 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
-仓库现状（2026-11-11）：
+仓库现状（2026-11-12）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `927b8fd havok/tests & havok/benches & hknp-world`；Phase 10 改动（`hk-serialize`/`hknp-extensions`/并行窄相/bench/README）尚未提交
+- git：最新提交 `927b8fd havok/tests & havok/benches & hknp-world`；Phase 10 及后续改动（`hk-serialize`/`hknp-extensions`/并行窄相/约束与查询/bench/README）尚未提交
 - 外部依赖：0
 

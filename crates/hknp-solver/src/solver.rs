@@ -310,7 +310,7 @@ fn effective_mass(
         + angular_mass(body_b, direction, point)
 }
 
-fn angular_mass(body: &SolverBody, direction: Vector4, point: Vector4) -> f32 {
+pub(crate) fn angular_mass(body: &SolverBody, direction: Vector4, point: Vector4) -> f32 {
     if body.inverse_inertia == Vector4::ZERO {
         return 0.0;
     }

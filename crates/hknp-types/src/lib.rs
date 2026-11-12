@@ -37,9 +37,9 @@ pub use body::{BodyId, BodyIndex};
 pub use enums::{CollisionDispatchType, MotionType, ShapeType};
 pub use flags::{CollisionFlags, ShapeFlags, WorldAddedState};
 pub use handles::{
-    BodyQualityId, ConnectivityEdgeId, ConnectivityNodeId, ConstraintSolverId,
-    ImmediateConstraintId, MaterialId, MaterialPaletteEntryId, MotionId, MotionPropertiesId,
-    ShapeKey, SolverId,
+    BodyQualityId, ConnectivityEdgeId, ConnectivityNodeId, ConstraintId, ConstraintIndex,
+    ConstraintSolverId, ImmediateConstraintId, MaterialId, MaterialPaletteEntryId, MotionId,
+    MotionPropertiesId, ShapeKey, SolverId,
 };
 
 #[cfg(test)]

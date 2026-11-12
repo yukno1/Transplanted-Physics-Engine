@@ -38,6 +38,7 @@ pub mod broadphase;
 pub mod gjk;
 pub mod manifold;
 pub mod narrowphase;
+pub mod query;
 
 pub(crate) mod epa;
 pub(crate) mod support;
@@ -46,3 +47,4 @@ pub use broadphase::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
 pub use gjk::{GjkResult, closest_points, intersects};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{collide, collide_with_tolerance};
+pub use query::{RayHit, point_distance, ray_aabb, raycast};

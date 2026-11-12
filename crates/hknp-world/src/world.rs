@@ -3,13 +3,17 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use hk_math::{Transform, Vector4};
+use hk_math::{Quaternion, Transform, Vector4};
 use hknp_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
 use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
 use hknp_shape::Shape;
-use hknp_solver::{ContactConstraint, Solver, SolverBody, SolverSettings};
-use hknp_types::{BodyId, CollisionFlags, MotionId, MotionType};
+use hknp_solver::{
+    BallAndSocketJoint, ContactConstraint, FixedJoint, HingeJoint, JointConstraint, Solver,
+    SolverBody, SolverSettings,
+};
+use hknp_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
+use crate::constraint::{BallAndSocketCinfo, FixedCinfo, HingeCinfo, JointSlot, WorldJoint};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
@@ -25,9 +29,10 @@ struct ContactCandidate {
 
 /// Physics world (`hknpWorld`).
 ///
-/// Owns body/motion managers, the broad phase and the contact solver. Phase 8
-/// [`World::step`] runs collide → solve → integrate over convex shapes using a
-/// deterministic single-threaded pipeline.
+/// Owns body/motion managers, the broad phase, joint constraints and the
+/// contact solver. [`World::step`] runs collide → solve (contacts + joints) →
+/// integrate over convex shapes using a deterministic single-threaded
+/// pipeline.
 #[derive(Debug)]
 pub struct World {
     cinfo: WorldCinfo,
@@ -35,6 +40,8 @@ pub struct World {
     bodies: BodyManager,
     motions: MotionManager,
     broad_phase: BroadPhase,
+    joints: Vec<Option<JointSlot>>,
+    joint_count: usize,
     solver: Solver,
     step_count: u64,
     last_delta_time: f32,
@@ -54,6 +61,8 @@ impl World {
             bodies: BodyManager::with_capacity(cinfo.body_buffer_capacity),
             motions: MotionManager::with_capacity(cinfo.motion_buffer_capacity),
             broad_phase: BroadPhase::new(BroadPhaseConfig::default()),
+            joints: Vec::new(),
+            joint_count: 0,
             solver: Solver::new(solver_settings),
             cinfo,
             gravity,
@@ -169,7 +178,8 @@ impl World {
     /// Destroy a body and its motion (`destroyBodies`).
     ///
     /// Motion sharing (`allocateAttachedBody`) is not ported yet, so a non-static
-    /// body owns its motion and the motion slot is released here.
+    /// body owns its motion and the motion slot is released here. Joint
+    /// constraints referencing the body are destroyed with it.
     pub fn destroy_body(&mut self, body_id: BodyId) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
             return false;
@@ -178,7 +188,164 @@ impl World {
         if motion_id != MotionId::PRESET_STATIC {
             self.motions.destroy(motion_id);
         }
-        self.bodies.destroy(body_id)
+        let destroyed = self.bodies.destroy(body_id);
+        if destroyed {
+            self.remove_joints_of(body_id);
+        }
+        destroyed
+    }
+
+    /// Add a ball-and-socket joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_ball_socket_constraint(&mut self, info: &BallAndSocketCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::BallAndSocket(*info))
+    }
+
+    /// Add a hinge joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_hinge_constraint(&mut self, info: &HingeCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Hinge(*info))
+    }
+
+    /// Add a fixed joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_fixed_constraint(&mut self, info: &FixedCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Fixed(*info))
+    }
+
+    /// Destroy a joint constraint (`removeConstraint`).
+    ///
+    /// Slots are never reused, so the ID cannot alias a later constraint.
+    pub fn destroy_constraint(&mut self, id: ConstraintId) -> bool {
+        if !id.is_valid() || !id.is_constraint_index() {
+            return false;
+        }
+        let slot = id.as_constraint_index().value() as usize;
+        if slot >= self.joints.len() || self.joints[slot].is_none() {
+            return false;
+        }
+        self.joints[slot] = None;
+        self.joint_count -= 1;
+        true
+    }
+
+    /// Resolve a joint constraint (`getConstraint`).
+    pub fn constraint(&self, id: ConstraintId) -> Option<&WorldJoint> {
+        if !id.is_valid() || !id.is_constraint_index() {
+            return None;
+        }
+        let slot = id.as_constraint_index().value() as usize;
+        self.joints.get(slot)?.as_ref().map(|slot| &slot.joint)
+    }
+
+    /// Number of live joint constraints.
+    pub fn constraint_count(&self) -> usize {
+        self.joint_count
+    }
+
+    /// Enable or disable a joint constraint; disabled joints are skipped by
+    /// the solver but keep their ID.
+    pub fn set_constraint_enabled(&mut self, id: ConstraintId, enabled: bool) -> bool {
+        if !id.is_valid() || !id.is_constraint_index() {
+            return false;
+        }
+        let slot = id.as_constraint_index().value() as usize;
+        match self.joints.get_mut(slot) {
+            Some(Some(slot)) => {
+                slot.enabled = enabled;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn push_joint(&mut self, joint: WorldJoint) -> ConstraintId {
+        let (body_a, body_b) = joint.bodies();
+        if self.bodies.get(body_a).is_none() || self.bodies.get(body_b).is_none() {
+            return ConstraintId::INVALID;
+        }
+        let slot = self.joints.len();
+        self.joints.push(Some(JointSlot {
+            joint,
+            enabled: true,
+        }));
+        self.joint_count += 1;
+        crate::constraint::constraint_id(slot)
+    }
+
+    fn remove_joints_of(&mut self, body_id: BodyId) {
+        for slot in self.joints.iter_mut() {
+            let Some(joint_slot) = slot.as_ref() else {
+                continue;
+            };
+            let (body_a, body_b) = joint_slot.joint.bodies();
+            if body_a == body_id || body_b == body_id {
+                // Slots are never reused; drop the joint with its body.
+                *slot = None;
+            }
+        }
+        self.joint_count = self.joints.iter().filter(|slot| slot.is_some()).count();
+    }
+
+    /// Transform the stored local-space joints into solver joints for the
+    /// current body poses, in slot order.
+    fn build_solver_joints(&self, index_map: &HashMap<BodyId, usize>) -> Vec<JointConstraint> {
+        let mut result = Vec::new();
+        for slot in self.joints.iter().flatten() {
+            if !slot.enabled {
+                continue;
+            }
+            let (body_a, body_b) = slot.joint.bodies();
+            let (Some(&index_a), Some(&index_b)) = (index_map.get(&body_a), index_map.get(&body_b))
+            else {
+                continue;
+            };
+            let (Some(body_a), Some(body_b)) = (self.bodies.get(body_a), self.bodies.get(body_b))
+            else {
+                continue;
+            };
+            let transform_a = body_a.transform;
+            let transform_b = body_b.transform;
+            match slot.joint {
+                WorldJoint::BallAndSocket(info) => {
+                    result.push(JointConstraint::BallAndSocket(BallAndSocketJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                    }));
+                }
+                WorldJoint::Hinge(info) => {
+                    result.push(JointConstraint::Hinge(HingeJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                        axis_a: transform_a.rotation.rotate(info.axis_a),
+                        axis_b: transform_b.rotation.rotate(info.axis_b),
+                    }));
+                }
+                WorldJoint::Fixed(info) => {
+                    let q_a = transform_a.rotation_quaternion();
+                    let q_b = transform_b.rotation_quaternion();
+                    // Rotation of B in A's frame, and the error rotation that
+                    // applied to A would restore the bound orientation.
+                    let relative = q_a.inverse_mul(q_b);
+                    let error = relative.mul_inverse(info.relative_orientation);
+                    result.push(JointConstraint::Fixed(FixedJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                        orientation_error: orientation_error_vector(error),
+                    }));
+                }
+            }
+        }
+        result
     }
 
     /// Set a body transform (and its motion transform for non-static bodies).
@@ -388,6 +555,13 @@ impl World {
         self.solver
             .solve(&mut solver_bodies, &constraints, delta_time);
 
+        // Solve joint constraints on top of the contact-solved velocities.
+        let solver_joints = self.build_solver_joints(&index_map);
+        if !solver_joints.is_empty() {
+            self.solver
+                .solve_joints(&mut solver_bodies, &solver_joints, delta_time);
+        }
+
         // Write solved velocities back to dynamic motions.
         for (index, body_id) in body_ids.iter().enumerate() {
             let Some(body) = self.bodies.get(*body_id) else {
@@ -556,6 +730,18 @@ fn contacts_from_candidates(
         .iter()
         .filter_map(|candidate| collide_candidate(candidate, tolerance))
         .collect()
+}
+
+/// World-space axis-angle rotation-error vector of a quaternion: rotating a
+/// body by this vector restores the bound orientation. Zero when aligned.
+fn orientation_error_vector(error: Quaternion) -> Vector4 {
+    let imag = error.imag();
+    let sin_half = imag.length3();
+    if sin_half <= 1e-8 {
+        return Vector4::ZERO;
+    }
+    let axis = Vector4::from_xyz(imag.x / sin_half, imag.y / sin_half, imag.z / sin_half);
+    axis * error.angle()
 }
 
 fn collide_candidate(candidate: &ContactCandidate, tolerance: f32) -> Option<ContactManifold> {
@@ -873,5 +1059,180 @@ mod tests {
             );
         }
         assert_eq!(single.snapshot(), parallel.snapshot());
+    }
+
+    // Joint constraint tests.
+
+    #[test]
+    fn ball_socket_pendulum_hangs_under_gravity() {
+        let mut world = World::new(WorldCinfo::new().with_solver_settings(0.2, 0.0, 16));
+        let anchor = Vector4::from_xyz(0.0, 10.0, 0.0);
+        let anchor_body =
+            world.create_body(&BodyCinfo::new(sphere_shape(0.1)).with_position(anchor));
+        let bob = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(anchor + Vector4::from_xyz(2.0, 0.0, 0.0)),
+        );
+        // Spheres carry no inverse inertia by default (Phase 8 decision); give
+        // the bob rotational response so the pendulum can swing.
+        let bob_motion = world.body(bob).unwrap().motion_id;
+        world.motion_mut(bob_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            anchor_body,
+            bob,
+            Vector4::UNIT_X,
+            -Vector4::UNIT_X,
+        ));
+        assert!(id.is_valid());
+        assert_eq!(world.constraint_count(), 1);
+
+        // The joint is frictionless, so the pendulum keeps swinging; the test
+        // verifies the constraint holds the world pivots coincident and that
+        // the bob swings below the anchor.
+        let pivot_a_world = anchor + Vector4::UNIT_X;
+        let mut max_pivot_error = 0.0f32;
+        let mut min_height_below_anchor = 0.0f32;
+        for _ in 0..240 {
+            world.step(1.0 / 60.0);
+            let pivot_b_world = world
+                .body_transform(bob)
+                .unwrap()
+                .transform_point(-Vector4::UNIT_X);
+            max_pivot_error = max_pivot_error.max((pivot_b_world - pivot_a_world).length3());
+            let delta = world.body_position(bob).unwrap() - anchor;
+            min_height_below_anchor = min_height_below_anchor.min(delta.y);
+        }
+        assert!(
+            max_pivot_error < 0.4,
+            "pivots drifted apart by {}",
+            max_pivot_error
+        );
+        assert!(
+            min_height_below_anchor < -0.8,
+            "bob never swung below the anchor (min dy {})",
+            min_height_below_anchor
+        );
+    }
+
+    #[test]
+    fn invalid_bodies_reject_constraints() {
+        let mut world = World::new(WorldCinfo::new());
+        let body = world.create_body(&dynamic_cinfo(0.5));
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            BodyId::invalid(),
+            body,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        assert_eq!(id, ConstraintId::INVALID);
+        assert_eq!(world.constraint_count(), 0);
+    }
+
+    #[test]
+    fn destroy_constraint_and_body_cleanup() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let a = world.create_body(&dynamic_cinfo(0.5));
+        let b = world.create_body(&dynamic_cinfo(0.5));
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        assert!(id.is_valid());
+        assert!(world.set_constraint_enabled(id, false));
+        assert!(world.set_constraint_enabled(id, true));
+        assert!(world.constraint(id).is_some());
+
+        assert!(world.destroy_constraint(id));
+        assert!(!world.destroy_constraint(id), "double destroy fails");
+        assert!(world.constraint(id).is_none());
+        assert_eq!(world.constraint_count(), 0);
+
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        assert!(id.is_valid());
+        assert!(world.destroy_body(b));
+        assert!(world.constraint(id).is_none(), "joint dies with its body");
+        assert_eq!(world.constraint_count(), 0);
+    }
+
+    #[test]
+    fn fixed_joint_rigid_pair_moves_together() {
+        let mut world = World::new(WorldCinfo::new());
+        let a = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+        );
+        let b = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(2.0, 5.0, 0.0)),
+        );
+        world.create_fixed_constraint(&FixedCinfo::between_bodies(
+            a,
+            b,
+            Vector4::from_xyz(1.0, 5.0, 0.0),
+            &world.body_transform(a).unwrap(),
+            &world.body_transform(b).unwrap(),
+        ));
+
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+
+        let position_a = world.body_position(a).unwrap();
+        let position_b = world.body_position(b).unwrap();
+        let separation = (position_b - position_a).length3();
+        assert!(
+            (separation - 2.0).abs() < 0.3,
+            "fixed pair separation {}",
+            separation
+        );
+        // Both fall together under gravity.
+        assert!(position_a.y < 5.0 - 1.0);
+    }
+
+    #[test]
+    fn hinge_joint_spins_about_the_axis() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let hub =
+            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::ZERO));
+        let arm = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+        );
+        let arm_motion = world.body(arm).unwrap().motion_id;
+        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        // Hinge about Z at the hub center: the arm can only rotate in-plane.
+        world.create_hinge_constraint(&HingeCinfo::new(
+            hub,
+            arm,
+            Vector4::UNIT_X,
+            -Vector4::UNIT_X,
+            Vector4::UNIT_Z,
+            Vector4::UNIT_Z,
+        ));
+        world.set_body_angular_velocity(arm, Vector4::from_xyz(0.0, 5.0, 0.0));
+
+        // The hinge removes rotation about Y, so after several steps the arm
+        // stays near the hub instead of flying away as a free body would.
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let arm_position = world.body_position(arm).unwrap();
+        let distance = (arm_position - Vector4::ZERO).length3();
+        assert!(distance < 4.0, "arm distance {}", distance);
     }
 }

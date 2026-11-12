@@ -9,6 +9,8 @@
 //! | [`World`] | `hknpWorld` | owns body/motion managers and runs collide → solve → integrate |
 //! | [`ContactManifold`] | manifold stream item | body pair plus [`hknp_collide::Manifold`] |
 //! | [`WorldStats`] | counters | body/motion/step/contact counters |
+//! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`FixedCinfo`]/[`WorldJoint`] | `Dynamics/Constraint/Data` subset | joint constraints solved after contacts |
+//! | [`RayCastHit`] / [`ClosestPointHit`] | `Collide/Query` subset | world ray cast and closest-point queries |
 //!
 //! # Step pipeline (Phase 8)
 //!
@@ -47,9 +49,13 @@ use hknp_collide::Manifold;
 use hknp_types::BodyId;
 
 pub mod cinfo;
+pub mod constraint;
+pub mod query;
 pub mod world;
 
 pub use cinfo::WorldCinfo;
+pub use constraint::{BallAndSocketCinfo, FixedCinfo, HingeCinfo, WorldJoint};
+pub use query::{ClosestPointHit, RayCastHit};
 pub use world::World;
 
 /// Deterministic per-body state captured by [`World::snapshot`].

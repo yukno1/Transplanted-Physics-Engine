@@ -166,6 +166,85 @@ define_handle! {
     ConnectivityNodeId, u16, 0xFFFF
 }
 
+define_handle! {
+    /// `hknpConstraintIndex` — internal constraint identifier
+    /// (`hkUint32`, invalid `HK_INT32_MAX`).
+    ConstraintIndex, u32, 0x7FFF_FFFF
+}
+
+/// `hknpConstraintId` — unique constraint identifier in a world.
+///
+/// 64-bit value whose most significant bit distinguishes storage: when set the
+/// low bits are a [`ConstraintIndex`], when clear the value is an arbitrary
+/// user ID (63 bits). Port of `Dynamics/Constraint/hknpConstraintId.h`.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConstraintId(u64);
+
+impl ConstraintId {
+    /// The invalid sentinel (`~Type(0)`).
+    pub const INVALID: Self = Self(u64::MAX);
+
+    /// Construct from an arbitrary raw value (`hknpConstraintId(Type)`).
+    #[inline]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Construct from a [`ConstraintIndex`], setting the MSB.
+    #[inline]
+    pub const fn from_index(index: ConstraintIndex) -> Self {
+        Self((1u64 << 63) | index.value() as u64)
+    }
+
+    /// The invalid ID.
+    #[inline]
+    pub const fn invalid() -> Self {
+        Self::INVALID
+    }
+
+    /// The raw stored value.
+    #[inline]
+    pub const fn value(self) -> u64 {
+        self.0
+    }
+
+    /// `isValid`.
+    #[inline]
+    pub const fn is_valid(self) -> bool {
+        self.0 != u64::MAX
+    }
+
+    /// Whether the ID stores a [`ConstraintIndex`].
+    #[inline]
+    pub const fn is_constraint_index(self) -> bool {
+        self.0 & (1u64 << 63) != 0
+    }
+
+    /// The stored [`ConstraintIndex`], asserting that it is one.
+    #[inline]
+    pub const fn as_constraint_index(self) -> ConstraintIndex {
+        debug_assert!(self.is_constraint_index(), "id is not a constraint index");
+        ConstraintIndex::new((self.0 & !(1u64 << 63)) as u32)
+    }
+}
+
+impl Default for ConstraintId {
+    #[inline]
+    fn default() -> Self {
+        Self::INVALID
+    }
+}
+
+impl core::fmt::Debug for ConstraintId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        if self.is_valid() {
+            write!(f, "ConstraintId({:#x})", self.0)
+        } else {
+            write!(f, "ConstraintId(invalid)")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
