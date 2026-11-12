@@ -295,12 +295,16 @@ havok/                             # 本仓库根目录
   - `hknp-collide`：新增 `query.rs`——凸体 raycast（**conservative advancement**：GJK 点-形状距离除以射线与法线夹角推进，sphere/box/capsule/cylinder/hull 单一实现路径；射线起点在内部按 fraction 0 命中）、`point_distance`（点-形状 GJK 距离，供最近点查询）、`ray_aabb` slab 粗测（固定 x/y/z 轴序）。新增 10 个单元测试。
   - `hknp-world`：新增 `query.rs`——`World::raycast`（最近命中，槽序遍历 + AABB 粗测 + 同 fraction 低 `BodyId` 优先，确定性）与 `World::closest_point`（凸体最近表面点/距离，内部点返回 distance 0）、`World::body_transform`。查询不受碰撞过滤影响（与 SDK 一致）；非凸形状（Mesh/Compound/HeightField）暂不参与。
   - 新增集成测试 `crates/havok/tests/constraints_and_queries.rs`（9 个）。
+- **铰链 limits/motors**（2026-11-12，Phase 10 后续子集）：
+  - `hknp-solver`：`HingeJoint` 新增 `limits: Option<HingeLimits>` 与 `motor: Option<HingeMotor>`——limits 为单边约束（仅当角度越界时施加回复脉冲，方向由 lambda 符号约束，Baumgarte bias 上限同接触求解），motor 为绕铰链轴的速度电机（**每次 solve 施加一次限幅冲量**，与迭代次数无关，确定性）。角度/速度约定为 **B 相对 A 绕铰链轴**（与角度测量 `sin = t_a × t_b · axis` 一致）。新增 8 个单元测试。
+  - `hknp-world`：`HingeCinfo` 新增 `limits`/`motor` 字段与 `HingeLimitsCinfo`（twist 参考轴对 + min/max 角）/`HingeMotorCinfo`（目标速度 + 冲量上限）；每步由世界空间 twist 轴计算签名角 `hinge_angle`（投影到垂直于铰链轴的平面，atan2 取值 `(-pi, pi]`）传入 solver；新增 `set_hinge_limits`/`set_hinge_motor` 运行时 API（非铰链/无效 ID 返回 false）。新增 3 个单元测试；`constraints_and_queries.rs` 集成测试增至 12 个。
+  - 局限：速度级 limit（越界小幅穿越后由 bias 拉回，无硬位置钳制）、仅速度电机（无位置/弹性电机、无 springs）、motors 不参与迭代内与 limits 联合收敛（预施加一次）。
 
 未完成/阻塞项：
 
 - **完整 `hknpMultithreadedSimulation`**：任务图/求解器/积分并行、work stealing、`hknpTaskGraph` 物理调度未移植；当前只并行窄相，且每步重建 scoped worker（小场景并行反而更慢，见 bench）。
 - **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`hk-serialize` 不能替代资产加载。
-- **Ragdoll / Vehicle / CharacterControl**：前置的约束/joint 系统与射线查询已交付（见上）；仍缺 limits/motors、shape cast（非 raycast）、碰撞过滤、action 调度、多体约束岛。均未移植。
+- **Ragdoll / Vehicle / CharacterControl**：前置的约束/joint 系统、射线查询与铰链 limits/motors 已交付（见上）；仍缺 springs/位置电机、shape cast（非 raycast）、碰撞过滤、action 调度、多体约束岛。均未移植。
 - 大世界 `hkPreciseTransform`（double 平移）仍待（当前 f32 Transform）。
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标。
 
@@ -380,8 +384,8 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
 - [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
 - [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
-- [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）与查询系统（world raycast / closest point）完成
-- [ ] 后续：约束 limits/motors、shape cast 与 AABB cast 查询、碰撞过滤 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）、查询系统（world raycast / closest point）与铰链 limits/motors 完成
+- [ ] 后续：约束岛与 warm starting、springs/位置电机、shape cast 与 AABB cast 查询、碰撞过滤 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
 仓库现状（2026-11-12）：
 

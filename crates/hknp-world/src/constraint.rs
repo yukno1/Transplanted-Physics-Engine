@@ -48,7 +48,8 @@ impl BallAndSocketCinfo {
 /// Hinge joint construction info (`hknpHingeConstraintData`).
 ///
 /// The two axes must be unit length in their bodies' local spaces; rotation
-/// about the hinge is free (limits are not ported).
+/// about the hinge is free apart from the optional angle limits
+/// ([`HingeCinfo::limits`]) and velocity motor ([`HingeCinfo::motor`]).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HingeCinfo {
     /// First body.
@@ -63,6 +64,11 @@ pub struct HingeCinfo {
     pub axis_a: Vector4,
     /// Hinge axis in body B's local space (unit).
     pub axis_b: Vector4,
+    /// Optional angle limits (measured about the hinge axis between the
+    /// reference/twist axes; `None` is unrestricted).
+    pub limits: Option<HingeLimitsCinfo>,
+    /// Optional velocity motor about the hinge axis (`None` is frictionless).
+    pub motor: Option<HingeMotorCinfo>,
 }
 
 impl HingeCinfo {
@@ -82,6 +88,83 @@ impl HingeCinfo {
             pivot_b,
             axis_a,
             axis_b,
+            limits: None,
+            motor: None,
+        }
+    }
+
+    /// Attach angle limits (`setAngularLimits`).
+    pub fn with_limits(mut self, limits: HingeLimitsCinfo) -> Self {
+        self.limits = Some(limits);
+        self
+    }
+
+    /// Attach a velocity motor about the hinge axis.
+    pub fn with_motor(mut self, motor: HingeMotorCinfo) -> Self {
+        self.motor = Some(motor);
+        self
+    }
+}
+
+/// Hinge angle limits (`hknpHingeConstraintData` limits subset).
+///
+/// The signed angle is measured between `twist_axis_a` and `twist_axis_b`
+/// about the hinge axis, in radians, positive in the sense of the hinge axes.
+/// Both twist axes must be unit length in their bodies' local spaces and not
+/// parallel to the hinge axes (they are projected onto the plane
+/// perpendicular to the hinge).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeLimitsCinfo {
+    /// Reference axis in body A's local space (unit, not parallel to `axis_a`).
+    pub twist_axis_a: Vector4,
+    /// Reference axis in body B's local space (unit, not parallel to `axis_b`).
+    pub twist_axis_b: Vector4,
+    /// Lower angle bound in radians.
+    pub min_angle: f32,
+    /// Upper angle bound in radians (>= `min_angle`).
+    pub max_angle: f32,
+}
+
+impl HingeLimitsCinfo {
+    /// Construct limits from local reference axes and bounds.
+    pub fn new(
+        twist_axis_a: Vector4,
+        twist_axis_b: Vector4,
+        min_angle: f32,
+        max_angle: f32,
+    ) -> Self {
+        debug_assert!(
+            min_angle <= max_angle,
+            "hinge limit min_angle must not exceed max_angle"
+        );
+        Self {
+            twist_axis_a,
+            twist_axis_b,
+            min_angle,
+            max_angle,
+        }
+    }
+}
+
+/// Velocity motor about the hinge axis (`hknpVelocityConstraintMotor` subset).
+///
+/// Drives the relative angular velocity of B relative to A about the hinge
+/// axis toward `target_velocity`; the impulse applied per solve is clamped
+/// to `±max_impulse`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeMotorCinfo {
+    /// Desired relative angular velocity about the hinge axis (rad/s).
+    pub target_velocity: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl HingeMotorCinfo {
+    /// Construct a motor with the given target and impulse clamp.
+    pub fn new(target_velocity: f32, max_impulse: f32) -> Self {
+        Self {
+            target_velocity,
+            max_impulse,
         }
     }
 }

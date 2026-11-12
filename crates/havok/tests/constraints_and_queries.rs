@@ -242,3 +242,134 @@ fn raycast_and_contacts_coexist_in_one_scene() {
     assert_eq!(hit.body, ball.min(ground).max(ball));
     assert!(hit.hit_fraction < 5.0);
 }
+
+/// Hub at the origin plus a hinged arm with rotational response, gravity off.
+fn hinged_arm_world() -> (World, BodyId, BodyId, ConstraintId) {
+    let mut world = World::new(
+        WorldCinfo::new()
+            .with_gravity(Vector4::ZERO)
+            .with_solver_settings(0.2, 0.0, 16),
+    );
+    let hub = world.create_body(&BodyCinfo::new(sphere(0.5)));
+    let arm = world.create_body(&dynamic_sphere(0.5, Vector4::from_xyz(2.0, 0.0, 0.0)));
+    let arm_motion = world.body(arm).unwrap().motion_id;
+    world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+    let id = world.create_hinge_constraint(&HingeCinfo::new(
+        hub,
+        arm,
+        Vector4::ZERO,
+        Vector4::from_xyz(-2.0, 0.0, 0.0),
+        Vector4::UNIT_Z,
+        Vector4::UNIT_Z,
+    ));
+    assert!(id.is_valid());
+    (world, hub, arm, id)
+}
+
+/// Signed angle of the arm about the hinge (world `+Z`), measured between
+/// the identity twist axis `+X` mapped through both body rotations.
+fn hinge_angle_of(world: &World, hub: BodyId, arm: BodyId) -> f32 {
+    let twist_a = world
+        .body_transform(hub)
+        .unwrap()
+        .rotation
+        .rotate(Vector4::UNIT_X);
+    let twist_b = world
+        .body_transform(arm)
+        .unwrap()
+        .rotation
+        .rotate(Vector4::UNIT_X);
+    let sin = twist_a.cross(twist_b).dot3(Vector4::UNIT_Z);
+    sin.atan2(twist_a.dot3(twist_b))
+}
+
+#[test]
+fn hinge_limits_stop_the_swing_at_the_bound() {
+    let (mut world, hub, arm, id) = hinged_arm_world();
+    // Start the arm rotated past the ±0.2 rad window.
+    world.set_body_transform(
+        arm,
+        havok::math::Transform::from_quaternion(
+            Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.6),
+            Vector4::from_xyz(2.0, 0.0, 0.0),
+        ),
+    );
+    world.set_hinge_limits(
+        id,
+        Some(havok::world::HingeLimitsCinfo::new(
+            Vector4::UNIT_X,
+            Vector4::UNIT_X,
+            -0.2,
+            0.2,
+        )),
+    );
+
+    let initial = hinge_angle_of(&world, hub, arm);
+    for _ in 0..120 {
+        world.step(1.0 / 60.0);
+    }
+    let final_angle = hinge_angle_of(&world, hub, arm);
+    assert!(
+        final_angle < initial - 0.1,
+        "limits must drive the angle back: {} -> {}",
+        initial,
+        final_angle
+    );
+    assert!(
+        final_angle < 0.45 && final_angle > -0.45,
+        "angle must stay near the bound: {}",
+        final_angle
+    );
+}
+
+#[test]
+fn hinge_motor_spins_the_arm_at_target_speed() {
+    let (mut world, _, arm, id) = hinged_arm_world();
+    world.set_hinge_motor(id, Some(havok::world::HingeMotorCinfo::new(1.5, 10.0)));
+
+    for _ in 0..60 {
+        world.step(1.0 / 60.0);
+    }
+    let wz = world.body_angular_velocity(arm).unwrap().z;
+    assert!((wz - 1.5).abs() < 0.2, "wz {} must track the target", wz);
+
+    // Disabling the motor lets the arm keep its current speed (frictionless).
+    assert!(world.set_hinge_motor(id, None));
+    world.step(1.0 / 60.0);
+    let wz_after = world.body_angular_velocity(arm).unwrap().z;
+    assert!(
+        (wz_after - wz).abs() < 0.3,
+        "frictionless hinge must not brake: {} -> {}",
+        wz,
+        wz_after
+    );
+}
+
+#[test]
+fn hinge_limits_and_motor_are_bitwise_deterministic() {
+    let run = || {
+        let (mut world, _, arm, id) = hinged_arm_world();
+        world.set_hinge_limits(
+            id,
+            Some(havok::world::HingeLimitsCinfo::new(
+                Vector4::UNIT_X,
+                Vector4::UNIT_X,
+                -0.2,
+                0.2,
+            )),
+        );
+        world.set_hinge_motor(id, Some(havok::world::HingeMotorCinfo::new(3.0, 2.0)));
+        world.set_body_transform(
+            arm,
+            havok::math::Transform::from_quaternion(
+                Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.5),
+                Vector4::from_xyz(2.0, 0.0, 0.0),
+            ),
+        );
+        for _ in 0..90 {
+            world.step(1.0 / 60.0);
+        }
+        world.snapshot()
+    };
+    assert_eq!(run(), run());
+}

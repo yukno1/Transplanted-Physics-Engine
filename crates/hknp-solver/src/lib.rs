@@ -24,6 +24,7 @@ pub mod constraint;
 pub mod solver;
 
 pub use constraint::{
-    BallAndSocketJoint, FixedJoint, HingeJoint, JointConstraint, JointSolverStats,
+    BallAndSocketJoint, FixedJoint, HingeJoint, HingeLimits, HingeMotor, JointConstraint,
+    JointSolverStats,
 };
 pub use solver::{ContactConstraint, Solver, SolverBody, SolverSettings, SolverStats};

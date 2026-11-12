@@ -8,12 +8,15 @@ use hknp_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
 use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
 use hknp_shape::Shape;
 use hknp_solver::{
-    BallAndSocketJoint, ContactConstraint, FixedJoint, HingeJoint, JointConstraint, Solver,
-    SolverBody, SolverSettings,
+    BallAndSocketJoint, ContactConstraint, FixedJoint, HingeJoint, HingeLimits, HingeMotor,
+    JointConstraint, Solver, SolverBody, SolverSettings,
 };
 use hknp_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
-use crate::constraint::{BallAndSocketCinfo, FixedCinfo, HingeCinfo, JointSlot, WorldJoint};
+use crate::constraint::{
+    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
+    WorldJoint,
+};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
@@ -262,6 +265,46 @@ impl World {
         }
     }
 
+    /// Set or clear the angle limits of a hinge joint (`None` clears them).
+    ///
+    /// Fails for IDs that do not resolve to a live hinge joint.
+    pub fn set_hinge_limits(&mut self, id: ConstraintId, limits: Option<HingeLimitsCinfo>) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Hinge(info) => {
+                    info.limits = limits;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Set or clear the velocity motor of a hinge joint (`None` clears it).
+    ///
+    /// Fails for IDs that do not resolve to a live hinge joint.
+    pub fn set_hinge_motor(&mut self, id: ConstraintId, motor: Option<HingeMotorCinfo>) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Hinge(info) => {
+                    info.motor = motor;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    fn joint_slot_mut(&mut self, id: ConstraintId) -> Option<&mut JointSlot> {
+        if !id.is_valid() || !id.is_constraint_index() {
+            return None;
+        }
+        let slot = id.as_constraint_index().value() as usize;
+        self.joints.get_mut(slot)?.as_mut()
+    }
+
     fn push_joint(&mut self, joint: WorldJoint) -> ConstraintId {
         let (body_a, body_b) = joint.bodies();
         if self.bodies.get(body_a).is_none() || self.bodies.get(body_b).is_none() {
@@ -319,13 +362,31 @@ impl World {
                     }));
                 }
                 WorldJoint::Hinge(info) => {
+                    let axis_a = transform_a.rotation.rotate(info.axis_a);
+                    let axis_b = transform_b.rotation.rotate(info.axis_b);
+                    let limits = info.limits.map(|limits| HingeLimits {
+                        angle: hinge_angle(
+                            axis_a,
+                            axis_b,
+                            transform_a.rotation.rotate(limits.twist_axis_a),
+                            transform_b.rotation.rotate(limits.twist_axis_b),
+                        ),
+                        min_angle: limits.min_angle,
+                        max_angle: limits.max_angle,
+                    });
+                    let motor = info.motor.map(|motor| HingeMotor {
+                        target_velocity: motor.target_velocity,
+                        max_impulse: motor.max_impulse,
+                    });
                     result.push(JointConstraint::Hinge(HingeJoint {
                         body_a: index_a,
                         body_b: index_b,
                         pivot_a: transform_a.transform_point(info.pivot_a),
                         pivot_b: transform_b.transform_point(info.pivot_b),
-                        axis_a: transform_a.rotation.rotate(info.axis_a),
-                        axis_b: transform_b.rotation.rotate(info.axis_b),
+                        axis_a,
+                        axis_b,
+                        limits,
+                        motor,
                     }));
                 }
                 WorldJoint::Fixed(info) => {
@@ -730,6 +791,28 @@ fn contacts_from_candidates(
         .iter()
         .filter_map(|candidate| collide_candidate(candidate, tolerance))
         .collect()
+}
+
+/// Signed angle between the reference (twist) axes about the hinge axis.
+///
+/// Both twist axes are projected onto the plane perpendicular to their hinge
+/// axis; the angle is measured from A to B in the sense of `axis_a`, wrapped
+/// to `(-pi, pi]`.
+fn hinge_angle(axis_a: Vector4, axis_b: Vector4, twist_a: Vector4, twist_b: Vector4) -> f32 {
+    let tangential = |twist: Vector4, axis: Vector4| {
+        let component = twist - axis * twist.dot3(axis);
+        let length = component.length3();
+        if length > 1e-10 {
+            component * (1.0 / length)
+        } else {
+            Vector4::ZERO
+        }
+    };
+    let projected_a = tangential(twist_a, axis_a);
+    let projected_b = tangential(twist_b, axis_b);
+    let sin = projected_a.cross(projected_b).dot3(axis_a);
+    let cos = projected_a.dot3(projected_b);
+    sin.atan2(cos)
 }
 
 /// World-space axis-angle rotation-error vector of a quaternion: rotating a
@@ -1234,5 +1317,129 @@ mod tests {
         let arm_position = world.body_position(arm).unwrap();
         let distance = (arm_position - Vector4::ZERO).length3();
         assert!(distance < 4.0, "arm distance {}", distance);
+    }
+
+    fn hinged_arm(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
+        let hub =
+            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::ZERO));
+        let arm = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+        );
+        let arm_motion = world.body(arm).unwrap().motion_id;
+        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        let id = world.create_hinge_constraint(&HingeCinfo::new(
+            hub,
+            arm,
+            Vector4::ZERO,
+            Vector4::from_xyz(-2.0, 0.0, 0.0),
+            Vector4::UNIT_Z,
+            Vector4::UNIT_Z,
+        ));
+        assert!(id.is_valid());
+        (hub, arm, id)
+    }
+
+    /// World-space hinge angle between the identity-frame twist axis `+X`
+    /// mapped through both body rotations, about `+Z`.
+    fn current_hinge_angle(world: &World, hub: BodyId, arm: BodyId) -> f32 {
+        let transform_a = world.body_transform(hub).unwrap();
+        let transform_b = world.body_transform(arm).unwrap();
+        hinge_angle(
+            Vector4::UNIT_Z,
+            Vector4::UNIT_Z,
+            transform_a.rotation.rotate(Vector4::UNIT_X),
+            transform_b.rotation.rotate(Vector4::UNIT_X),
+        )
+    }
+
+    #[test]
+    fn hinge_limits_drive_the_angle_back_into_range() {
+        let mut world = World::new(
+            WorldCinfo::new()
+                .with_gravity(Vector4::ZERO)
+                .with_solver_settings(0.2, 0.0, 16),
+        );
+        let (_, arm, id) = hinged_arm(&mut world);
+        // Start the arm 0.4 rad past the upper bound of ±0.2.
+        world.set_body_transform(
+            arm,
+            Transform::from_quaternion(
+                Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.6),
+                Vector4::from_xyz(2.0, 0.0, 0.0),
+            ),
+        );
+        let limits = HingeLimitsCinfo::new(Vector4::UNIT_X, Vector4::UNIT_X, -0.2, 0.2);
+        assert!(world.set_hinge_limits(id, Some(limits)));
+
+        let hub = hinged_arm_hub(&world);
+        let initial = current_hinge_angle(&world, hub, arm);
+        let mut min_angle = initial;
+        for _ in 0..60 {
+            world.step(1.0 / 60.0);
+            let angle = current_hinge_angle(&world, hub, arm);
+            min_angle = min_angle.min(angle);
+        }
+        let final_angle = current_hinge_angle(&world, hub, arm);
+        assert!(
+            final_angle < initial - 0.1,
+            "angle did not return toward the bound: {} -> {}",
+            initial,
+            final_angle
+        );
+        assert!(
+            min_angle >= limits.min_angle - 0.05,
+            "limit pushed far through the lower bound: {}",
+            min_angle
+        );
+    }
+
+    fn hinged_arm_hub(world: &World) -> BodyId {
+        world.bodies().next().unwrap().id
+    }
+
+    #[test]
+    fn hinge_motor_drives_constant_spin() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let (_, arm, id) = hinged_arm(&mut world);
+        assert!(world.set_hinge_motor(id, Some(HingeMotorCinfo::new(2.0, 10.0))));
+
+        for _ in 0..60 {
+            world.step(1.0 / 60.0);
+        }
+        let angular = world.body_angular_velocity(arm).unwrap();
+        assert!(
+            (angular.z - 2.0).abs() < 0.2,
+            "wz {} must track the motor target",
+            angular.z
+        );
+        // The arm pivots about the hinge point, so it must stay near the hub.
+        let distance = (world.body_position(arm).unwrap() - Vector4::ZERO).length3();
+        assert!(distance < 4.0, "arm distance {}", distance);
+    }
+
+    #[test]
+    fn set_hinge_limits_and_motor_validate_ids() {
+        let mut world = World::new(WorldCinfo::new());
+        let (hub, arm, id) = hinged_arm(&mut world);
+        let ball_socket = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            hub,
+            arm,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+
+        let limits = HingeLimitsCinfo::new(Vector4::UNIT_X, Vector4::UNIT_X, -0.2, 0.2);
+        assert!(world.set_hinge_limits(id, Some(limits)));
+        assert!(world.set_hinge_motor(id, Some(HingeMotorCinfo::new(1.0, 5.0))));
+        assert!(world.set_hinge_limits(id, None));
+        assert!(world.set_hinge_motor(id, None));
+
+        // Non-hinge and invalid IDs are rejected.
+        assert!(!world.set_hinge_limits(ball_socket, Some(limits)));
+        assert!(!world.set_hinge_motor(ball_socket, None));
+        assert!(!world.set_hinge_limits(ConstraintId::INVALID, None));
     }
 }

@@ -54,7 +54,9 @@ pub mod query;
 pub mod world;
 
 pub use cinfo::WorldCinfo;
-pub use constraint::{BallAndSocketCinfo, FixedCinfo, HingeCinfo, WorldJoint};
+pub use constraint::{
+    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, WorldJoint,
+};
 pub use query::{ClosestPointHit, RayCastHit};
 pub use world::World;
 

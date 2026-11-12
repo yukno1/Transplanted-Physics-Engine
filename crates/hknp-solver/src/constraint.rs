@@ -17,9 +17,16 @@
 //!   the hinge, biased by the current axis misalignment.
 //! * **Angular** ([`FixedJoint`]): relative angular velocity is zeroed about
 //!   the world axes, biased by the supplied orientation-error vector.
+//! * **Hinge limits** ([`HingeJoint::limits`]): a unilateral constraint that
+//!   only pushes the relative angular velocity back when the hinge angle is
+//!   outside `[min_angle, max_angle]` (Baumgarte bias on the violated bound).
+//! * **Hinge motor** ([`HingeJoint::motor`]): a velocity motor about the
+//!   hinge axis applied once per solve as a clamped impulse (the SDK's
+//!   force-based motors are not ported).
 //!
 //! Rotation about a hinge axis and free spinning of a ball-and-socket remain
-//! unconstrained; limits, motors, and springs are not ported.
+//! unconstrained; springs, ragdoll-style multi-axis limits and constraint
+//! islands are not ported.
 //!
 //! # Determinism
 //!
@@ -49,7 +56,8 @@ pub struct BallAndSocketJoint {
 /// Solver-level hinge joint (`hknpHingeConstraintData` linear + axis alignment).
 ///
 /// The pivots must coincide and the two unit axes stay parallel; rotation
-/// about the hinge axis is free. Hinge limits are not ported.
+/// about the hinge axis is free apart from [`HingeJoint::limits`] and driven
+/// by [`HingeJoint::motor`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HingeJoint {
     /// Solver index of body A.
@@ -64,6 +72,40 @@ pub struct HingeJoint {
     pub axis_a: Vector4,
     /// Hinge axis on body B in world space (unit).
     pub axis_b: Vector4,
+    /// Optional angle limits, with the current signed hinge angle supplied by
+    /// the caller (`None` keeps rotation about the hinge completely free).
+    pub limits: Option<HingeLimits>,
+    /// Optional velocity motor about the hinge axis (`None` is frictionless).
+    pub motor: Option<HingeMotor>,
+}
+
+/// Hinge angle limits (`hknpHingeConstraintData` limits subset, solver level).
+///
+/// `angle` is the signed angle between the world-space reference axes about
+/// the hinge axis in radians; the solver applies a restoring unilateral
+/// impulse only when it is outside `[min_angle, max_angle]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeLimits {
+    /// Current signed hinge angle in radians.
+    pub angle: f32,
+    /// Lower bound in radians (`min_angle <= max_angle`).
+    pub min_angle: f32,
+    /// Upper bound in radians.
+    pub max_angle: f32,
+}
+
+/// Velocity motor about the hinge axis (`hknpVelocityConstraintMotor` subset).
+///
+/// The motor drives the relative angular velocity of B relative to A about
+/// the hinge axis toward `target_velocity` (positive spins B in the sense of
+/// the hinge axes); the applied impulse per solve is clamped to
+/// `±max_impulse`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeMotor {
+    /// Desired relative angular velocity about the hinge axis (rad/s).
+    pub target_velocity: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
 }
 
 /// Solver-level fixed joint (`hknpFixedConstraintData`, velocity level).
@@ -137,6 +179,17 @@ impl crate::solver::Solver {
             0.0
         };
 
+        // Motors are applied once per solve, before the sweeps (see
+        // `solve_hinge_motor`); limits run inside the sweeps like any other
+        // constraint row.
+        for joint in joints {
+            if let JointConstraint::Hinge(joint) = joint {
+                if let Some(motor) = joint.motor {
+                    solve_hinge_motor(bodies, joint, motor);
+                }
+            }
+        }
+
         for _ in 0..settings.iterations {
             for joint in joints {
                 match *joint {
@@ -162,6 +215,15 @@ impl crate::solver::Solver {
                             settings.max_recovery_speed,
                         );
                         solve_hinge_axes(bodies, &joint, bias_scale, settings.max_recovery_speed);
+                        if let Some(limits) = joint.limits {
+                            solve_hinge_limits(
+                                bodies,
+                                &joint,
+                                limits,
+                                bias_scale,
+                                settings.max_recovery_speed,
+                            );
+                        }
                     }
                     JointConstraint::Fixed(joint) => {
                         solve_point_constraint(
@@ -249,6 +311,86 @@ fn solve_hinge_axes(bodies: &mut [SolverBody], joint: &HingeJoint, bias_scale: f
         let lambda = (bias - relative.dot3(axis)) / mass;
         apply_angular_impulse(bodies, a, b, axis, lambda);
     }
+}
+
+/// Drive the relative angular velocity of B about A along the hinge axis
+/// toward the motor target with one clamped impulse.
+///
+/// The SDK's motors are force-based and integrated over the step; this subset
+/// applies a single impulse per solve (before the constraint sweeps) clamped
+/// to `±max_impulse`, which keeps the result deterministic and iteration
+/// count independent.
+fn solve_hinge_motor(bodies: &mut [SolverBody], joint: &HingeJoint, motor: HingeMotor) {
+    let (Ok(a), Ok(b)) = (
+        body_index(bodies.len(), joint.body_a),
+        body_index(bodies.len(), joint.body_b),
+    ) else {
+        return;
+    };
+    if a == b || motor.max_impulse <= 0.0 {
+        return;
+    }
+    let axis = normalized(joint.axis_a);
+    let mass = angular_effective_mass(bodies, a, b, axis);
+    if mass <= 1e-12 {
+        return;
+    }
+    // Relative velocity of B with respect to A along the hinge axis.
+    let rel = (bodies[b].angular_velocity - bodies[a].angular_velocity).dot3(axis);
+    let lambda =
+        ((motor.target_velocity - rel) / mass).clamp(-motor.max_impulse, motor.max_impulse);
+    apply_angular_impulse(bodies, b, a, axis, lambda);
+}
+
+/// Unilateral hinge-angle limits: only push back when the angle is outside
+/// `[min_angle, max_angle]`.
+///
+/// The angle grows with the relative angular velocity of B about A along the
+/// hinge axis, so the upper bound drives that velocity negative and the
+/// lower bound positive. Inside the dead zone the limit row is skipped
+/// entirely, and an impulse that would push the angle further out is never
+/// applied (unilateral sign check).
+fn solve_hinge_limits(
+    bodies: &mut [SolverBody],
+    joint: &HingeJoint,
+    limits: HingeLimits,
+    bias_scale: f32,
+    max_bias: f32,
+) {
+    let (Ok(a), Ok(b)) = (
+        body_index(bodies.len(), joint.body_a),
+        body_index(bodies.len(), joint.body_b),
+    ) else {
+        return;
+    };
+    if a == b {
+        return;
+    }
+    let axis = normalized(joint.axis_a);
+    let mass = angular_effective_mass(bodies, a, b, axis);
+    if mass <= 1e-12 {
+        return;
+    }
+    // Relative velocity of B with respect to A along the hinge axis: the
+    // hinge angle grows at this rate.
+    let rel = (bodies[b].angular_velocity - bodies[a].angular_velocity).dot3(axis);
+
+    let upper_violation = limits.angle - limits.max_angle;
+    let lower_violation = limits.min_angle - limits.angle;
+    let (target, sign) = if upper_violation > 0.0 {
+        // Past the upper bound: the restoring relative velocity is negative.
+        (-(upper_violation * bias_scale).clamp(0.0, max_bias), -1.0)
+    } else if lower_violation > 0.0 {
+        ((lower_violation * bias_scale).clamp(0.0, max_bias), 1.0)
+    } else {
+        return;
+    };
+
+    let lambda = (target - rel) / mass;
+    if lambda * sign < 0.0 {
+        return;
+    }
+    apply_angular_impulse(bodies, b, a, axis, lambda);
 }
 
 /// Zero the relative angular velocity about the world axes, biased by the
@@ -449,6 +591,8 @@ mod tests {
             pivot_b: Vector4::ZERO,
             axis_a: Vector4::UNIT_X,
             axis_b: Vector4::UNIT_X,
+            limits: None,
+            motor: None,
         });
         Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
         // With aligned axes there is no drift, so the out-of-plane spin about
@@ -485,6 +629,8 @@ mod tests {
                 -core::f32::consts::FRAC_1_SQRT_2,
                 0.0,
             ),
+            limits: None,
+            motor: None,
         });
         Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
         assert!(
@@ -596,5 +742,171 @@ mod tests {
         let r_rel = q_a.inverse_mul(q_b);
         let q_e = r_rel.mul_inverse(r0);
         assert!(q_e.all_equal(Quaternion::IDENTITY, 1e-5));
+    }
+
+    fn hinge_joint() -> HingeJoint {
+        HingeJoint {
+            body_a: 0,
+            body_b: 1,
+            pivot_a: Vector4::ZERO,
+            pivot_b: Vector4::ZERO,
+            axis_a: Vector4::UNIT_X,
+            axis_b: Vector4::UNIT_X,
+            limits: None,
+            motor: None,
+        }
+    }
+
+    fn hinge_pair(spun: Vector4) -> Vec<SolverBody> {
+        vec![
+            SolverBody::new(1.0, Vector4::splat(0.5), Vector4::ZERO, Vector4::ZERO, spun),
+            SolverBody::static_body(Vector4::ZERO),
+        ]
+    }
+
+    #[test]
+    fn hinge_limit_upper_bound_pushes_velocity_back() {
+        // Angle 0.5 rad is past max 0.2. B is static, so the restoring
+        // relative velocity of B w.r.t. A (negative) requires body A to spin
+        // positively about the axis.
+        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut joint = hinge_joint();
+        joint.limits = Some(HingeLimits {
+            angle: 0.5,
+            min_angle: -0.2,
+            max_angle: 0.2,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert!(
+            bodies[0].angular_velocity.x > 0.0,
+            "wx {}",
+            bodies[0].angular_velocity.x
+        );
+    }
+
+    #[test]
+    fn hinge_limit_lower_bound_pushes_velocity_forward() {
+        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut joint = hinge_joint();
+        joint.limits = Some(HingeLimits {
+            angle: -0.5,
+            min_angle: -0.2,
+            max_angle: 0.2,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert!(
+            bodies[0].angular_velocity.x < 0.0,
+            "wx {}",
+            bodies[0].angular_velocity.x
+        );
+    }
+
+    #[test]
+    fn hinge_limit_inside_range_applies_nothing() {
+        let mut bodies = hinge_pair(Vector4::UNIT_X);
+        let mut joint = hinge_joint();
+        joint.limits = Some(HingeLimits {
+            angle: 0.1,
+            min_angle: -0.2,
+            max_angle: 0.2,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert_eq!(bodies[0].angular_velocity, Vector4::UNIT_X);
+    }
+
+    #[test]
+    fn hinge_limit_does_not_push_past_the_bound() {
+        // Already returning fast (relative velocity of B w.r.t. A well below
+        // the bias target): the unilateral limit must not slow it down or
+        // accelerate it outward.
+        let mut bodies = hinge_pair(Vector4::from_xyz(6.0, 0.0, 0.0));
+        let mut joint = hinge_joint();
+        joint.limits = Some(HingeLimits {
+            angle: 0.5,
+            min_angle: -0.2,
+            max_angle: 0.2,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert!(
+            bodies[0].angular_velocity.x >= 6.0,
+            "wx {}",
+            bodies[0].angular_velocity.x
+        );
+    }
+
+    #[test]
+    fn hinge_motor_drives_toward_target_velocity() {
+        // B is static, so driving B relative to A toward +2 spins A at -2.
+        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut joint = hinge_joint();
+        joint.motor = Some(HingeMotor {
+            target_velocity: 2.0,
+            max_impulse: 10.0,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert!(
+            bodies[0].angular_velocity.x < -1.0,
+            "wx {}",
+            bodies[0].angular_velocity.x
+        );
+    }
+
+    #[test]
+    fn hinge_motor_impulse_is_clamped() {
+        // Huge target but a tiny max impulse: the applied velocity change is
+        // bounded by max_impulse * inverse_inertia (x component: 0.5).
+        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut joint = hinge_joint();
+        joint.motor = Some(HingeMotor {
+            target_velocity: 1000.0,
+            max_impulse: 0.1,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        let wx = bodies[0].angular_velocity.x;
+        assert!(
+            (wx + 0.05).abs() < 1e-4,
+            "wx {} must equal impulse*inverse_inertia",
+            wx
+        );
+    }
+
+    #[test]
+    fn hinge_motor_zero_when_at_target() {
+        // A spinning at -2 makes the relative velocity of B w.r.t. A equal
+        // the target, so the motor must not apply anything.
+        let mut bodies = hinge_pair(Vector4::from_xyz(-2.0, 0.0, 0.0));
+        let mut joint = hinge_joint();
+        joint.motor = Some(HingeMotor {
+            target_velocity: 2.0,
+            max_impulse: 10.0,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        assert_eq!(
+            bodies[0].angular_velocity,
+            Vector4::from_xyz(-2.0, 0.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn hinge_limit_and_motor_cooperate_deterministically() {
+        let build = || {
+            let bodies = hinge_pair(Vector4::ZERO);
+            let mut joint = hinge_joint();
+            joint.limits = Some(HingeLimits {
+                angle: 0.5,
+                min_angle: -0.2,
+                max_angle: 0.2,
+            });
+            joint.motor = Some(HingeMotor {
+                target_velocity: 10.0,
+                max_impulse: 1.0,
+            });
+            (bodies, joint)
+        };
+        let (mut a, joint) = build();
+        let (mut b, joint2) = build();
+        Solver::default().solve_joints(&mut a, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
+        Solver::default().solve_joints(&mut b, &[JointConstraint::Hinge(joint2)], 1.0 / 60.0);
+        assert_eq!(a, b);
     }
 }
