@@ -18,17 +18,32 @@
 //! `iterations` sweeps, with accumulated normal impulses clamped to be non-
 //! negative. Penetration is corrected with a Baumgarte velocity bias capped by
 //! `max_recovery_speed` (the `hknpBody` depenetration speed limit analog).
-//! Tangential impulses use one tangent direction derived from the relative
-//! velocity and are clamped by `friction * accumulated_normal`.
+//! Tangential impulses use a deterministic orthonormal basis of the contact
+//! normal and are clamped by `friction * accumulated_normal`.
+//!
+//! # Warm starting
+//!
+//! [`ContactImpulse`] holds the accumulated normal/tangent impulses of one
+//! contact row. Callers may carry these across steps (the world matches rows by
+//! body pair and local contact point); [`Solver::solve_with_impulses`] applies
+//! the previous impulses before the first sweep and writes the new ones back,
+//! which is the SDK's warm starting. [`Solver::solve`] is the cold-start
+//! shortcut (zeroed impulses).
+//!
+//! # Subsets (islands)
+//!
+//! [`Solver::solve_contacts_subset`] / [`Solver::solve_joints_subset`] solve only
+//! the listed constraint indices. The world passes one island at a time; since
+//! islands share no dynamic body the impulses are identical to a global sweep,
+//! but solver state stays local to an island.
 //!
 //! # Not ported in this phase
 //!
-//! The full constraint-atom system (`Solver/ConstraintAtom`, 49 files), friction
-//! direction caching, restitution/mass modifiers, solver bodies' inertia in
-//! inertia space, island/solver-batch partitioning, warm starting, deactivation,
-//! and the SDK's determinism-check instrumentation. Material-driven friction/
-//! restitution and multi-point manifolds arrive with the material library and
-//! the extended manifold work.
+//! The full constraint-atom system (`Solver/ConstraintAtom`, 49 files),
+//! restitution/mass modifiers, solver bodies' inertia in inertia space,
+//! deactivation, and the SDK's determinism-check instrumentation. Material-
+//! driven friction/restitution and multi-point manifolds arrive with the
+//! material library and the extended manifold work.
 
 use base_math::Vector4;
 
@@ -139,6 +154,51 @@ impl ContactConstraint {
     }
 }
 
+/// Accumulated impulse of one contact row (`hknpContactJacobian` accumulator).
+///
+/// Persisting these values between steps and feeding them back through
+/// [`Solver::solve_with_impulses`] implements warm starting: the solver starts
+/// from last step's solution instead of zero, which removes most of the
+/// convergence error in stacks.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ContactImpulse {
+    /// Accumulated impulse along the contact normal (never negative).
+    pub normal: f32,
+    /// Accumulated friction impulse along the first tangent.
+    pub tangent_1: f32,
+    /// Accumulated friction impulse along the second tangent.
+    pub tangent_2: f32,
+}
+
+impl ContactImpulse {
+    /// Whether no impulse has been accumulated yet.
+    pub fn is_zero(&self) -> bool {
+        self.normal == 0.0 && self.tangent_1 == 0.0 && self.tangent_2 == 0.0
+    }
+
+    /// Total accumulated impulse vector given the contact normal.
+    pub fn to_vector(&self, normal: Vector4) -> Vector4 {
+        let (tangent_1, tangent_2) = contact_tangents(normal);
+        normal * self.normal + tangent_1 * self.tangent_1 + tangent_2 * self.tangent_2
+    }
+}
+
+/// Deterministic orthonormal tangent basis of a (unit) contact normal.
+///
+/// The reference axis is `+X` unless the normal is nearly parallel to it, in
+/// which case `+Y` is used, so the basis only depends on the normal and is
+/// therefore stable across steps (required for warm starting).
+pub fn contact_tangents(normal: Vector4) -> (Vector4, Vector4) {
+    let reference = if normal.x.abs() < 0.9 {
+        Vector4::UNIT_X
+    } else {
+        Vector4::UNIT_Y
+    };
+    let tangent_1 = normal.cross(reference).normalized3();
+    let tangent_2 = normal.cross(tangent_1);
+    (tangent_1, tangent_2)
+}
+
 /// Solver configuration (`hknpSolverInfo` subset).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SolverSettings {
@@ -150,6 +210,9 @@ pub struct SolverSettings {
     pub max_recovery_speed: f32,
     /// Default Coulomb friction coefficient.
     pub friction: f32,
+    /// Apply the supplied accumulated impulses before the first sweep and keep
+    /// them updated afterwards (`hknpSolverInfo::m_warmStarting`).
+    pub warm_starting: bool,
 }
 
 impl Default for SolverSettings {
@@ -159,6 +222,7 @@ impl Default for SolverSettings {
             baumgarte: 0.2,
             max_recovery_speed: 1.0,
             friction: 0.5,
+            warm_starting: true,
         }
     }
 }
@@ -189,7 +253,7 @@ impl Solver {
         self.settings
     }
 
-    /// Solve `contacts` in place on `bodies`.
+    /// Solve `contacts` in place on `bodies` without warm starting.
     ///
     /// Constraints must reference valid body indices; invalid ones are skipped.
     /// `delta_time` is used for the Baumgarte bias (0 disables recovery).
@@ -199,16 +263,78 @@ impl Solver {
         contacts: &[ContactConstraint],
         delta_time: f32,
     ) -> SolverStats {
+        let mut impulses = vec![ContactImpulse::default(); contacts.len()];
+        let indices: Vec<usize> = (0..contacts.len()).collect();
+        self.solve_contacts_subset(bodies, contacts, &indices, &mut impulses, delta_time)
+    }
+
+    /// Solve all `contacts`, warm starting from (and updating) `impulses`.
+    ///
+    /// `impulses` is indexed like `contacts`; entries left over from a previous
+    /// step are applied before the first sweep. When
+    /// [`SolverSettings::warm_starting`] is `false` the incoming impulses are
+    /// discarded and the call behaves like [`Solver::solve`].
+    pub fn solve_with_impulses(
+        &self,
+        bodies: &mut [SolverBody],
+        contacts: &[ContactConstraint],
+        impulses: &mut [ContactImpulse],
+        delta_time: f32,
+    ) -> SolverStats {
+        let indices: Vec<usize> = (0..contacts.len()).collect();
+        self.solve_contacts_subset(bodies, contacts, &indices, impulses, delta_time)
+    }
+
+    /// Solve only the contacts listed in `subset`, in ascending index order.
+    ///
+    /// `subset` indices address `contacts`; `impulses` must be at least as long
+    /// as `contacts` so warm-start state can be updated in place. The world uses
+    /// this to solve one constraint island at a time.
+    pub fn solve_contacts_subset(
+        &self,
+        bodies: &mut [SolverBody],
+        contacts: &[ContactConstraint],
+        subset: &[usize],
+        impulses: &mut [ContactImpulse],
+        delta_time: f32,
+    ) -> SolverStats {
         debug_assert!(delta_time >= 0.0 && delta_time.is_finite());
+        debug_assert!(impulses.len() >= contacts.len());
+
         let bias_scale = if delta_time > 0.0 {
             self.settings.baumgarte / delta_time
         } else {
             0.0
         };
-        let mut accumulated_normal = vec![0.0f32; contacts.len()];
+
+        // Warm start: replay last step's impulses, or reset them when disabled.
+        for &index in subset {
+            let contact = &contacts[index];
+            let (Ok(body_a), Ok(body_b)) = (
+                body_index(bodies.len(), contact.body_a),
+                body_index(bodies.len(), contact.body_b),
+            ) else {
+                impulses[index] = ContactImpulse::default();
+                continue;
+            };
+            if body_a == body_b {
+                impulses[index] = ContactImpulse::default();
+                continue;
+            }
+            if !self.settings.warm_starting {
+                impulses[index] = ContactImpulse::default();
+                continue;
+            }
+            let accumulated = impulses[index];
+            if !accumulated.is_zero() {
+                let impulse = accumulated.to_vector(contact.normal);
+                apply_impulses(bodies, body_a, body_b, contact.point, impulse);
+            }
+        }
 
         for _ in 0..self.settings.iterations {
-            for (index, contact) in contacts.iter().enumerate() {
+            for &index in subset {
+                let contact = &contacts[index];
                 let (Ok(body_a), Ok(body_b)) = (
                     body_index(bodies.len(), contact.body_a),
                     body_index(bodies.len(), contact.body_b),
@@ -220,6 +346,7 @@ impl Solver {
                 }
                 let normal = contact.normal;
                 let point = contact.point;
+                let mut accumulated = impulses[index];
 
                 let relative =
                     velocity_at(bodies, body_a, point) - velocity_at(bodies, body_b, point);
@@ -231,39 +358,40 @@ impl Solver {
                 }
 
                 let lambda = (bias - normal_velocity) / normal_mass;
-                let previous = accumulated_normal[index];
-                let next = (previous + lambda).max(0.0);
-                let delta = next - previous;
-                accumulated_normal[index] = next;
+                let next = (accumulated.normal + lambda).max(0.0);
+                let delta = next - accumulated.normal;
+                accumulated.normal = next;
                 if delta != 0.0 {
                     apply_impulses(bodies, body_a, body_b, point, normal * delta);
                 }
 
-                // Tangential friction, clamped by the accumulated normal impulse.
+                // Tangential friction along both basis vectors, clamped by the
+                // accumulated normal impulse (box friction cone).
                 if contact.friction > 0.0 && next > 0.0 {
-                    let relative =
-                        velocity_at(bodies, body_a, point) - velocity_at(bodies, body_b, point);
-                    let tangent = relative - normal * relative.dot3(normal);
-                    let tangent_length = tangent.length3();
-                    if tangent_length > 1e-6 {
-                        let direction = tangent / tangent_length;
-                        let tangent_mass = effective_mass(bodies, body_a, body_b, direction, point);
-                        if tangent_mass > 1e-12 {
-                            let max_friction = contact.friction * next;
-                            let tangent_impulse = (-relative.dot3(direction) / tangent_mass)
-                                .clamp(-max_friction, max_friction);
-                            if tangent_impulse != 0.0 {
-                                apply_impulses(
-                                    bodies,
-                                    body_a,
-                                    body_b,
-                                    point,
-                                    direction * tangent_impulse,
-                                );
-                            }
+                    let (tangent_1, tangent_2) = contact_tangents(normal);
+                    let max_friction = contact.friction * next;
+                    for (slot, tangent) in [
+                        (&mut accumulated.tangent_1, tangent_1),
+                        (&mut accumulated.tangent_2, tangent_2),
+                    ] {
+                        let tangent_mass = effective_mass(bodies, body_a, body_b, tangent, point);
+                        if tangent_mass <= 1e-12 {
+                            continue;
+                        }
+                        let relative =
+                            velocity_at(bodies, body_a, point) - velocity_at(bodies, body_b, point);
+                        let previous = *slot;
+                        let next = (previous - relative.dot3(tangent) / tangent_mass)
+                            .clamp(-max_friction, max_friction);
+                        let delta = next - previous;
+                        *slot = next;
+                        if delta != 0.0 {
+                            apply_impulses(bodies, body_a, body_b, point, tangent * delta);
                         }
                     }
                 }
+
+                impulses[index] = accumulated;
             }
         }
 
@@ -348,6 +476,181 @@ mod tests {
             0.5,
         );
         (bodies, contact)
+    }
+
+    #[test]
+    fn contact_tangents_are_orthonormal() {
+        for normal in [
+            Vector4::UNIT_Y,
+            Vector4::UNIT_X,
+            Vector4::from_xyz(0.3, -0.8, 0.5).normalized3(),
+        ] {
+            let (tangent_1, tangent_2) = contact_tangents(normal);
+            assert!((tangent_1.length3() - 1.0).abs() < 1e-5);
+            assert!((tangent_2.length3() - 1.0).abs() < 1e-5);
+            assert!(tangent_1.dot3(normal).abs() < 1e-5);
+            assert!(tangent_2.dot3(normal).abs() < 1e-5);
+            assert!(tangent_1.dot3(tangent_2).abs() < 1e-5);
+            // Deterministic: the same normal always maps to the same basis.
+            assert_eq!(contact_tangents(normal), (tangent_1, tangent_2));
+        }
+    }
+
+    #[test]
+    fn warm_start_impulses_are_reused() {
+        // Resting contact: no penetration, approaching at the per-step gravity
+        // delta so the required impulse is 0.1 N·s.
+        let mut bodies = vec![
+            SolverBody::new(
+                1.0,
+                Vector4::ZERO,
+                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vector4::from_xyz(0.0, -0.1, 0.0),
+                Vector4::ZERO,
+            ),
+            SolverBody::static_body(Vector4::ZERO),
+        ];
+        let contact = ContactConstraint::new(
+            0,
+            1,
+            Vector4::UNIT_Y,
+            Vector4::from_xyz(0.0, 0.5, 0.0),
+            0.0,
+            0.0,
+        );
+        let solver = Solver::default();
+        let mut impulses = vec![ContactImpulse::default(); 1];
+        solver.solve_with_impulses(&mut bodies, &[contact], &mut impulses, 1.0 / 60.0);
+        assert!((impulses[0].normal - 0.1).abs() < 1e-4);
+
+        // Next step: gravity adds the same velocity again. Warm starting must
+        // reuse the cached impulse and need no extra correction.
+        bodies[0].linear_velocity = Vector4::from_xyz(0.0, -0.1, 0.0);
+        solver.solve_with_impulses(&mut bodies, &[contact], &mut impulses, 1.0 / 60.0);
+        assert!((impulses[0].normal - 0.1).abs() < 1e-4);
+        assert!(
+            bodies[0].linear_velocity.y.abs() < 1e-4,
+            "vy {}",
+            bodies[0].linear_velocity.y
+        );
+    }
+
+    #[test]
+    fn warm_starting_disabled_discards_impulses() {
+        let mut bodies = vec![
+            SolverBody::new(
+                1.0,
+                Vector4::ZERO,
+                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vector4::from_xyz(0.0, -0.1, 0.0),
+                Vector4::ZERO,
+            ),
+            SolverBody::static_body(Vector4::ZERO),
+        ];
+        let contact = ContactConstraint::new(
+            0,
+            1,
+            Vector4::UNIT_Y,
+            Vector4::from_xyz(0.0, 0.5, 0.0),
+            0.0,
+            0.0,
+        );
+        let mut solver = Solver::default();
+        solver.settings.warm_starting = false;
+        let mut impulses = vec![ContactImpulse {
+            normal: 100.0,
+            tangent_1: 0.0,
+            tangent_2: 0.0,
+        }];
+        solver.solve_with_impulses(&mut bodies, &[contact], &mut impulses, 1.0 / 60.0);
+        // The bogus 100 N·s warm-start impulse must not have been applied.
+        assert!(
+            (impulses[0].normal - 0.1).abs() < 1e-4,
+            "impulse {}",
+            impulses[0].normal
+        );
+        assert!(bodies[0].linear_velocity.y.abs() < 1e-4);
+    }
+
+    #[test]
+    fn subset_solve_leaves_other_contacts_untouched() {
+        let mut bodies = vec![
+            SolverBody::new(
+                1.0,
+                Vector4::ZERO,
+                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vector4::from_xyz(0.0, -1.0, 0.0),
+                Vector4::ZERO,
+            ),
+            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::new(
+                1.0,
+                Vector4::ZERO,
+                Vector4::from_xyz(5.0, 1.0, 0.0),
+                Vector4::from_xyz(0.0, -1.0, 0.0),
+                Vector4::ZERO,
+            ),
+            SolverBody::static_body(Vector4::from_xyz(5.0, 0.0, 0.0)),
+        ];
+        let contacts = [
+            ContactConstraint::new(
+                0,
+                1,
+                Vector4::UNIT_Y,
+                Vector4::from_xyz(0.0, 0.5, 0.0),
+                0.1,
+                0.5,
+            ),
+            ContactConstraint::new(
+                2,
+                3,
+                Vector4::UNIT_Y,
+                Vector4::from_xyz(5.0, 0.5, 0.0),
+                0.1,
+                0.5,
+            ),
+        ];
+        let mut impulses = vec![ContactImpulse::default(); 2];
+        let stats = Solver::default().solve_contacts_subset(
+            &mut bodies,
+            &contacts,
+            &[1],
+            &mut impulses,
+            1.0 / 60.0,
+        );
+        assert_eq!(stats.contacts, 2);
+        assert_eq!(bodies[0].linear_velocity.y, -1.0);
+        assert!(bodies[2].linear_velocity.y >= -1e-3);
+        assert_eq!(impulses[0], ContactImpulse::default());
+        assert!(impulses[1].normal > 0.0);
+    }
+
+    #[test]
+    fn friction_impulses_stay_inside_the_cone() {
+        let mut bodies = vec![
+            SolverBody::new(
+                1.0,
+                Vector4::ZERO,
+                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vector4::from_xyz(10.0, -5.0, 3.0),
+                Vector4::ZERO,
+            ),
+            SolverBody::static_body(Vector4::ZERO),
+        ];
+        let contact = ContactConstraint::new(
+            0,
+            1,
+            Vector4::UNIT_Y,
+            Vector4::from_xyz(0.0, 0.5, 0.0),
+            0.1,
+            0.5,
+        );
+        let mut impulses = vec![ContactImpulse::default(); 1];
+        Solver::default().solve_with_impulses(&mut bodies, &[contact], &mut impulses, 1.0 / 60.0);
+        let impulse = impulses[0];
+        let limit = 0.5 * impulse.normal;
+        assert!(impulse.tangent_1.abs() <= limit + 1e-5);
+        assert!(impulse.tangent_2.abs() <= limit + 1e-5);
     }
 
     #[test]

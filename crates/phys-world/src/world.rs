@@ -8,16 +8,18 @@ use phys_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
 use phys_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
 use phys_shape::Shape;
 use phys_solver::{
-    BallAndSocketJoint, ContactConstraint, FixedJoint, HingeJoint, HingeLimits, HingeMotor,
-    JointConstraint, PointToPlaneJoint, PrismaticJoint, RagdollJoint, Solver, SolverBody,
-    SolverSettings, SpringJoint,
+    BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
+    HingeMotor, JointConstraint, PointToPlaneJoint, PrismaticJoint, RagdollJoint, Solver,
+    SolverBody, SolverSettings, SpringJoint,
 };
 use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
+use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
     PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
+use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
@@ -47,6 +49,8 @@ pub struct World {
     joints: Vec<Option<JointSlot>>,
     joint_count: usize,
     solver: Solver,
+    contact_cache: ContactImpulseCache,
+    last_islands: Vec<IslandInfo>,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -59,6 +63,7 @@ impl World {
         let gravity = cinfo.gravity;
         let solver_settings = SolverSettings {
             iterations: cinfo.solver_iterations,
+            warm_starting: cinfo.enable_warm_starting,
             ..SolverSettings::default()
         };
         Self {
@@ -68,6 +73,8 @@ impl World {
             joints: Vec::new(),
             joint_count: 0,
             solver: Solver::new(solver_settings),
+            contact_cache: ContactImpulseCache::default(),
+            last_islands: Vec::new(),
             cinfo,
             gravity,
             step_count: 0,
@@ -706,6 +713,28 @@ impl World {
         self.last_contact_count
     }
 
+    /// Constraint islands solved during the most recent step.
+    ///
+    /// Islands are ordered by their lowest dynamic body and list bodies in
+    /// ascending slot order, so the result is deterministic.
+    pub fn islands(&self) -> &[IslandInfo] {
+        &self.last_islands
+    }
+
+    /// Number of constraint islands in the most recent step.
+    pub fn last_island_count(&self) -> usize {
+        self.last_islands.len()
+    }
+
+    /// Drop the cached contact impulses used for warm starting.
+    ///
+    /// Call this after teleporting bodies or changing friction/mass drastically
+    /// when stale impulses would be undesirable; normal use does not need it
+    /// (the cache prunes unreachable points every step).
+    pub fn clear_contact_cache(&mut self) {
+        self.contact_cache.clear();
+    }
+
     /// Advance the world by `delta_time` using one thread.
     ///
     /// Shortcut for [`World::step_with_threads(delta_time, 1)`].
@@ -790,12 +819,20 @@ impl World {
             ));
         }
 
+        // Contacts plus their warm-start identity (point on B in B's local
+        // space, so the same feature can be found again next step).
         let mut constraints = Vec::with_capacity(self.last_contact_count);
+        let mut contact_keys = Vec::with_capacity(self.last_contact_count);
+        let mut contact_impulses = Vec::with_capacity(self.last_contact_count);
         for contact in &contacts {
             let (Some(&body_a), Some(&body_b)) = (
                 index_map.get(&contact.body_a),
                 index_map.get(&contact.body_b),
             ) else {
+                continue;
+            };
+            let Some(transform_b) = self.bodies.get(contact.body_b).map(|body| body.transform)
+            else {
                 continue;
             };
             for point in &contact.manifold.points {
@@ -811,16 +848,73 @@ impl World {
                     penetration,
                     0.5,
                 ));
+                let key = ContactKey {
+                    body_a: contact.body_a,
+                    body_b: contact.body_b,
+                    local_point_b: transform_b.inverse_transform_point(point.position),
+                    normal: contact.manifold.normal,
+                };
+                contact_impulses.push(if self.cinfo.enable_warm_starting {
+                    self.contact_cache.match_impulse(key)
+                } else {
+                    ContactImpulse::default()
+                });
+                contact_keys.push(key);
             }
         }
-        self.solver
-            .solve(&mut solver_bodies, &constraints, delta_time);
 
-        // Solve joint constraints on top of the contact-solved velocities.
         let solver_joints = self.build_solver_joints(&index_map);
-        if !solver_joints.is_empty() {
-            self.solver
-                .solve_joints(&mut solver_bodies, &solver_joints, delta_time);
+
+        // Partition dynamic bodies into constraint islands and solve each one
+        // (contacts then joints) with its previous impulses as warm start.
+        let is_dynamic: Vec<bool> = solver_bodies.iter().map(SolverBody::is_dynamic).collect();
+        let contact_pairs: Vec<(usize, usize)> = constraints
+            .iter()
+            .map(|constraint| (constraint.body_a, constraint.body_b))
+            .collect();
+        let joint_pairs: Vec<(usize, usize)> =
+            solver_joints.iter().map(JointConstraint::bodies).collect();
+        let islands = build_islands(&body_ids, &is_dynamic, &contact_pairs, &joint_pairs);
+
+        self.last_islands = islands
+            .iter()
+            .map(|island| IslandInfo {
+                bodies: island
+                    .bodies
+                    .iter()
+                    .filter_map(|&index| body_ids.get(index).copied())
+                    .collect(),
+                dynamic_bodies: island.dynamic_bodies,
+                contacts: island.contacts.len(),
+                joints: island.joints.len(),
+            })
+            .collect();
+
+        for island in &islands {
+            if !island.contacts.is_empty() {
+                self.solver.solve_contacts_subset(
+                    &mut solver_bodies,
+                    &constraints,
+                    &island.contacts,
+                    &mut contact_impulses,
+                    delta_time,
+                );
+            }
+            if !island.joints.is_empty() {
+                self.solver.solve_joints_subset(
+                    &mut solver_bodies,
+                    &solver_joints,
+                    &island.joints,
+                    delta_time,
+                );
+            }
+        }
+
+        if self.cinfo.enable_warm_starting {
+            self.contact_cache
+                .replace(contact_keys.iter().copied().zip(contact_impulses));
+        } else {
+            self.contact_cache.clear();
         }
 
         // Write solved velocities back to dynamic motions.
@@ -973,6 +1067,7 @@ impl World {
             step_count: self.step_count,
             last_manifold_count: self.last_manifold_count,
             last_contact_count: self.last_contact_count,
+            last_island_count: self.last_islands.len(),
         }
     }
 
@@ -1355,6 +1450,7 @@ mod tests {
                 step_count: 0,
                 last_manifold_count: 0,
                 last_contact_count: 0,
+                last_island_count: 0,
             }
         );
     }
@@ -2007,5 +2103,108 @@ mod tests {
         assert_eq!(world.constraints_of_body(c).count(), 1);
         assert!(!world.set_ragdoll_limits(first, 0.3, -0.1, 0.1));
         assert!(!world.set_prismatic_limits(first, -1.0, 1.0));
+    }
+
+    #[test]
+    fn islands_split_bodies_on_a_shared_ground() {
+        let mut world = World::new(WorldCinfo::new());
+        let ground = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let left =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(-3.0, 0.5, 0.0)));
+        let right =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(3.0, 0.5, 0.0)));
+
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+
+        assert_eq!(world.last_island_count(), 2);
+        assert_eq!(world.stats().last_island_count, 2);
+        let islands = world.islands();
+        for island in islands {
+            assert_eq!(island.dynamic_bodies, 1);
+            assert!(island.contacts >= 1, "island without contacts");
+            assert_eq!(island.joints, 0);
+            assert!(
+                island.bodies.contains(&ground),
+                "the shared ground is listed in every island it touches"
+            );
+        }
+        // Island order is by lowest dynamic body, so the negative-X sphere's
+        // island comes first and body lists are ascending.
+        assert_eq!(islands[0].bodies, vec![ground, left]);
+        assert_eq!(islands[1].bodies, vec![ground, right]);
+    }
+
+    #[test]
+    fn contact_chain_forms_one_island() {
+        let mut world = World::new(WorldCinfo::new());
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(4.0, 0.5, 4.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(0.0, 0.6, 0.0)),
+        );
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(0.0, 1.7, 0.0)),
+        );
+
+        for _ in 0..180 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.last_island_count(), 1);
+        let island = &world.islands()[0];
+        assert_eq!(island.dynamic_bodies, 2);
+        assert!(island.contacts >= 2);
+    }
+
+    #[test]
+    fn contact_cache_is_pruned_when_bodies_disappear() {
+        let mut world = World::new(WorldCinfo::new());
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let sphere =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        assert!(world.contact_cache.len() > 0, "no warm-start rows cached");
+
+        assert!(world.destroy_body(sphere));
+        world.step(1.0 / 60.0);
+        assert_eq!(world.contact_cache.len(), 0);
+        assert_eq!(world.last_island_count(), 0);
+
+        world.clear_contact_cache();
+        assert_eq!(world.contact_cache.len(), 0);
+    }
+
+    #[test]
+    fn warm_starting_can_be_disabled() {
+        let mut world = World::new(WorldCinfo::new().with_warm_starting(false));
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        assert!(world.last_contact_count() > 0);
+        assert!(world.last_island_count() > 0);
+        assert_eq!(world.contact_cache.len(), 0);
     }
 }

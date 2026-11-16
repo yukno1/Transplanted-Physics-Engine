@@ -293,6 +293,21 @@ impl crate::solver::Solver {
         joints: &[JointConstraint],
         delta_time: f32,
     ) -> JointSolverStats {
+        let indices: Vec<usize> = (0..joints.len()).collect();
+        self.solve_joints_subset(bodies, joints, &indices, delta_time)
+    }
+
+    /// Solve only the joints listed in `subset`, in ascending index order.
+    ///
+    /// The world calls this with one constraint island's joints; islands share
+    /// no dynamic body, so the impulse sequence is identical to a global sweep.
+    pub fn solve_joints_subset(
+        &self,
+        bodies: &mut [SolverBody],
+        joints: &[JointConstraint],
+        subset: &[usize],
+        delta_time: f32,
+    ) -> JointSolverStats {
         debug_assert!(delta_time >= 0.0 && delta_time.is_finite());
         let settings = self.settings();
         let bias_scale = if delta_time > 0.0 {
@@ -304,8 +319,8 @@ impl crate::solver::Solver {
         // Motors are applied once per solve, before the sweeps (see
         // `solve_hinge_motor`); limits run inside the sweeps like any other
         // constraint row.
-        for joint in joints {
-            if let JointConstraint::Hinge(joint) = joint {
+        for &index in subset {
+            if let JointConstraint::Hinge(joint) = &joints[index] {
                 if let Some(motor) = joint.motor {
                     solve_hinge_motor(bodies, joint, motor);
                 }
@@ -313,8 +328,8 @@ impl crate::solver::Solver {
         }
 
         for _ in 0..settings.iterations {
-            for joint in joints {
-                match *joint {
+            for &index in subset {
+                match joints[index] {
                     JointConstraint::BallAndSocket(joint) => {
                         solve_point_constraint(
                             bodies,
@@ -1198,6 +1213,33 @@ mod tests {
         Solver::default().solve_joints(&mut bodies, &[joint, joint], 1.0 / 60.0);
         let relative = bodies[0].velocity_at(Vector4::ZERO) - bodies[1].velocity_at(Vector4::ZERO);
         assert!(relative.length3() < 1e-2);
+    }
+
+    #[test]
+    fn joint_subset_only_solves_listed_joints() {
+        let mut bodies = vec![
+            dynamic_body(Vector4::ZERO, Vector4::UNIT_X),
+            dynamic_body(Vector4::ZERO, Vector4::ZERO),
+            dynamic_body(Vector4::from_xyz(5.0, 0.0, 0.0), Vector4::UNIT_X),
+            dynamic_body(Vector4::from_xyz(5.0, 0.0, 0.0), Vector4::ZERO),
+        ];
+        let joint = |body_a, body_b| {
+            JointConstraint::BallAndSocket(BallAndSocketJoint {
+                body_a,
+                body_b,
+                pivot_a: Vector4::ZERO,
+                pivot_b: Vector4::ZERO,
+            })
+        };
+        let joints = [joint(0, 1), joint(2, 3)];
+        Solver::default().solve_joints_subset(&mut bodies, &joints, &[1], 1.0 / 60.0);
+
+        // Island 0 is not in the subset and stays untouched.
+        assert_eq!(bodies[0].linear_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[1].linear_velocity, Vector4::ZERO);
+        // Island 1 had its relative velocity removed.
+        let relative = (bodies[2].linear_velocity - bodies[3].linear_velocity).length3();
+        assert!(relative < 1e-2, "relative velocity {relative}");
     }
 
     #[test]

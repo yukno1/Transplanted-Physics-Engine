@@ -33,6 +33,8 @@ pub struct WorldCinfo {
     pub solver_iterations: u32,
     /// Whether deactivation is enabled (default true).
     pub enable_deactivation: bool,
+    /// Whether contact impulses are warm started across steps (default true).
+    pub enable_warm_starting: bool,
     /// Expected step delta time (default 1/30 s).
     pub expected_delta_time: f32,
 }
@@ -49,6 +51,7 @@ impl Default for WorldCinfo {
             solver_damp: 1.0,
             solver_iterations: 4,
             enable_deactivation: true,
+            enable_warm_starting: true,
             expected_delta_time: 1.0 / 30.0,
         }
     }
@@ -111,6 +114,13 @@ impl WorldCinfo {
         self
     }
 
+    /// Enable or disable contact warm starting.
+    #[must_use]
+    pub fn with_warm_starting(mut self, enabled: bool) -> Self {
+        self.enable_warm_starting = enabled;
+        self
+    }
+
     /// Set the expected step delta time used for solver scaling.
     #[must_use]
     pub fn with_expected_delta_time(mut self, delta_time: f32) -> Self {
@@ -134,6 +144,7 @@ mod tests {
         assert_eq!(cinfo.solver_damp, 1.0);
         assert_eq!(cinfo.solver_iterations, 4);
         assert!(cinfo.enable_deactivation);
+        assert!(cinfo.enable_warm_starting);
         assert!((cinfo.expected_delta_time - 1.0 / 30.0).abs() < 1e-6);
     }
 
@@ -146,11 +157,13 @@ mod tests {
             .with_motion_capacity(5)
             .with_collision_tolerance(0.1)
             .with_solver_settings(0.5, 0.9, 8)
-            .with_deactivation(false);
+            .with_deactivation(false)
+            .with_warm_starting(false);
         assert_eq!(cinfo.name.as_deref(), Some("test"));
         assert_eq!(cinfo.body_buffer_capacity, 10);
         assert_eq!(cinfo.solver_tau, 0.5);
         assert_eq!(cinfo.solver_iterations, 8);
         assert!(!cinfo.enable_deactivation);
+        assert!(!cinfo.enable_warm_starting);
     }
 }

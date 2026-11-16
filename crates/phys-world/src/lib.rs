@@ -22,12 +22,15 @@
 //! 1. **Collide**: build world AABBs, run the deterministic grid broad phase,
 //!    then narrow-phase convex-convex contact generation (`phys-collide`).
 //!    [`World::collect_contacts`] exposes this stage for tests/tools.
-//! 2. **Solve**: apply gravity to dynamic motions, build solver bodies and
-//!    single-point contact constraints, run the iterative sequential-impulse
-//!    contact solver, then solve the enabled joints (ragdoll/prismatic/spring/
-//!    point-to-plane/… in constraint slot order), and write solved velocities
-//!    back to motions.
-//! 3. **Integrate**: semi-implicit Euler integration of dynamic motions and
+//! 2. **Islands**: partition dynamic bodies into constraint islands
+//!    (`union-find` over contacts and joints; static bodies never merge
+//!    islands). [`World::islands`] exposes the partition.
+//! 3. **Solve**: apply gravity to dynamic motions, build solver bodies and
+//!    single-point contact constraints, warm start each contact row from the
+//!    previous step's impulses, then solve every island (contacts followed by
+//!    the enabled joints: ragdoll/prismatic/spring/point-to-plane/…) and write
+//!    solved velocities back to motions.
+//! 4. **Integrate**: semi-implicit Euler integration of dynamic motions and
 //!    refresh of body transforms/AABBs for the next step.
 //!
 //! Queries ([`World::raycast`], [`World::cast_shape`],
@@ -45,11 +48,13 @@
 //! compound bodies generate no contacts yet (queries do traverse them). The
 //! solver uses one contact point per pair (multi-point clipping is deferred),
 //! together with a velocity-level Baumgarte recovery bias and Coulomb friction.
-//! Joints are solved after contacts with the same sequential-impulse sweeps: pivots
-//! and axes are rebuilt from the body poses each step, so limits/motors are
-//! recomputed rather than warm-started. Material libraries, restitution,
-//! warm starting, islands, deactivation, broad-phase layers, command queues,
-//! events/modifiers and thread-parallel solving remain future work.
+//! Contact impulses are warm started across steps ([`World::clear_contact_cache`]
+//! drops the cache). Joints are solved after contacts within each island: pivots
+//! and axes are rebuilt from the body poses every step, so joint limits/motors
+//! are recomputed rather than warm-started. Islands are not yet used for
+//! sleeping or parallel solving. Material libraries, restitution, deactivation,
+//! broad-phase layers, command queues, events/modifiers and thread-parallel
+//! solving remain future work.
 //!
 //! # Not ported in this phase
 //!
@@ -63,8 +68,10 @@ use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
 use phys_types::BodyId;
 
+mod cache;
 pub mod cinfo;
 pub mod constraint;
+mod island;
 pub mod query;
 pub mod world;
 
@@ -73,6 +80,7 @@ pub use constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointType,
     PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
+pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
 pub use world::World;
 
@@ -162,4 +170,6 @@ pub struct WorldStats {
     pub last_manifold_count: usize,
     /// Contact points generated during the most recent step.
     pub last_contact_count: usize,
+    /// Constraint islands solved during the most recent step.
+    pub last_island_count: usize,
 }

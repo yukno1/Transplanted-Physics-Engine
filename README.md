@@ -115,8 +115,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `phys-solver` | 迭代式接触求解器 + 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor） | ✅ 已实现（Phase 8/11） |
-| `phys-world` | hknpWorld 组装 + collide→solve(contacts+joints)→integrate 管线 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11） |
+| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
@@ -333,8 +333,25 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **Wheel/Vehicle**：wheel 约束（悬挂 + 转向/驱动）未移植，依赖后续 vehicle 阶段；查询系统已提供 vehicle 悬挂 raycast 所需 API
 - **Shape cast**：仅凸体可作为 query shape（与 `hknpShapeCastQuery` 常见用法一致）；旋转 cast、`hknpDeflectedLinearCast` 与专用连续算法未移植；容差默认 `0.001`（`HKNP_DEFAULT_SHAPE_CAST_ACCURACY`）
 - **查询**：`closest_points_to_shape` 仅凸体；mesh/height field/compound 的最近点查询未移植；shape key/material/filter codec 的 per-leaf 解码未移植
-- **接触/约束**：约束求解在接触求解之后执行（同一速度缓冲），未做 island/constraint-batch 分区与 warm starting
+- **接触/约束**：约束求解在接触求解之后执行（同一速度缓冲），未做 island/constraint-batch 分区与 warm starting（Phase 12 已补上）
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；bench 新增 `raycast_world` / `shape_cast_world` / `joint_chain_ragdoll`
+
+### Phase 12：约束岛 + warm starting（✅ 已完成，2026-11-16）
+交付（`phys-solver` 40 个单元测试；`phys-world` 62 个单元测试 + 1 个文档测试；集成测试 `islands_and_warm_starting.rs` 5 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-solver` | `ContactImpulse`（normal + 双切向累积冲量）、`contact_tangents`（仅由法线决定的确定性正交切向基）、`Solver::solve_with_impulses`（先施加上一步冲量再迭代，回写累积值）、`Solver::solve_contacts_subset` / `solve_joints_subset`（按索引子集求解）、`SolverSettings::warm_starting` 开关；摩擦改为双切向盒式 clamp |
+| `phys-world` | `cache.rs`：接触冲量缓存——按 `(BodyId, BodyId)` + B 局部空间接触点（阈值 0.05 m、法线点积 ≥ 0.9）跨步匹配最近行，每步用实际求解的接触重建以自动剪枝；`island.rs`：union-find 约束岛（仅动态体连通，静态/关键帧体不合并岛，共享地面会列在多个岛中）；`World::step` 改为 collide → gravity → 建约束/匹配冲量 → 划岛 → 逐岛 solve(contacts→joints) → 回写速度 → 积分；`World::islands`/`last_island_count`/`clear_contact_cache`、`WorldStats::last_island_count`、`WorldCinfo::enable_warm_starting` / `with_warm_starting` |
+
+决策与偏差：
+
+- **岛不改变数值结果**：岛之间不共享动态体，逐岛求解与全局顺序脉冲在数学上等价且逐位一致（仅用于局部化求解状态，为后续休眠/并行铺路）；关节仍按 `constraints` 槽序 + 固定行序求解
+- **warm starting 匹配靠局部特征**：单点流形下用 B 局部接触点 + 法线匹配，传送/移除 body 时距离或法线检查失败即自动失配；`clear_contact_cache` 供大幅改质量/摩擦后显式清理
+- **摩擦基固定**：切向基由法线生成（`+X`，法线接近 `X` 时用 `+Y`），保证跨步可复用；盒式 clamp 近似锥形摩擦（`|t1|,|t2| ≤ μ·λn`）
+- **验证**：5 层堆叠 480 步后 warm starting 残余穿透约为冷启动的一半（0.0147 m vs 0.0292 m），两次同场景运行 `hvk-trace v1` 逐位一致
+- **未纳入**：岛级休眠/唤醒（deactivation manager）、按岛并行求解、接触多点流形的逐点匹配、warm starting 的冲量缩放系数、关节 warm starting
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；bench 指标与 Phase 11 同量级
 
 ---
 
@@ -354,7 +371,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 形状 support/AABB | 凸体 support 与 AABB 按 SDK 语义包含 convex radius；体积按名义实体（不含圆角）；Cylinder 用精确有限圆柱范围公式 |
 | Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
-| 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、单切向摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
+| 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、双切向盒式摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
+| 约束岛 + warm starting | union-find 按接触/关节连通动态体（静态体不合并岛）；逐岛 solve(contacts→joints)，因岛间无共享动态体而与全局顺序等价；接触冲量按 body 对 + B 局部点匹配后跨步复用，切向基仅由法线决定以保证可复用 |
 | 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
@@ -416,12 +434,13 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
 - [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）、查询系统（world raycast / closest point）与铰链 limits/motors 完成
 - [x] Phase 11（约束/joint + 查询系统，2026-11-16）：Ragdoll cone/twist、Prismatic、StiffSpring、PointToPlane 关节与约束碰撞屏蔽、body↔constraint 映射；shape cast（凸-凸 conservative advancement + mesh/height field/compound 目标）、mesh/height field/compound raycast、`QueryFilter`、`closest_points_to_shape`、AABB 查询完成
-- [ ] 后续：约束岛与 warm starting、位置/弹性电机、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 12（约束岛 + warm starting，2026-11-16）：接触冲量累积与跨步缓存（B 局部点 + 法线匹配）、union-find 约束岛（静态体不合并）、逐岛 solve(contacts→joints)、`World::islands`/`WorldStats::last_island_count`/`WorldCinfo::with_warm_starting` 完成；`phys-solver` 40、`phys-world` 62 个单元测试，集成测试 5 个
+- [ ] 后续：位置/弹性电机与关节 warm starting、岛级休眠/唤醒与按岛并行、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
 仓库现状（2026-11-16）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：最新提交 `70889e4 phys-solver & phys-world`（约束/查询子集）；Phase 11 改动（solver 关节族、collide 查询、world 约束/查询、tests/bench/README、门面 crate 迁根改名）尚未提交
+- git：最新提交 `ddee0d7 重命名`，其前为 `9b2d8b1 phase11`；Phase 11 已全部提交，Phase 12（solver warm starting、world 冲量缓存/约束岛、tests/README）尚未提交
 - 外部依赖：0
 
