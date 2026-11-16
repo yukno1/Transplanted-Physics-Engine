@@ -6,15 +6,15 @@
 //!
 //! This crate is currently a scaffold; re-exports grow as phases land.
 
-pub use hk_container as container;
-pub use hk_geometry as geometry;
-pub use hk_math as math;
-pub use hk_memory as memory;
-pub use hk_thread as thread;
-pub use hk_types as types;
-pub use hknp_body as body;
-pub use hknp_collide as collide;
-pub use hknp_shape as shape;
-pub use hknp_solver as solver;
-pub use hknp_types as np_types;
-pub use hknp_world as world;
+pub use base_container as container;
+pub use base_geometry as geometry;
+pub use base_math as math;
+pub use base_memory as memory;
+pub use base_thread as thread;
+pub use base_types as types;
+pub use phys_body as body;
+pub use phys_collide as collide;
+pub use phys_shape as shape;
+pub use phys_solver as solver;
+pub use phys_types as np_types;
+pub use phys_world as world;

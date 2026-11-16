@@ -3,112 +3,112 @@
 version = 4
 
 [[package]]
-name = "hk-container"
+name = "base-container"
 version = "0.1.0"
 
 [[package]]
-name = "hk-geometry"
+name = "base-geometry"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hk-types",
+ "base-math",
+ "base-types",
 ]
 
 [[package]]
-name = "hk-math"
+name = "base-math"
 version = "0.1.0"
 
 [[package]]
-name = "hk-memory"
+name = "base-memory"
 version = "0.1.0"
 
 [[package]]
-name = "hk-serialize"
+name = "base-serialize"
 version = "0.1.0"
 
 [[package]]
-name = "hk-thread"
+name = "base-thread"
 version = "0.1.0"
 
 [[package]]
-name = "hk-types"
+name = "base-types"
 version = "0.1.0"
 
 [[package]]
-name = "hknp-body"
+name = "phys-body"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hknp-shape",
- "hknp-types",
+ "base-math",
+ "phys-shape",
+ "phys-types",
 ]
 
 [[package]]
-name = "hknp-collide"
+name = "phys-collide"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hknp-shape",
- "hknp-types",
+ "base-math",
+ "phys-shape",
+ "phys-types",
 ]
 
 [[package]]
-name = "hknp-extensions"
+name = "phys-extensions"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hknp-types",
- "hknp-world",
+ "base-math",
+ "phys-types",
+ "phys-world",
 ]
 
 [[package]]
-name = "hknp-shape"
+name = "phys-shape"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hknp-types",
+ "base-math",
+ "phys-types",
 ]
 
 [[package]]
-name = "hknp-solver"
+name = "phys-solver"
 version = "0.1.0"
 dependencies = [
- "hk-math",
+ "base-math",
 ]
 
 [[package]]
-name = "hknp-types"
+name = "phys-types"
 version = "0.1.0"
 
 [[package]]
-name = "hknp-world"
+name = "phys-world"
 version = "0.1.0"
 dependencies = [
- "hk-math",
- "hk-thread",
- "hknp-body",
- "hknp-collide",
- "hknp-shape",
- "hknp-solver",
- "hknp-types",
+ "base-math",
+ "base-thread",
+ "phys-body",
+ "phys-collide",
+ "phys-shape",
+ "phys-solver",
+ "phys-types",
 ]
 
 [[package]]
 name = "proton-engine"
 version = "0.1.0"
 dependencies = [
- "hk-container",
- "hk-geometry",
- "hk-math",
- "hk-memory",
- "hk-serialize",
- "hk-thread",
- "hk-types",
- "hknp-body",
- "hknp-collide",
- "hknp-extensions",
- "hknp-shape",
- "hknp-solver",
- "hknp-types",
- "hknp-world",
+ "base-container",
+ "base-geometry",
+ "base-math",
+ "base-memory",
+ "base-serialize",
+ "base-thread",
+ "base-types",
+ "phys-body",
+ "phys-collide",
+ "phys-extensions",
+ "phys-shape",
+ "phys-solver",
+ "phys-types",
+ "phys-world",
 ]

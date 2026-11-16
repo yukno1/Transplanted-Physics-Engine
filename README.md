@@ -89,29 +89,36 @@ original/                        # 统计日期：2026-11-09
 ## 3. 目标 Rust Workspace 结构
 
 ```
-havok/                             # 本仓库根目录
-├── Cargo.toml                     # [workspace] members = ["crates/*"]
+havok/                             # 本仓库根目录（workspace 根 + 门面 crate）
+├── Cargo.toml                     # [workspace] members = ["crates/*"] + 门面 crate proton-engine
+├── src/lib.rs                     # proton 门面：重导出公共 API
+├── benches/                       # 基准 harness（随门面 crate）
+├── tests/                         # 集成测试（随门面 crate）
+├── docs/                          # 阶段文档（测试矩阵等）
+├── LICENSE
 ├── README.md
-├── crates/
+└── crates/
 ```
 
-| crate | 职责 | 状态（2026-11-10） |
+> **命名约定（2026-11-16 已完成）**：门面 crate 改名 `proton-engine`（lib 名 `proton`，取代原 `havok`）；crate 前缀 `hk-* → base-*`、`hknp-* → phys-*`。目录、`Cargo.toml`、代码内引用（`hk_types → base_types` 等）已全部重命名，`cargo test --workspace` 全绿。
+
+| crate | 职责 | 状态（2026-11-16） |
 |---|---|---|
-| `hk-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
-| `hk-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
-| `hk-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
-| `hk-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
-| `hk-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
-| `hk-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
-| `hk-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
-| `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
-| `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
-| `hknp-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
-| `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `hknp-solver` | 迭代式接触求解器 + 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor） | ✅ 已实现（Phase 8/11） |
-| `hknp-world` | hknpWorld 组装 + collide→solve(contacts+joints)→integrate 管线 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11） |
-| `hknp-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
-| `havok` | 门面 crate，重导出公共 API | 🚧 骨架（重导出已接好） |
+| `base-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
+| `base-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
+| `base-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
+| `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
+| `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
+| `base-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
+| `base-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
+| `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
+| `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
+| `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
+| `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
+| `phys-solver` | 迭代式接触求解器 + 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor） | ✅ 已实现（Phase 8/11） |
+| `phys-world` | hknpWorld 组装 + collide→solve(contacts+joints)→integrate 管线 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11） |
+| `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
+| `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
 
@@ -125,8 +132,8 @@ havok/                             # 本仓库根目录
 - 检查命令：`cargo fmt`、`clippy -D warnings`、`test`、`doc -D warnings`、release build（CI 未配置，本地执行，见第 7 节）
 - 基础依赖决策：数学库定为**从 C++ 直译**（不用 glam，保证 float32 确定性）；`rayon`/`thiserror`/`bytemuck` 按阶段引入
 
-### Phase 1：`hk-types`（✅ 已完成，2026-11-09）
-交付位于 `crates/hk-types/src/`（49 个单元测试 + 13 个文档测试）：
+### Phase 1：`base-types`（✅ 已完成，2026-11-09）
+交付位于 `crates/base-types/src/`（49 个单元测试 + 13 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -146,8 +153,8 @@ havok/                             # 本仓库根目录
 - 跳过反射宏、`hkVarArgs`、`hkPtrAndInt`、`hkHandleMap`
 - 验证：`cargo fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 2：`hk-math`（✅ 核心已完成，2026-11-09；标量后端）
-交付位于 `crates/hk-math/src/`（52 个单元测试 + 5 个文档测试）：
+### Phase 2：`base-math`（✅ 核心已完成，2026-11-09；标量后端）
+交付位于 `crates/base-math/src/`（52 个单元测试 + 5 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -166,13 +173,13 @@ havok/                             # 本仓库根目录
 - `sqrt`/`sin`/`cos` 来自 Rust 标准库：`+ - * /` 与比较逐位等价，超越函数仅保证容差（C++ 端同样依赖平台 libm；最终以 Phase 9 黄金轨迹为准）
 - 未纳入本阶段：`hkVector2f/d`、`hkIntVector`、`hkPackedVector3`、`hkMatrix4f`、`hkMatrix6f/d`、`hkMathFuncs`、独立 `hkSimdFloat32/d` 包装
 
-### Phase 3：`hk-memory` + `hk-container`（✅ 已完成，2026-11-09）
-交付（`hk-memory` 8 个单元测试；`hk-container` 27 个单元测试 + 5 个文档测试）：
+### Phase 3：`base-memory` + `base-container`（✅ 已完成，2026-11-09）
+交付（`base-memory` 8 个单元测试；`base-container` 27 个单元测试 + 5 个文档测试）：
 
 | crate | 内容 |
 |---|---|
-| `hk-memory` | `Allocator` trait（`Layout` 风格 `alloc`/`alloc_zeroed`/`dealloc`/`realloc`）、`AllocStats`、`SystemAllocator`（转发全局分配器 + 原子统计/峰值）、`global()` 进程实例；失败即 panic，与 SDK 的 fail-fast 语义一致 |
-| `hk-container` | `Array`（`hkArray`：`removeAt` 无序换尾、`removeAtAndCopy` 有序前移、`reserve`/`expandBy`/`insertAt`/`append`/`optimizeCapacity`/`indexOf`）、`BlockStream`（`hkBlockStream` 单线程子集：4000 字节定长块、确定性迭代、随机访问、`clear` 复用块、字节统计）、`HashMap`/`HashSet`（`std::collections` + 固定种子 FNV-1a；`insert`/`tryInsert`/`tryGet`/`getOrInsertDefault`/`getWithDefault`/`at`） |
+| `base-memory` | `Allocator` trait（`Layout` 风格 `alloc`/`alloc_zeroed`/`dealloc`/`realloc`）、`AllocStats`、`SystemAllocator`（转发全局分配器 + 原子统计/峰值）、`global()` 进程实例；失败即 panic，与 SDK 的 fail-fast 语义一致 |
+| `base-container` | `Array`（`hkArray`：`removeAt` 无序换尾、`removeAtAndCopy` 有序前移、`reserve`/`expandBy`/`insertAt`/`append`/`optimizeCapacity`/`indexOf`）、`BlockStream`（`hkBlockStream` 单线程子集：4000 字节定长块、确定性迭代、随机访问、`clear` 复用块、字节统计）、`HashMap`/`HashSet`（`std::collections` + 固定种子 FNV-1a；`insert`/`tryInsert`/`tryGet`/`getOrInsertDefault`/`getWithDefault`/`at`） |
 
 决策与偏差：
 - **保持零外部依赖**：`hashbrown` 暂缓，使用 `std::collections`；禁用 `RandomState`，改固定种子 FNV-1a，保证跨运行可复现。迭代顺序确定，但**不等同于** C++ `hkHashBase` 的数组序；依赖顺序的代码请用 `Array`
@@ -181,8 +188,8 @@ havok/                             # 本仓库根目录
 - 未纳入：`hkLocalArray`/`hkInplaceArray`、`hkArrayView`、`hkString*`、`hkPointerMap`/`hkRelArray`/`hkTree`、并发容器；内存路由、`hkMemoryDebug`、FreeList/Lifo/Thread allocator 按 README 策略待性能分析后再引入
 - **核心原则**：指针访问全面改为 ID/索引访问，天然契合 Rust 借用检查
 
-### Phase 4：`hk-thread` + 任务系统（✅ 已完成，2026-11-10）
-交付位于 `crates/hk-thread/src/`（29 个单元测试 + 5 个文档测试）：
+### Phase 4：`base-thread` + 任务系统（✅ 已完成，2026-11-10）
+交付位于 `crates/base-thread/src/`（29 个单元测试 + 5 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -199,13 +206,13 @@ havok/                             # 本仓库根目录
 - `hknpMultithreadedSimulation` 与物理 `hknpTaskGraph`：Phase 10 已交付并行窄相子集（`step_with_threads`），完整任务图/求解器调度仍待
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 5：`hknp-types` + `hknp-shape`（✅ 已完成，2026-11-10）
-交付（`hknp-types` 16 个单元测试；`hknp-shape` 41 个单元测试）：
+### Phase 5：`phys-types` + `phys-shape`（✅ 已完成，2026-11-10）
+交付（`phys-types` 16 个单元测试；`phys-shape` 41 个单元测试）：
 
 | crate | 内容 |
 |---|---|
-| `hknp-types` | `BodyId`（u64，MSB 区分内部索引/用户 ID）与 `BodyIndex`（24 位索引 + 8 位 serial）；`MotionId`/`MaterialId`/`ShapeKey`/`SolverId`/`ImmediateConstraintId`/`BodyQualityId`/`MotionPropertiesId`/`ConstraintSolverId` 等句柄（invalid 哨兵与 SDK 完全一致）；`MotionType`、完整 `ShapeType`、`CollisionDispatchType`；`CollisionFlags`/`ShapeFlags`/`WorldAddedState` |
-| `hknp-shape` | 统一 `Shape` trait（`shape_type`/`dispatch_type`/`flags`/`aabb`/`bounding_radius`/`calc_aabb`/`volume`/`support`/`is_convex`/`as_any`）；`SphereShape`、`BoxShape`、`CapsuleShape`、`CylinderShape`、`TriangleShape`、`ConvexHullShape`；`CompoundShape`（`ShapeInstance` + `Arc<dyn Shape>`）；`MeshShape`（顶点+三角形+中值分割 BVH，叶子 4 个三角形）；`HeightFieldShape`（XZ 网格 + 高度采样） |
+| `phys-types` | `BodyId`（u64，MSB 区分内部索引/用户 ID）与 `BodyIndex`（24 位索引 + 8 位 serial）；`MotionId`/`MaterialId`/`ShapeKey`/`SolverId`/`ImmediateConstraintId`/`BodyQualityId`/`MotionPropertiesId`/`ConstraintSolverId` 等句柄（invalid 哨兵与 SDK 完全一致）；`MotionType`、完整 `ShapeType`、`CollisionDispatchType`；`CollisionFlags`/`ShapeFlags`/`WorldAddedState` |
+| `phys-shape` | 统一 `Shape` trait（`shape_type`/`dispatch_type`/`flags`/`aabb`/`bounding_radius`/`calc_aabb`/`volume`/`support`/`is_convex`/`as_any`）；`SphereShape`、`BoxShape`、`CapsuleShape`、`CylinderShape`、`TriangleShape`、`ConvexHullShape`；`CompoundShape`（`ShapeInstance` + `Arc<dyn Shape>`）；`MeshShape`（顶点+三角形+中值分割 BVH，叶子 4 个三角形）；`HeightFieldShape`（XZ 网格 + 高度采样） |
 
 决策与偏差：
 - **Box**：本阶段为“局部轴对齐半长 + convex radius”，OBB 变换由 body/实例携带（Phase 6）；**Cylinder** 的 AABB 使用有限圆柱精确支撑公式（`h*|axis_i| + r*sqrt(1-axis_i²)`），而非保守球扫掠
@@ -215,13 +222,13 @@ havok/                             # 本仓库根目录
 - 未纳入：`hknpCompressedMeshShape`、`hknpExternMeshShape`、`hknpBreakableCompoundShape`、LOD、decorator/masked 形状、shape tag codec、shape key mask/iterator、`hknpShapeMassProperties`
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 6：`hknp-body` + `hknp-world`（✅ 已完成，2026-11-10）
-交付（`hknp-body` 18 个单元测试 + 1 个文档测试；`hknp-world` 10 个单元测试 + 1 个文档测试）：
+### Phase 6：`phys-body` + `phys-world`（✅ 已完成，2026-11-10）
+交付（`phys-body` 18 个单元测试 + 1 个文档测试；`phys-world` 10 个单元测试 + 1 个文档测试）：
 
 | crate | 内容 |
 |---|---|
-| `hknp-body` | `Body`/`BodyCinfo`（shape、flags、material/quality、filter info、user data、位置/朝向/速度/质量）；`BodyManager` 索引池（24 位索引 + 8 位 serial，free-list 复用槽，复用后旧 `BodyId` 失效）；`Motion`（orientation、质心、线/角速度、mass/inverse inertia、积分与冲量）；`MotionManager`（slot 0 固定静态 motion `PRESET_STATIC`，动态槽复用） |
-| `hknp-world` | `WorldCinfo` builder（gravity、body/motion 容量、collisionTolerance、solverTau/Damp/Iterations、deactivation、expectedDeltaTime）；`World` 组装 body/motion manager，`create_body`/`destroy_body`、transform/position/velocity/AABB 访问器、`set_gravity`、`stats`；`step()` 单线程运动学骨架：动态 motion 做平移 + 旋转积分并同步 body transform/AABB，静态/Keyframed 保持不动（Phase 8 已扩展为 gravity→collide→solve→integrate 完整管线） |
+| `phys-body` | `Body`/`BodyCinfo`（shape、flags、material/quality、filter info、user data、位置/朝向/速度/质量）；`BodyManager` 索引池（24 位索引 + 8 位 serial，free-list 复用槽，复用后旧 `BodyId` 失效）；`Motion`（orientation、质心、线/角速度、mass/inverse inertia、积分与冲量）；`MotionManager`（slot 0 固定静态 motion `PRESET_STATIC`，动态槽复用） |
+| `phys-world` | `WorldCinfo` builder（gravity、body/motion 容量、collisionTolerance、solverTau/Damp/Iterations、deactivation、expectedDeltaTime）；`World` 组装 body/motion manager，`create_body`/`destroy_body`、transform/position/velocity/AABB 访问器、`set_gravity`、`stats`；`step()` 单线程运动学骨架：动态 motion 做平移 + 旋转积分并同步 body transform/AABB，静态/Keyframed 保持不动（Phase 8 已扩展为 gravity→collide→solve→integrate 完整管线） |
 
 决策与偏差：
 - `Body::transform` 暂用 f32 `hkTransform`；SDK 的 `hkPreciseTransform`（double 平移）留到 Phase 10 大世界/shift 工作
@@ -232,7 +239,7 @@ havok/                             # 本仓库根目录
 - 未纳入：broadphase/space splitter、body 添加/延迟队列、command queue 与确定性检查、deactivation manager、collision filter、事件/modifier、用户 body buffer、`hknpWorldReader`/`hknpWorldWriter` traits
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 7：`hknp-collide`（✅ 已完成，2026-11-10）
+### Phase 7：`phys-collide`（✅ 已完成，2026-11-10）
 交付（22 个单元测试）：
 
 | 模块 | 内容 |
@@ -250,13 +257,13 @@ havok/                             # 本仓库根目录
 - 未纳入：射线/AABB/形状投射查询、连续碰撞、SDF/粒子碰撞、复合形状窄相、接触缓存与 welding；这些留到 Phase 8+ 与查询阶段
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
-### Phase 8：`hknp-solver` + 完整步进（✅ 已完成，2026-11-10）
-交付（`hknp-solver` 5 个单元测试；`hknp-world` 13 个单元测试 + 1 个文档测试）：
+### Phase 8：`phys-solver` + 完整步进（✅ 已完成，2026-11-10）
+交付（`phys-solver` 5 个单元测试；`phys-world` 13 个单元测试 + 1 个文档测试）：
 
 | crate | 内容 |
 |---|---|
-| `hknp-solver` | `SolverBody`（inverse mass/inertia、质心、线/角速度、点冲量）；`ContactConstraint`（body 索引、B→A 法线、世界接触点、穿透、摩擦）；`SolverSettings`（iterations/baumgarte/max_recovery_speed/friction）；`Solver` 顺序脉冲 Gauss-Seidel：法向累积冲量非负 clamp、Baumgarte 穿透恢复速度上限、单切向摩擦按 `μ * 累积法向冲量` clamp；`SolverStats` |
-| `hknp-world` | `World::step` 完整管线：重力 → `collect_contacts`（网格宽相 + GJK/EPA 窄相）→ 构建 SolverBody/接触约束 → 求解 → 写回速度 → 半隐式欧拉积分并刷新 transform/AABB；`collect_contacts` 公开 API；`WorldStats` 增加 `last_manifold_count`/`last_contact_count`；静态-静态与 `DONT_COLLIDE` 过滤 |
+| `phys-solver` | `SolverBody`（inverse mass/inertia、质心、线/角速度、点冲量）；`ContactConstraint`（body 索引、B→A 法线、世界接触点、穿透、摩擦）；`SolverSettings`（iterations/baumgarte/max_recovery_speed/friction）；`Solver` 顺序脉冲 Gauss-Seidel：法向累积冲量非负 clamp、Baumgarte 穿透恢复速度上限、单切向摩擦按 `μ * 累积法向冲量` clamp；`SolverStats` |
+| `phys-world` | `World::step` 完整管线：重力 → `collect_contacts`（网格宽相 + GJK/EPA 窄相）→ 构建 SolverBody/接触约束 → 求解 → 写回速度 → 半隐式欧拉积分并刷新 transform/AABB；`collect_contacts` 公开 API；`WorldStats` 增加 `last_manifold_count`/`last_contact_count`；静态-静态与 `DONT_COLLIDE` 过滤 |
 
 决策与偏差：
 - 接触仍是**单点**（Phase 7 限制）；材质库未接入，摩擦系数固定 0.5、restitution 0，`WorldCinfo.solverTau/solverDamp` 暂时只保留字段，稳定化使用固定 Baumgarte 0.2
@@ -269,12 +276,12 @@ havok/                             # 本仓库根目录
 交付：
 
 - **测试矩阵**：[docs/phase9-test-matrix.md](docs/phase9-test-matrix.md)——41 个原版 UnitTest 的逐项映射（6 个 Ported、3 个 Partial、32 个 Blocked 并注明前置系统），以及 S1–S12 场景矩阵、基准矩阵与验收标准
-- **新增集成测试 19 个**（`crates/havok/tests/`）：
+- **新增集成测试 19 个**（`tests/`）：
   - `simulation_scenarios.rs`（10）：自由落体解析解、球/盒堆叠/胶囊/圆柱落地、摩擦滑动、流形约定、宽相确定性、DONT_COLLIDE、transform/orientation
   - `original_unit_tests.rs`（6）：`NpBodyAllocationTest`、`NpBoxShapeUnitTest`、`NpBoundingSphereTest`、`NpMeshShapeUnitTest`（结构）、`NpHeightFieldShapeUnitTest`（结构）、`NpManyBodiesTest`
   - `determinism.rs`（3）：同场景两次运行逐位一致（`f32::to_bits`）、`hvk-trace v1` 文本稳定、`NpWorldSnapshotTest` 部分映射
-- **确定性快照**：`hknp-world` 新增 `World::snapshot()` / `WorldSnapshot` / `BodySnapshot` 与 `to_text()`，浮点用 `to_bits()` 输出，格式 `hvk-trace v1`
-- **基准 harness**：`crates/havok/benches/simulation.rs`（`harness = false`，仅 `std::time`，无 criterion）；覆盖宽相、GJK 球/盒、窄相盒对、求解器、`world_fall_n`、`world_stack_10`
+- **确定性快照**：`phys-world` 新增 `World::snapshot()` / `WorldSnapshot` / `BodySnapshot` 与 `to_text()`，浮点用 `to_bits()` 输出，格式 `hvk-trace v1`
+- **基准 harness**：`benches/simulation.rs`（`harness = false`，仅 `std::time`，无 criterion）；覆盖宽相、GJK 球/盒、窄相盒对、求解器、`world_fall_n`、`world_stack_10`
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标
 
 黄金基准状态：`../original` 是源码分发，没有生成好的 `.sln`/Physics 测试可执行文件，完整构建依赖原版 MSBuild 工具链，当前环境无法运行 C++ 场景。因此**不宣称 C++ 逐位对齐**；已实现 Rust 侧逐位确定性与 trace 格式，待原版 SDK 可构建后按矩阵 §5 执行对比。criterion 因 crates.io 不可达改用自研 harness。
@@ -282,41 +289,41 @@ havok/                             # 本仓库根目录
 ### Phase 10：多线程 + 序列化 + 扩展（🚧 部分完成，2026-11-11）
 已交付子集：
 
-- **多线程窄相**（`hknp-world`）：新增 `World::collect_contacts_parallel(threads)` 与 `World::step_with_threads(dt, threads)`；使用 `hk_thread::parallel_for_chunks` 做确定性连续分块，chunk 结果按宽相 pair 索引回排，因此接触顺序与单线程完全一致。求解器与积分仍为串行；候选数 <32 时回退单线程（避免每步创建线程的开销）。新增测试：并行接触结果 == 单线程、双 world 120 步逐位一致（`hknp-world` 15 个单元测试）。
-- **`hk-serialize` 容器层**：HFF 结构化流解析（branch/leaf、30 位 size、FourCC、错误）与 Tagfile 容器（`TAG0`/`TCM0` 根、`SDKV` 版本、`DATA`/`TYPE`/`INDX` 访问），10 个单元测试。仅容器解析，不做反射对象重建。
-- **`hknp-extensions` WorldHash**：对 `WorldSnapshot` 做 FNV-1a 64 位确定性哈希（浮点按 `to_bits`），5 个单元测试。
+- **多线程窄相**（`phys-world`）：新增 `World::collect_contacts_parallel(threads)` 与 `World::step_with_threads(dt, threads)`；使用 `base_thread::parallel_for_chunks` 做确定性连续分块，chunk 结果按宽相 pair 索引回排，因此接触顺序与单线程完全一致。求解器与积分仍为串行；候选数 <32 时回退单线程（避免每步创建线程的开销）。新增测试：并行接触结果 == 单线程、双 world 120 步逐位一致（`phys-world` 15 个单元测试）。
+- **`base-serialize` 容器层**：HFF 结构化流解析（branch/leaf、30 位 size、FourCC、错误）与 Tagfile 容器（`TAG0`/`TCM0` 根、`SDKV` 版本、`DATA`/`TYPE`/`INDX` 访问），10 个单元测试。仅容器解析，不做反射对象重建。
+- **`phys-extensions` WorldHash**：对 `WorldSnapshot` 做 FNV-1a 64 位确定性哈希（浮点按 `to_bits`），5 个单元测试。
 - 基准新增 `world_fall_n_parallel` 场景（同一 step 管线，4 线程窄相）。
 - **约束/joint 系统**（2026-11-12，Phase 10 后续子集）：
-  - `hknp-types`：新增 `ConstraintIndex`（u32，invalid `HK_INT32_MAX`）与 `ConstraintId`（u64，MSB 区分内部索引/用户 ID，语义照抄 `hknpConstraintId.h`）。
-  - `hknp-solver`：新增 `constraint.rs`——世界空间 solver 级 joint（`BallAndSocketJoint` / `HingeJoint` / `FixedJoint`），顺序脉冲求解：线性 3 轴拉拢 pivot（分离量 Baumgarte bias）、铰链轴对齐（垂直轴角速度 + 轴误差 bias）、固定关节锁相对角速度（世界 X/Y/Z 轴 + 朝向误差 bias）。joint 在 slice 顺序、固定轴序下求解，确定性。新增 14 个单元测试。
-  - `hknp-world`：新增 `constraint.rs`——`BallAndSocketCinfo` / `HingeCinfo` / `FixedCinfo`（pivot/axis 存 body 局部空间；`FixedCinfo::between_bodies` 按当前位姿绑定）+ `WorldJoint` 槽表（**槽不复用**，ID 永不重指）与 `create_*_constraint` / `destroy_constraint` / `set_constraint_enabled` API；`step` 在接触求解后按槽序构建 solver joints 并求解；`destroy_body` 级联删除关联约束。新增 6 个约束单元测试。
+  - `phys-types`：新增 `ConstraintIndex`（u32，invalid `HK_INT32_MAX`）与 `ConstraintId`（u64，MSB 区分内部索引/用户 ID，语义照抄 `hknpConstraintId.h`）。
+  - `phys-solver`：新增 `constraint.rs`——世界空间 solver 级 joint（`BallAndSocketJoint` / `HingeJoint` / `FixedJoint`），顺序脉冲求解：线性 3 轴拉拢 pivot（分离量 Baumgarte bias）、铰链轴对齐（垂直轴角速度 + 轴误差 bias）、固定关节锁相对角速度（世界 X/Y/Z 轴 + 朝向误差 bias）。joint 在 slice 顺序、固定轴序下求解，确定性。新增 14 个单元测试。
+  - `phys-world`：新增 `constraint.rs`——`BallAndSocketCinfo` / `HingeCinfo` / `FixedCinfo`（pivot/axis 存 body 局部空间；`FixedCinfo::between_bodies` 按当前位姿绑定）+ `WorldJoint` 槽表（**槽不复用**，ID 永不重指）与 `create_*_constraint` / `destroy_constraint` / `set_constraint_enabled` API；`step` 在接触求解后按槽序构建 solver joints 并求解；`destroy_body` 级联删除关联约束。新增 6 个约束单元测试。
   - 局限：速度级求解（无位置修正投影）、无 limits/motors/springs、无约束岛与 warm starting；球的 inverse inertia 默认 0，摆动类场景需手动设置 `motion.inverse_inertia`。
 - **查询系统**（2026-11-12，Phase 10 后续子集）：
-  - `hknp-collide`：新增 `query.rs`——凸体 raycast（**conservative advancement**：GJK 点-形状距离除以射线与法线夹角推进，sphere/box/capsule/cylinder/hull 单一实现路径；射线起点在内部按 fraction 0 命中）、`point_distance`（点-形状 GJK 距离，供最近点查询）、`ray_aabb` slab 粗测（固定 x/y/z 轴序）。新增 10 个单元测试。
-  - `hknp-world`：新增 `query.rs`——`World::raycast`（最近命中，槽序遍历 + AABB 粗测 + 同 fraction 低 `BodyId` 优先，确定性）与 `World::closest_point`（凸体最近表面点/距离，内部点返回 distance 0）、`World::body_transform`。查询不受碰撞过滤影响（与 SDK 一致）；非凸形状（Mesh/Compound/HeightField）暂不参与。
-  - 新增集成测试 `crates/havok/tests/constraints_and_queries.rs`（9 个）。
+  - `phys-collide`：新增 `query.rs`——凸体 raycast（**conservative advancement**：GJK 点-形状距离除以射线与法线夹角推进，sphere/box/capsule/cylinder/hull 单一实现路径；射线起点在内部按 fraction 0 命中）、`point_distance`（点-形状 GJK 距离，供最近点查询）、`ray_aabb` slab 粗测（固定 x/y/z 轴序）。新增 10 个单元测试。
+  - `phys-world`：新增 `query.rs`——`World::raycast`（最近命中，槽序遍历 + AABB 粗测 + 同 fraction 低 `BodyId` 优先，确定性）与 `World::closest_point`（凸体最近表面点/距离，内部点返回 distance 0）、`World::body_transform`。查询不受碰撞过滤影响（与 SDK 一致）；非凸形状（Mesh/Compound/HeightField）暂不参与。
+  - 新增集成测试 `tests/constraints_and_queries.rs`（9 个）。
 - **铰链 limits/motors**（2026-11-12，Phase 10 后续子集）：
-  - `hknp-solver`：`HingeJoint` 新增 `limits: Option<HingeLimits>` 与 `motor: Option<HingeMotor>`——limits 为单边约束（仅当角度越界时施加回复脉冲，方向由 lambda 符号约束，Baumgarte bias 上限同接触求解），motor 为绕铰链轴的速度电机（**每次 solve 施加一次限幅冲量**，与迭代次数无关，确定性）。角度/速度约定为 **B 相对 A 绕铰链轴**（与角度测量 `sin = t_a × t_b · axis` 一致）。新增 8 个单元测试。
-  - `hknp-world`：`HingeCinfo` 新增 `limits`/`motor` 字段与 `HingeLimitsCinfo`（twist 参考轴对 + min/max 角）/`HingeMotorCinfo`（目标速度 + 冲量上限）；每步由世界空间 twist 轴计算签名角 `hinge_angle`（投影到垂直于铰链轴的平面，atan2 取值 `(-pi, pi]`）传入 solver；新增 `set_hinge_limits`/`set_hinge_motor` 运行时 API（非铰链/无效 ID 返回 false）。新增 3 个单元测试；`constraints_and_queries.rs` 集成测试增至 12 个。
+  - `phys-solver`：`HingeJoint` 新增 `limits: Option<HingeLimits>` 与 `motor: Option<HingeMotor>`——limits 为单边约束（仅当角度越界时施加回复脉冲，方向由 lambda 符号约束，Baumgarte bias 上限同接触求解），motor 为绕铰链轴的速度电机（**每次 solve 施加一次限幅冲量**，与迭代次数无关，确定性）。角度/速度约定为 **B 相对 A 绕铰链轴**（与角度测量 `sin = t_a × t_b · axis` 一致）。新增 8 个单元测试。
+  - `phys-world`：`HingeCinfo` 新增 `limits`/`motor` 字段与 `HingeLimitsCinfo`（twist 参考轴对 + min/max 角）/`HingeMotorCinfo`（目标速度 + 冲量上限）；每步由世界空间 twist 轴计算签名角 `hinge_angle`（投影到垂直于铰链轴的平面，atan2 取值 `(-pi, pi]`）传入 solver；新增 `set_hinge_limits`/`set_hinge_motor` 运行时 API（非铰链/无效 ID 返回 false）。新增 3 个单元测试；`constraints_and_queries.rs` 集成测试增至 12 个。
   - 局限：速度级 limit（越界小幅穿越后由 bias 拉回，无硬位置钳制）、仅速度电机（无位置/弹性电机、无 springs）、motors 不参与迭代内与 limits 联合收敛（预施加一次）。
 
 未完成/阻塞项：
 
 - **完整 `hknpMultithreadedSimulation`**：任务图/求解器/积分并行、work stealing、`hknpTaskGraph` 物理调度未移植；当前只并行窄相，且每步重建 scoped worker（小场景并行反而更慢，见 bench）。
-- **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`hk-serialize` 不能替代资产加载。
+- **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`base-serialize` 不能替代资产加载。
 - **Ragdoll / Vehicle / CharacterControl**：前置的 `约束/joint` 与 `查询` 系统已在 Phase 11 完成（见下）；扩展层本身（ragdoll 驱动/身体绑定、wheel 悬挂约束与 vehicle 调度、character action 调度）仍未移植。
 - 大世界 `hkPreciseTransform`（double 平移）仍待（当前 f32 Transform）。
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标。
 
 ### Phase 11：约束/joint 系统 + 查询系统（✅ 已完成，2026-11-16）
-交付（`hknp-solver` 34 个单元测试；`hknp-collide` 47 个单元测试；`hknp-world` 48 个单元测试 + 1 个文档测试；集成测试 `constraints_and_queries.rs` 22 个）：
+交付（`phys-solver` 34 个单元测试；`phys-collide` 47 个单元测试；`phys-world` 48 个单元测试 + 1 个文档测试；集成测试 `constraints_and_queries.rs` 22 个）：
 
 | crate | 内容 |
 |---|---|
-| `hknp-solver` | `Solver::solve_joints`：世界空间关节行按 slice 顺序做顺序脉冲求解。`BallAndSocketJoint`（3 线性行）、`HingeJoint`（3 线性 + 2 轴对齐 + 可选角度 limits + 速度 motor）、`FixedJoint`（3 线性 + 3 角度锁定 + 四元数误差偏置）、`RagdollJoint`（3 线性 + cone 摆动限制 + twist 角度限制）、`PrismaticJoint`（2 垂直线性行 + 3 角度锁定 + 沿轴行程限制）、`SpringJoint`（距离行）、`PointToPlaneJoint`（沿平面法线的距离行，零宽区间为双边）。limits 单边符号检查，motor 单次限幅冲量 |
-| `hknp-world` | 约束管理器：`ConstraintId` 槽表（不复用）、`WorldJoint`/`JointType`、`create_*_constraint`、`destroy_constraint`、`set_constraint_enabled`、hinge/ragdoll/prismatic 参数 setter、`set_constraint_collisions_enabled`（`DISABLE_COLLISIONS`：成对 body 不生成接触）、`constraints_of_body`（body↔constraint 映射）。每步从 body pose 重建世界空间行（pivot/axis、hinge/ragdoll 角度、prismatic 行程、fixed 相对朝向误差） |
-| `hknp-collide` | 查询：`raycast`（凸体 conservative advancement；mesh BVH、height field 单元、compound 递归；三角形 Möller–Trumbore）、`point_distance`、`ray_aabb`、`shape_cast`（凸-凸 conservative advancement + 复合目标叶子遍历；`ShapeCastHit` 带 fraction/position/normal/witness/start_penetrating） |
-| `hknp-world` 查询 | `QueryFilter`（ignore body + static/dynamic/keyframed 开关）、`raycast`/`raycast_filtered`、`cast_shape`、`closest_point`/`closest_point_filtered`、`closest_points_to_shape`（重叠时用 EPA 深度返回负距离）、`query_aabb`；结果按 `(distance, body id)` 决定，遍历顺序不影响确定性 |
+| `phys-solver` | `Solver::solve_joints`：世界空间关节行按 slice 顺序做顺序脉冲求解。`BallAndSocketJoint`（3 线性行）、`HingeJoint`（3 线性 + 2 轴对齐 + 可选角度 limits + 速度 motor）、`FixedJoint`（3 线性 + 3 角度锁定 + 四元数误差偏置）、`RagdollJoint`（3 线性 + cone 摆动限制 + twist 角度限制）、`PrismaticJoint`（2 垂直线性行 + 3 角度锁定 + 沿轴行程限制）、`SpringJoint`（距离行）、`PointToPlaneJoint`（沿平面法线的距离行，零宽区间为双边）。limits 单边符号检查，motor 单次限幅冲量 |
+| `phys-world` | 约束管理器：`ConstraintId` 槽表（不复用）、`WorldJoint`/`JointType`、`create_*_constraint`、`destroy_constraint`、`set_constraint_enabled`、hinge/ragdoll/prismatic 参数 setter、`set_constraint_collisions_enabled`（`DISABLE_COLLISIONS`：成对 body 不生成接触）、`constraints_of_body`（body↔constraint 映射）。每步从 body pose 重建世界空间行（pivot/axis、hinge/ragdoll 角度、prismatic 行程、fixed 相对朝向误差） |
+| `phys-collide` | 查询：`raycast`（凸体 conservative advancement；mesh BVH、height field 单元、compound 递归；三角形 Möller–Trumbore）、`point_distance`、`ray_aabb`、`shape_cast`（凸-凸 conservative advancement + 复合目标叶子遍历；`ShapeCastHit` 带 fraction/position/normal/witness/start_penetrating） |
+| `phys-world` 查询 | `QueryFilter`（ignore body + static/dynamic/keyframed 开关）、`raycast`/`raycast_filtered`、`cast_shape`、`closest_point`/`closest_point_filtered`、`closest_points_to_shape`（重叠时用 EPA 深度返回负距离）、`query_aabb`；结果按 `(distance, body id)` 决定，遍历顺序不影响确定性 |
 
 决策与偏差：
 
@@ -352,7 +359,7 @@ havok/                             # 本仓库根目录
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
-| Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
+| Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
 
 ---
 
@@ -377,7 +384,7 @@ cargo test --workspace
 cargo build --workspace --release
 
 # Phase 9 benchmark（无外部依赖；--quick 为小规模冒烟）
-cargo bench -p havok --bench simulation -- --quick
+cargo bench -p proton-engine --bench simulation -- --quick
 
 # 文档链接检查（可选）
 $env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps
@@ -397,14 +404,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 原项目结构分析
 - [x] 迁移计划制定
 - [x] Phase 0：工程脚手架 —— workspace 根 + 15 个 crate 骨架 + `.gitignore`（检查命令见第 7 节；CI 未配置）
-- [x] Phase 1：`hk-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
-- [x] Phase 2：`hk-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
-- [x] Phase 3：`hk-memory` + `hk-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
-- [x] Phase 4：`hk-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
-- [x] Phase 5：`hknp-types` + `hknp-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
-- [x] Phase 6：`hknp-body` + `hknp-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
-- [x] Phase 7：`hknp-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
-- [x] Phase 8：`hknp-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
+- [x] Phase 1：`base-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
+- [x] Phase 2：`base-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
+- [x] Phase 3：`base-memory` + `base-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
+- [x] Phase 4：`base-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
+- [x] Phase 5：`phys-types` + `phys-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试
+- [x] Phase 6：`phys-body` + `phys-world` —— Body/BodyCinfo/BodyManager、Motion/MotionManager、WorldCinfo/World 与单线程运动学 step 骨架完成，18 + 10 个单元测试
+- [x] Phase 7：`phys-collide` —— 网格宽相、GJK 最近点/相交、EPA 穿透、单点凸-凸流形与 sphere-sphere 解析特化完成，22 个单元测试
+- [x] Phase 8：`phys-solver` + 完整步进 —— 顺序脉冲接触求解器与 gravity→collide→solve→integrate 管线完成，5 + 13 个单元测试
 - [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
 - [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
 - [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）、查询系统（world raycast / closest point）与铰链 limits/motors 完成
@@ -414,6 +421,7 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 仓库现状（2026-11-16）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `70889e4 hknp-solver & hknp-world`（约束/查询子集）；Phase 11 改动（solver 关节族、collide 查询、world 约束/查询、tests/bench/README）尚未提交
+- 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
+- git：最新提交 `70889e4 phys-solver & phys-world`（约束/查询子集）；Phase 11 改动（solver 关节族、collide 查询、world 约束/查询、tests/bench/README、门面 crate 迁根改名）尚未提交
 - 外部依赖：0
 

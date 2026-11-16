@@ -6,7 +6,7 @@
 
 Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的验证层次：
 
-- **L0 单元层**：`hk-types` / `hk-math` / `hk-memory` / `hk-container` / `hk-thread` 已有 165 个单元测试（另含文档测试）。
+- **L0 单元层**：`base-types` / `base-math` / `base-memory` / `base-container` / `base-thread` 已有 165 个单元测试（另含文档测试）。
 - **L1 形状层**：AABB、support、bounding radius、体积、Mesh BVH、HeightField 采样。
 - **L2 生命周期层**：BodyId/BodyIndex 分配/销毁/槽复用、serial 失效、Motion 生命周期。
 - **L3 碰撞层**：宽相确定性、GJK 距离/相交、EPA 穿透、流形约定。
@@ -96,13 +96,13 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | S14 | hinge 角度 limits | L4/L5 | 越过上限后角度被拉回窗口内；初始越界 −0.1 rad 以上 | 同上 |
 | S15 | hinge 速度 motor | L4/L5 | 60 步后绕轴角速度追踪目标（±0.2）、关闭后不制动 | 同上 |
 | S16 | fixed 刚性对 | L4/L5 | 双体下落间距保持（±0.3）、整体下落 | 同上 |
-| S17 | ragdoll cone/twist | L4/L5 | cone 外的摆动回到 cone 内（<0.35 rad）、twist 越界回复 | 同上 + `hknp-world` 单元 |
+| S17 | ragdoll cone/twist | L4/L5 | cone 外的摆动回到 cone 内（<0.35 rad）、twist 越界回复 | 同上 + `phys-world` 单元 |
 | S18 | prismatic 滑块 | L4/L5 | 仅沿轴移动（垂直漂移 <0.15）、越界停在 limit 附近 | 同上 |
 | S19 | spring / point-to-plane | L4/L5 | 距离收敛到 rest length（±0.35）、pivot 保持在平面（±0.25） | 同上 |
 | S20 | 约束碰撞屏蔽 + body↔constraint 映射 | L4 | `set_constraint_collisions_enabled(false)` → 接触为空；`constraints_of_body` 槽序 | 同上 |
-| S21 | world raycast（复合体） | L3/L5 | mesh/height field/compound 命中距离与法线、过滤忽略 body、确定性 | `hknp-world` 单元 |
-| S22 | shape cast（复合体） | L3/L5 | mesh 地面分数 4.5、起始穿透 `start_penetrating`、忽略 caster | `hknp-collide` 单元 + 集成 |
-| S23 | 查询 filter / closest points / AABB | L3 | ignore body、motion-type 开关、重叠负距离、槽序 AABB 结果 | `hknp-world` 单元 + 集成 |
+| S21 | world raycast（复合体） | L3/L5 | mesh/height field/compound 命中距离与法线、过滤忽略 body、确定性 | `phys-world` 单元 |
+| S22 | shape cast（复合体） | L3/L5 | mesh 地面分数 4.5、起始穿透 `start_penetrating`、忽略 caster | `phys-collide` 单元 + 集成 |
+| S23 | 查询 filter / closest points / AABB | L3 | ignore body、motion-type 开关、重叠负距离、槽序 AABB 结果 | `phys-world` 单元 + 集成 |
 | S24 | 关节场景逐位一致 | L6 | 含 ball-socket/hinge/prismatic 的 180 步双 world snapshot 逐位相等 | `constraints_and_queries.rs` |
 
 ## 4. 基准场景（`cargo bench -p havok --bench simulation`）

@@ -1,0 +1,9 @@
+[package]
+name = "phys-types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "hknp core types: body/motion/material IDs, shape types, motion types, flags"
+
+[dependencies]
