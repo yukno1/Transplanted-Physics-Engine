@@ -18,6 +18,7 @@
 //! constraint groups and connectivity graph are not ported.
 
 use base_math::{Quaternion, Transform, Vector4};
+use phys_solver::JointImpulse;
 use phys_types::{BodyId, ConstraintId, ConstraintIndex};
 
 /// Ball-and-socket joint construction info (`hknpBallAndSocketConstraintData`).
@@ -49,7 +50,11 @@ impl BallAndSocketCinfo {
 ///
 /// The two axes must be unit length in their bodies' local spaces; rotation
 /// about the hinge is free apart from the optional angle limits
-/// ([`HingeCinfo::limits`]) and velocity motor ([`HingeCinfo::motor`]).
+/// ([`HingeCinfo::limits`]) and motor ([`HingeCinfo::motor`]).
+///
+/// The signed hinge angle is measured about the hinge axis between the
+/// reference axes ([`HingeCinfo::reference_axis_a`]/[`HingeCinfo::reference_axis_b`]);
+/// the defaults are a deterministic perpendicular of each hinge axis.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HingeCinfo {
     /// First body.
@@ -64,10 +69,16 @@ pub struct HingeCinfo {
     pub axis_a: Vector4,
     /// Hinge axis in body B's local space (unit).
     pub axis_b: Vector4,
-    /// Optional angle limits (measured about the hinge axis between the
-    /// reference/twist axes; `None` is unrestricted).
+    /// Reference (twist) axis in body A's local space used to measure the
+    /// signed hinge angle (`Vector4::ZERO` uses a deterministic perpendicular
+    /// of the hinge axis).
+    pub reference_axis_a: Vector4,
+    /// Reference axis in body B's local space.
+    pub reference_axis_b: Vector4,
+    /// Optional angle limits (measured about the hinge axis; `None` is
+    /// unrestricted).
     pub limits: Option<HingeLimitsCinfo>,
-    /// Optional velocity motor about the hinge axis (`None` is frictionless).
+    /// Optional motor about the hinge axis (`None` is frictionless).
     pub motor: Option<HingeMotorCinfo>,
 }
 
@@ -88,9 +99,21 @@ impl HingeCinfo {
             pivot_b,
             axis_a,
             axis_b,
+            reference_axis_a: Vector4::ZERO,
+            reference_axis_b: Vector4::ZERO,
             limits: None,
             motor: None,
         }
+    }
+
+    /// Set the reference (twist) axes used to measure the hinge angle
+    /// (`setAngularLimits` reference frame). Both axes must be unit length in
+    /// their bodies' local spaces and not parallel to the hinge axes.
+    #[must_use]
+    pub fn with_reference_axes(mut self, axis_a: Vector4, axis_b: Vector4) -> Self {
+        self.reference_axis_a = axis_a;
+        self.reference_axis_b = axis_b;
+        self
     }
 
     /// Attach angle limits (`setAngularLimits`).
@@ -99,7 +122,7 @@ impl HingeCinfo {
         self
     }
 
-    /// Attach a velocity motor about the hinge axis.
+    /// Attach a motor about the hinge axis.
     pub fn with_motor(mut self, motor: HingeMotorCinfo) -> Self {
         self.motor = Some(motor);
         self
@@ -108,17 +131,12 @@ impl HingeCinfo {
 
 /// Hinge angle limits (`hknpHingeConstraintData` limits subset).
 ///
-/// The signed angle is measured between `twist_axis_a` and `twist_axis_b`
-/// about the hinge axis, in radians, positive in the sense of the hinge axes.
-/// Both twist axes must be unit length in their bodies' local spaces and not
-/// parallel to the hinge axes (they are projected onto the plane
-/// perpendicular to the hinge).
+/// The signed angle (measured about the hinge axis between the reference
+/// axes, positive in the sense of the hinge axes) lives on the world step;
+/// the solver applies a restoring unilateral impulse only while it is outside
+/// `[min_angle, max_angle]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HingeLimitsCinfo {
-    /// Reference axis in body A's local space (unit, not parallel to `axis_a`).
-    pub twist_axis_a: Vector4,
-    /// Reference axis in body B's local space (unit, not parallel to `axis_b`).
-    pub twist_axis_b: Vector4,
     /// Lower angle bound in radians.
     pub min_angle: f32,
     /// Upper angle bound in radians (>= `min_angle`).
@@ -126,44 +144,100 @@ pub struct HingeLimitsCinfo {
 }
 
 impl HingeLimitsCinfo {
-    /// Construct limits from local reference axes and bounds.
-    pub fn new(
-        twist_axis_a: Vector4,
-        twist_axis_b: Vector4,
-        min_angle: f32,
-        max_angle: f32,
-    ) -> Self {
+    /// Construct limits from angle bounds.
+    pub fn new(min_angle: f32, max_angle: f32) -> Self {
         debug_assert!(
             min_angle <= max_angle,
             "hinge limit min_angle must not exceed max_angle"
         );
         Self {
-            twist_axis_a,
-            twist_axis_b,
             min_angle,
             max_angle,
         }
     }
 }
 
-/// Velocity motor about the hinge axis (`hknpVelocityConstraintMotor` subset).
+/// Motor about the hinge axis (`hknpAngularConstraintMotor` subset).
 ///
-/// Drives the relative angular velocity of B relative to A about the hinge
-/// axis toward `target_velocity`; the impulse applied per solve is clamped
-/// to `±max_impulse`.
+/// Every variant is applied once per solve as a single impulse clamped to
+/// `±max_impulse`; the spring variant integrates its force over the step
+/// (`impulse = force * delta_time`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct HingeMotorCinfo {
+pub enum HingeMotorCinfo {
+    /// Drive the relative angular velocity of B relative to A about the hinge
+    /// axis toward a target (`hknpVelocityConstraintMotor` subset).
+    Velocity(HingeVelocityMotorCinfo),
+    /// Drive the hinge angle toward a target (`hknpPositionConstraintMotor`
+    /// subset): the motor drives the relative angular velocity toward
+    /// `angle_error / tau`.
+    Position(HingePositionMotorCinfo),
+    /// Spring-damper pulling the hinge angle toward a rest angle
+    /// (`hknpSpringConstraintMotor` subset).
+    Spring(HingeSpringMotorCinfo),
+}
+
+/// Velocity motor about the hinge axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeVelocityMotorCinfo {
     /// Desired relative angular velocity about the hinge axis (rad/s).
     pub target_velocity: f32,
     /// Maximum impulse magnitude applied per solve.
     pub max_impulse: f32,
 }
 
-impl HingeMotorCinfo {
+impl HingeVelocityMotorCinfo {
     /// Construct a motor with the given target and impulse clamp.
     pub fn new(target_velocity: f32, max_impulse: f32) -> Self {
         Self {
             target_velocity,
+            max_impulse,
+        }
+    }
+}
+
+/// Position motor about the hinge axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingePositionMotorCinfo {
+    /// Desired hinge angle in radians (signed about the hinge axis).
+    pub target_angle: f32,
+    /// Time constant of the position error in seconds (values `<= 1e-4`
+    /// disable the motor).
+    pub tau: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl HingePositionMotorCinfo {
+    /// Construct a position motor.
+    pub fn new(target_angle: f32, tau: f32, max_impulse: f32) -> Self {
+        Self {
+            target_angle,
+            tau,
+            max_impulse,
+        }
+    }
+}
+
+/// Spring motor about the hinge axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HingeSpringMotorCinfo {
+    /// Rest angle in radians.
+    pub target_angle: f32,
+    /// Spring stiffness (torque per radian).
+    pub stiffness: f32,
+    /// Damping coefficient (torque per rad/s).
+    pub damping: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl HingeSpringMotorCinfo {
+    /// Construct a spring motor.
+    pub fn new(target_angle: f32, stiffness: f32, damping: f32, max_impulse: f32) -> Self {
+        Self {
+            target_angle,
+            stiffness,
+            damping,
             max_impulse,
         }
     }
@@ -310,7 +384,8 @@ impl RagdollCinfo {
 ///
 /// Translation along the slider axis is limited to
 /// `[min_translation, max_translation]`; rotation and the other two
-/// translation directions are locked to the bound relative pose.
+/// translation directions are locked to the bound relative pose. An optional
+/// motor ([`PrismaticCinfo::motor`]) drives the translation toward a target.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PrismaticCinfo {
     /// First body.
@@ -331,6 +406,8 @@ pub struct PrismaticCinfo {
     pub min_translation: f32,
     /// Upper translation bound (may be `+inf`).
     pub max_translation: f32,
+    /// Optional position/spring motor along the slider axis.
+    pub motor: Option<PrismaticMotorCinfo>,
 }
 
 impl PrismaticCinfo {
@@ -353,6 +430,7 @@ impl PrismaticCinfo {
             relative_orientation: Quaternion::IDENTITY,
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
+            motor: None,
         }
     }
 
@@ -378,6 +456,7 @@ impl PrismaticCinfo {
                 .inverse_mul(transform_b.rotation_quaternion()),
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
+            motor: None,
         }
     }
 
@@ -391,6 +470,76 @@ impl PrismaticCinfo {
         self.min_translation = min_translation;
         self.max_translation = max_translation;
         self
+    }
+
+    /// Attach a motor along the slider axis.
+    #[must_use]
+    pub fn with_motor(mut self, motor: PrismaticMotorCinfo) -> Self {
+        self.motor = Some(motor);
+        self
+    }
+}
+
+/// Motor along the slider axis (`hknpLinearConstraintMotor` subset).
+///
+/// Applied once per solve as a clamped impulse; the translation grows with
+/// the relative velocity of A's pivot with respect to B's pivot along the
+/// slider axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PrismaticMotorCinfo {
+    /// Drive the slider translation toward a target
+    /// (`hknpPositionConstraintMotor` subset).
+    Position(PrismaticPositionMotorCinfo),
+    /// Spring-damper pulling the slider translation toward a rest value
+    /// (`hknpSpringConstraintMotor` subset).
+    Spring(PrismaticSpringMotorCinfo),
+}
+
+/// Position motor along the slider axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrismaticPositionMotorCinfo {
+    /// Desired slider translation.
+    pub target_translation: f32,
+    /// Time constant of the position error in seconds (values `<= 1e-4`
+    /// disable the motor).
+    pub tau: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl PrismaticPositionMotorCinfo {
+    /// Construct a position motor.
+    pub fn new(target_translation: f32, tau: f32, max_impulse: f32) -> Self {
+        Self {
+            target_translation,
+            tau,
+            max_impulse,
+        }
+    }
+}
+
+/// Spring motor along the slider axis.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PrismaticSpringMotorCinfo {
+    /// Rest translation.
+    pub target_translation: f32,
+    /// Spring stiffness (force per meter).
+    pub stiffness: f32,
+    /// Damping coefficient (force per m/s).
+    pub damping: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl PrismaticSpringMotorCinfo {
+    /// Construct a spring motor.
+    pub fn new(target_translation: f32, stiffness: f32, damping: f32, max_impulse: f32) -> Self {
+        Self {
+            target_translation,
+            stiffness,
+            damping,
+            max_impulse,
+        }
     }
 }
 
@@ -573,12 +722,18 @@ pub enum JointType {
     PointToPlane,
 }
 
-/// A stored joint plus its flags.
+/// A stored joint plus its flags and warm-start state.
+///
+/// `impulses` holds the joint's accumulated solver-row impulses from the most
+/// recent step (`JointImpulse` keyed by the constraint's fixed row order);
+/// they are replayed before the next step's sweeps and cleared when the
+/// constraint is disabled or destroyed (its slot is dropped).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct JointSlot {
     pub joint: WorldJoint,
     pub enabled: bool,
     pub collisions_enabled: bool,
+    pub impulses: JointImpulse,
 }
 
 /// Build the solver-visible [`ConstraintId`] of a slot index.

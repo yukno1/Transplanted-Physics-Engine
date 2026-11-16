@@ -115,8 +115,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11/12） |
+| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
@@ -353,6 +353,21 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **未纳入**：岛级休眠/唤醒（deactivation manager）、按岛并行求解、接触多点流形的逐点匹配、warm starting 的冲量缩放系数、关节 warm starting
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；bench 指标与 Phase 11 同量级
 
+### Phase 12（后续子集）：位置/弹性电机 + 关节 warm starting（✅ 已完成，2026-11-16）
+交付（`phys-solver` 51 个单元测试；`phys-world` 70 个单元测试；新增集成测试 `motors_and_joint_warm_starting.rs` 5 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-solver` | `HingeMotor` 扩展为三模式枚举：`Velocity` / `Position`（`hknpPositionConstraintMotor` 子集，期望角速度 = 角度误差/τ，τ ≤ 1e-4 视为禁用）/ `Spring`（`hknpSpringConstraintMotor` 子集，冲量 = (k·角误差 − c·相对角速度)·Δt，力积分到步长）；`PrismaticJoint` 新增 `motor: Option<PrismaticMotor>`（`Position` / `Spring` 沿滑轴，SDK 线性电机子集）；新增 `JointImpulse`（`MAX_JOINT_ROWS = 8` 固定行序累积冲量，行序逐关节文档化）与 `Solver::solve_joints_with_impulses` / `solve_joints_subset_with_impulses`——扫掠前回放缓存冲量（双边行无条件、单边行仅越界时），并回写新累积值；单边行（limits/cone/twist）改为接触式**回复半空间 clamp**（上限侧 `accum ≤ 0`、下限侧 `accum ≥ 0`），回放过冲会被拉回而不注入能量；`HingeJoint.angle` 提升为顶层字段（无 limits 也可供电机使用），`HingeLimits` 仅保留角度界；`wrap_angle` 处理跨 ±π 目标 |
+| `phys-world` | `HingeMotorCinfo` 扩展为 `Velocity`/`Position`/`Spring` 枚举（新增 `HingeVelocityMotorCinfo`/`HingePositionMotorCinfo`/`HingeSpringMotorCinfo`）；`HingeCinfo` 提升参考（twist）轴 `reference_axis_a/b` + `with_reference_axes`（默认退化回退在**局部空间**计算铰链轴的确定性垂直轴，随刚体旋转），`HingeLimitsCinfo::new(min, max)`；`PrismaticCinfo` 新增 `motor` + `PrismaticMotorCinfo`（Position/Spring cinfo）与 `set_prismatic_motor` 运行时 API；`JointSlot` 新增 `impulses: JointImpulse`（跨步持久化，禁用约束即清零，销毁随槽释放）；`step` 用 `solve_joints_subset_with_impulses` 按岛求解并回写槽内冲量 |
+
+决策与偏差：
+
+- **铰链参考轴语义变更**：twist 轴从 `HingeLimitsCinfo` 移至 `HingeCinfo`（角度测量不再依赖 limits 是否配置），旧 `HingeLimitsCinfo::new(twist_a, twist_b, min, max)` 调用点已更新
+- **单边行 warm starting 采用接触式 clamp**：朴素回放（先回放再按 `λ=(target−rel)/m` 求解、符号拒绝）会在速度已修正后再次全额施加上步冲量，造成能量注入（prismatic limit 实测穿透发散）；改为 `next = clamp(accum + λ, 回复半空间边界)` 后过冲被自动拉回
+- **精确行的回放被完全吸收**：双边行 `λ` 与累积值无关（线性精确解），因此 warm start 在当前行实现下对速度结果中性（与接触行 `max(0,·)` 截断的路径依赖不同）；缓存结构为后续 clamped/松弛行铺路，并有测试固化该不变量
+- **验证**：铰链位置电机 120 步收敛到目标角（±0.25）、弹簧电机阻尼振荡收敛、prismatic 位置/弹簧电机驱动滑块到位、电机与关节 warm starting 场景 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc` / release build 全绿
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -435,7 +450,8 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）、查询系统（world raycast / closest point）与铰链 limits/motors 完成
 - [x] Phase 11（约束/joint + 查询系统，2026-11-16）：Ragdoll cone/twist、Prismatic、StiffSpring、PointToPlane 关节与约束碰撞屏蔽、body↔constraint 映射；shape cast（凸-凸 conservative advancement + mesh/height field/compound 目标）、mesh/height field/compound raycast、`QueryFilter`、`closest_points_to_shape`、AABB 查询完成
 - [x] Phase 12（约束岛 + warm starting，2026-11-16）：接触冲量累积与跨步缓存（B 局部点 + 法线匹配）、union-find 约束岛（静态体不合并）、逐岛 solve(contacts→joints)、`World::islands`/`WorldStats::last_island_count`/`WorldCinfo::with_warm_starting` 完成；`phys-solver` 40、`phys-world` 62 个单元测试，集成测试 5 个
-- [ ] 后续：位置/弹性电机与关节 warm starting、岛级休眠/唤醒与按岛并行、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 12 后续子集（位置/弹性电机 + 关节 warm starting，2026-11-16）：铰链 `HingeMotor::{Velocity,Position,Spring}` 与滑轴 `PrismaticMotor::{Position,Spring}` 电机、`JointImpulse` 关节冲量缓存跨步复用（单边行接触式 clamp + 越界回放）、`HingeCinfo` 参考轴提升、`set_prismatic_motor` API 完成；`phys-solver` 51、`phys-world` 70 个单元测试，新增集成测试 `motors_and_joint_warm_starting.rs` 5 个
+- [ ] 后续：岛级休眠/唤醒与按岛并行、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
 仓库现状（2026-11-16）：
 

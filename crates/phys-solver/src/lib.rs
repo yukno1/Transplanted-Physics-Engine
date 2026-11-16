@@ -12,7 +12,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | `solver` | `SolverBody`, `ContactConstraint`, `ContactImpulse`, `contact_tangents`, `SolverSettings`, `Solver`, `SolverStats` |
-//! | `constraint` | `JointConstraint` (`BallAndSocket`, `Hinge`, `Fixed`, `Ragdoll`, `Prismatic`, `Spring`, `PointToPlane`) and `Solver::solve_joints` |
+//! | `constraint` | `JointConstraint` (`BallAndSocket`, `Hinge`, `Fixed`, `Ragdoll`, `Prismatic`, `Spring`, `PointToPlane`), hinge/prismatic motors (`HingeMotor`, `PrismaticMotor`), `JointImpulse` and `Solver::solve_joints[_with_impulses]` |
 //!
 //! Joint pivots/axes are supplied in world space by the world each step; the
 //! solver applies sequential impulses with a Baumgarte drift bias, unilateral
@@ -20,9 +20,9 @@
 //!
 //! # Warm starting and islands
 //!
-//! [`ContactImpulse`] carries per-row accumulated impulses across steps, and
-//! `solve_contacts_subset` / `solve_joints_subset` restrict a solve to one
-//! constraint island (the world's island partition).
+//! [`ContactImpulse`] and [`JointImpulse`] carry per-row accumulated impulses
+//! across steps, and `solve_contacts_subset` / `solve_joints_subset_with_impulses`
+//! restrict a solve to one constraint island (the world's island partition).
 //!
 //! # Determinism
 //!
@@ -37,7 +37,8 @@ pub mod solver;
 
 pub use constraint::{
     BallAndSocketJoint, FixedJoint, HingeJoint, HingeLimits, HingeMotor, JointConstraint,
-    JointSolverStats, PointToPlaneJoint, PrismaticJoint, RagdollJoint, SpringJoint,
+    JointImpulse, JointSolverStats, MAX_JOINT_ROWS, PointToPlaneJoint, PrismaticJoint,
+    PrismaticMotor, RagdollJoint, SpringJoint,
 };
 pub use solver::{
     ContactConstraint, ContactImpulse, Solver, SolverBody, SolverSettings, SolverStats,

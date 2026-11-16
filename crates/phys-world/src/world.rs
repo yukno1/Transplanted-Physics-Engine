@@ -9,15 +9,15 @@ use phys_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_toleranc
 use phys_shape::Shape;
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
-    HingeMotor, JointConstraint, PointToPlaneJoint, PrismaticJoint, RagdollJoint, Solver,
-    SolverBody, SolverSettings, SpringJoint,
+    HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
+    RagdollJoint, Solver, SolverBody, SolverSettings, SpringJoint,
 };
 use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
 use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
-    PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
+    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
@@ -295,15 +295,19 @@ impl World {
     }
 
     /// Enable or disable a joint constraint; disabled joints are skipped by
-    /// the solver but keep their ID.
+    /// the solver but keep their ID. Disabling also clears the joint's cached
+    /// warm-start impulses.
     pub fn set_constraint_enabled(&mut self, id: ConstraintId, enabled: bool) -> bool {
         if !id.is_valid() || !id.is_constraint_index() {
             return false;
         }
         let slot = id.as_constraint_index().value() as usize;
         match self.joints.get_mut(slot) {
-            Some(Some(slot)) => {
-                slot.enabled = enabled;
+            Some(Some(entry)) => {
+                entry.enabled = enabled;
+                if !enabled {
+                    entry.impulses = JointImpulse::default();
+                }
                 true
             }
             _ => false,
@@ -430,6 +434,26 @@ impl World {
         }
     }
 
+    /// Set or clear the motor of a prismatic joint (`None` clears it).
+    ///
+    /// Fails for IDs that do not resolve to a live prismatic joint.
+    pub fn set_prismatic_motor(
+        &mut self,
+        id: ConstraintId,
+        motor: Option<PrismaticMotorCinfo>,
+    ) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Prismatic(info) => {
+                    info.motor = motor;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
     fn joint_slot_mut(&mut self, id: ConstraintId) -> Option<&mut JointSlot> {
         if !id.is_valid() || !id.is_constraint_index() {
             return None;
@@ -448,6 +472,7 @@ impl World {
             joint,
             enabled: true,
             collisions_enabled: true,
+            impulses: JointImpulse::default(),
         }));
         self.joint_count += 1;
         crate::constraint::constraint_id(slot)
@@ -469,9 +494,19 @@ impl World {
 
     /// Transform the stored local-space joints into solver joints for the
     /// current body poses, in slot order.
-    fn build_solver_joints(&self, index_map: &HashMap<BodyId, usize>) -> Vec<JointConstraint> {
+    ///
+    /// Returns `(slot index, solver joint)` pairs so the step can route the
+    /// solver's per-joint impulse rows back into the joint slots for warm
+    /// starting.
+    fn build_solver_joints(
+        &self,
+        index_map: &HashMap<BodyId, usize>,
+    ) -> Vec<(usize, JointConstraint)> {
         let mut result = Vec::new();
-        for slot in self.joints.iter().flatten() {
+        for (slot_index, slot) in self.joints.iter().enumerate() {
+            let Some(slot) = slot else {
+                continue;
+            };
             if !slot.enabled {
                 continue;
             }
@@ -488,40 +523,70 @@ impl World {
             let transform_b = body_b.transform;
             match slot.joint {
                 WorldJoint::BallAndSocket(info) => {
-                    result.push(JointConstraint::BallAndSocket(BallAndSocketJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::BallAndSocket(BallAndSocketJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                        }),
+                    ));
                 }
                 WorldJoint::Hinge(info) => {
                     let axis_a = transform_a.rotation.rotate(info.axis_a);
                     let axis_b = transform_b.rotation.rotate(info.axis_b);
+                    // The hinge angle is measured against the reference axes
+                    // whether or not limits are attached (motors need it too);
+                    // degenerate references fall back to a deterministic
+                    // perpendicular of the LOCAL hinge axis (computed in local
+                    // space so the fallback rotates with the body).
+                    let reference_a = transform_a
+                        .rotation
+                        .rotate(perpendicular_reference(info.axis_a, info.reference_axis_a));
+                    let reference_b = transform_b
+                        .rotation
+                        .rotate(perpendicular_reference(info.axis_b, info.reference_axis_b));
+                    let angle = hinge_angle(axis_a, axis_b, reference_a, reference_b);
                     let limits = info.limits.map(|limits| HingeLimits {
-                        angle: hinge_angle(
-                            axis_a,
-                            axis_b,
-                            transform_a.rotation.rotate(limits.twist_axis_a),
-                            transform_b.rotation.rotate(limits.twist_axis_b),
-                        ),
                         min_angle: limits.min_angle,
                         max_angle: limits.max_angle,
                     });
-                    let motor = info.motor.map(|motor| HingeMotor {
-                        target_velocity: motor.target_velocity,
-                        max_impulse: motor.max_impulse,
+                    let motor = info.motor.map(|motor| match motor {
+                        crate::constraint::HingeMotorCinfo::Velocity(motor) => {
+                            HingeMotor::Velocity {
+                                target_velocity: motor.target_velocity,
+                                max_impulse: motor.max_impulse,
+                            }
+                        }
+                        crate::constraint::HingeMotorCinfo::Position(motor) => {
+                            HingeMotor::Position {
+                                target_angle: motor.target_angle,
+                                tau: motor.tau,
+                                max_impulse: motor.max_impulse,
+                            }
+                        }
+                        crate::constraint::HingeMotorCinfo::Spring(motor) => HingeMotor::Spring {
+                            target_angle: motor.target_angle,
+                            stiffness: motor.stiffness,
+                            damping: motor.damping,
+                            max_impulse: motor.max_impulse,
+                        },
                     });
-                    result.push(JointConstraint::Hinge(HingeJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                        axis_a,
-                        axis_b,
-                        limits,
-                        motor,
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::Hinge(HingeJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            axis_a,
+                            axis_b,
+                            angle,
+                            limits,
+                            motor,
+                        }),
+                    ));
                 }
                 WorldJoint::Fixed(info) => {
                     let q_a = transform_a.rotation_quaternion();
@@ -530,13 +595,16 @@ impl World {
                     // applied to A would restore the bound orientation.
                     let relative = q_a.inverse_mul(q_b);
                     let error = relative.mul_inverse(info.relative_orientation);
-                    result.push(JointConstraint::Fixed(FixedJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                        orientation_error: orientation_error_vector(error),
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::Fixed(FixedJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            orientation_error: orientation_error_vector(error),
+                        }),
+                    ));
                 }
                 WorldJoint::Ragdoll(info) => {
                     let twist_a = unit_vector(transform_a.rotation.rotate(info.twist_axis_a));
@@ -556,19 +624,22 @@ impl World {
                     let twist_angle = twist_a
                         .dot3(plane_a.cross(plane_b))
                         .atan2(plane_a.dot3(plane_b));
-                    result.push(JointConstraint::Ragdoll(RagdollJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                        twist_axis_a: twist_a,
-                        twist_axis_b: twist_b,
-                        swing_angle,
-                        cone_angle: info.cone_angle,
-                        twist_angle,
-                        twist_min: info.twist_min,
-                        twist_max: info.twist_max,
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::Ragdoll(RagdollJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            twist_axis_a: twist_a,
+                            twist_axis_b: twist_b,
+                            swing_angle,
+                            cone_angle: info.cone_angle,
+                            twist_angle,
+                            twist_min: info.twist_min,
+                            twist_max: info.twist_max,
+                        }),
+                    ));
                 }
                 WorldJoint::Prismatic(info) => {
                     let q_a = transform_a.rotation_quaternion();
@@ -578,38 +649,63 @@ impl World {
                     let axis_a = unit_vector(transform_a.rotation.rotate(info.axis_a));
                     let pivot_a = transform_a.transform_point(info.pivot_a);
                     let pivot_b = transform_b.transform_point(info.pivot_b);
-                    result.push(JointConstraint::Prismatic(PrismaticJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a,
-                        pivot_b,
-                        axis_a,
-                        axis_b: unit_vector(transform_b.rotation.rotate(info.axis_b)),
-                        orientation_error: orientation_error_vector(error),
-                        translation: (pivot_a - pivot_b).dot3(axis_a),
-                        min_translation: info.min_translation,
-                        max_translation: info.max_translation,
-                    }));
+                    let motor = info.motor.map(|motor| match motor {
+                        PrismaticMotorCinfo::Position(motor) => PrismaticMotor::Position {
+                            target_translation: motor.target_translation,
+                            tau: motor.tau,
+                            max_impulse: motor.max_impulse,
+                        },
+                        PrismaticMotorCinfo::Spring(motor) => PrismaticMotor::Spring {
+                            target_translation: motor.target_translation,
+                            stiffness: motor.stiffness,
+                            damping: motor.damping,
+                            max_impulse: motor.max_impulse,
+                        },
+                    });
+                    result.push((
+                        slot_index,
+                        JointConstraint::Prismatic(PrismaticJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a,
+                            pivot_b,
+                            axis_a,
+                            axis_b: unit_vector(transform_b.rotation.rotate(info.axis_b)),
+                            orientation_error: orientation_error_vector(error),
+                            translation: (pivot_a - pivot_b).dot3(axis_a),
+                            min_translation: info.min_translation,
+                            max_translation: info.max_translation,
+                            motor,
+                        }),
+                    ));
                 }
                 WorldJoint::Spring(info) => {
-                    result.push(JointConstraint::Spring(SpringJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                        rest_length: info.rest_length,
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::Spring(SpringJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            rest_length: info.rest_length,
+                        }),
+                    ));
                 }
                 WorldJoint::PointToPlane(info) => {
-                    result.push(JointConstraint::PointToPlane(PointToPlaneJoint {
-                        body_a: index_a,
-                        body_b: index_b,
-                        pivot_a: transform_a.transform_point(info.pivot_a),
-                        pivot_b: transform_b.transform_point(info.pivot_b),
-                        plane_normal: unit_vector(transform_b.rotation.rotate(info.plane_normal_b)),
-                        min_distance: info.min_distance,
-                        max_distance: info.max_distance,
-                    }));
+                    result.push((
+                        slot_index,
+                        JointConstraint::PointToPlane(PointToPlaneJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a: transform_a.transform_point(info.pivot_a),
+                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            plane_normal: unit_vector(
+                                transform_b.rotation.rotate(info.plane_normal_b),
+                            ),
+                            min_distance: info.min_distance,
+                            max_distance: info.max_distance,
+                        }),
+                    ));
                 }
             }
         }
@@ -864,6 +960,26 @@ impl World {
         }
 
         let solver_joints = self.build_solver_joints(&index_map);
+        // Joint warm start state lives in the constraint slots; the pair list
+        // keeps the slot index of every solver joint.
+        let (joint_slots, solver_joints): (Vec<usize>, Vec<JointConstraint>) = {
+            let mut slots = Vec::with_capacity(solver_joints.len());
+            let mut joints = Vec::with_capacity(solver_joints.len());
+            for (slot, joint) in solver_joints {
+                slots.push(slot);
+                joints.push(joint);
+            }
+            (slots, joints)
+        };
+        let mut joint_impulses: Vec<JointImpulse> = joint_slots
+            .iter()
+            .map(|&slot| {
+                self.joints[slot]
+                    .as_ref()
+                    .map(|entry| entry.impulses)
+                    .unwrap_or_default()
+            })
+            .collect();
 
         // Partition dynamic bodies into constraint islands and solve each one
         // (contacts then joints) with its previous impulses as warm start.
@@ -901,12 +1017,27 @@ impl World {
                 );
             }
             if !island.joints.is_empty() {
-                self.solver.solve_joints_subset(
+                self.solver.solve_joints_subset_with_impulses(
                     &mut solver_bodies,
                     &solver_joints,
                     &island.joints,
+                    &mut joint_impulses,
                     delta_time,
                 );
+            }
+        }
+
+        // Store the solved joint rows back into the slots for the next step's
+        // warm start (a cold start when warm starting is disabled).
+        if self.cinfo.enable_warm_starting {
+            for (slot, impulse) in joint_slots.iter().zip(&joint_impulses) {
+                if let Some(Some(entry)) = self.joints.get_mut(*slot) {
+                    entry.impulses = *impulse;
+                }
+            }
+        } else {
+            for entry in self.joints.iter_mut().flatten() {
+                entry.impulses = JointImpulse::default();
             }
         }
 
@@ -1190,6 +1321,10 @@ fn collide_candidate(candidate: &ContactCandidate, tolerance: f32) -> Option<Con
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constraint::{
+        HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo,
+        PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo,
+    };
     use base_math::Quaternion;
     use phys_shape::{BoxShape, Shape, SphereShape};
     use phys_types::{BodyQualityId, MaterialId, ShapeType};
@@ -1717,7 +1852,7 @@ mod tests {
                 Vector4::from_xyz(2.0, 0.0, 0.0),
             ),
         );
-        let limits = HingeLimitsCinfo::new(Vector4::UNIT_X, Vector4::UNIT_X, -0.2, 0.2);
+        let limits = HingeLimitsCinfo::new(-0.2, 0.2);
         assert!(world.set_hinge_limits(id, Some(limits)));
 
         let hub = hinged_arm_hub(&world);
@@ -1750,7 +1885,12 @@ mod tests {
     fn hinge_motor_drives_constant_spin() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let (_, arm, id) = hinged_arm(&mut world);
-        assert!(world.set_hinge_motor(id, Some(HingeMotorCinfo::new(2.0, 10.0))));
+        assert!(world.set_hinge_motor(
+            id,
+            Some(HingeMotorCinfo::Velocity(HingeVelocityMotorCinfo::new(
+                2.0, 10.0
+            )))
+        ));
 
         for _ in 0..60 {
             world.step(1.0 / 60.0);
@@ -1777,9 +1917,14 @@ mod tests {
             Vector4::ZERO,
         ));
 
-        let limits = HingeLimitsCinfo::new(Vector4::UNIT_X, Vector4::UNIT_X, -0.2, 0.2);
+        let limits = HingeLimitsCinfo::new(-0.2, 0.2);
         assert!(world.set_hinge_limits(id, Some(limits)));
-        assert!(world.set_hinge_motor(id, Some(HingeMotorCinfo::new(1.0, 5.0))));
+        assert!(world.set_hinge_motor(
+            id,
+            Some(HingeMotorCinfo::Velocity(HingeVelocityMotorCinfo::new(
+                1.0, 5.0
+            )))
+        ));
         assert!(world.set_hinge_limits(id, None));
         assert!(world.set_hinge_motor(id, None));
 
@@ -2206,5 +2351,255 @@ mod tests {
         assert!(world.last_contact_count() > 0);
         assert!(world.last_island_count() > 0);
         assert_eq!(world.contact_cache.len(), 0);
+    }
+
+    // Joint warm starting and hinge/prismatic motors.
+
+    #[test]
+    fn joint_warm_start_impulses_persist_in_slots() {
+        let mut world = World::new(WorldCinfo::new());
+        let a = world.create_body(&dynamic_cinfo(0.5));
+        let b = world.create_body(&dynamic_cinfo(0.5));
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        let slot = id.as_constraint_index().value() as usize;
+
+        // The overlapping pair is pushed apart by the joint rows, so rows
+        // accumulate impulses.
+        world.step(1.0 / 60.0);
+        world.step(1.0 / 60.0);
+        assert!(
+            world.joints[slot]
+                .as_ref()
+                .unwrap()
+                .impulses
+                .rows
+                .iter()
+                .any(|&row| row != 0.0),
+            "joint rows must keep their accumulated impulses in the slot"
+        );
+
+        // Destroying the constraint drops the slot with its impulse cache.
+        assert!(world.destroy_constraint(id));
+        assert!(world.joints[slot].is_none());
+    }
+
+    #[test]
+    fn disabling_a_constraint_clears_its_warm_start_impulses() {
+        let mut world = World::new(WorldCinfo::new());
+        let a = world.create_body(&dynamic_cinfo(0.5));
+        let b = world.create_body(&dynamic_cinfo(0.5));
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        let slot = id.as_constraint_index().value() as usize;
+        world.step(1.0 / 60.0);
+        world.step(1.0 / 60.0);
+
+        assert!(world.set_constraint_enabled(id, false));
+        assert_eq!(
+            world.joints[slot].as_ref().unwrap().impulses,
+            phys_solver::JointImpulse::default(),
+            "disabling must clear the warm-start impulses"
+        );
+        assert!(world.set_constraint_enabled(id, true));
+    }
+
+    #[test]
+    fn hinge_position_motor_drives_the_arm_to_the_target_angle() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let (_, arm, id) = hinged_arm(&mut world);
+        assert!(world.set_hinge_motor(
+            id,
+            Some(HingeMotorCinfo::Position(HingePositionMotorCinfo::new(
+                1.0, 0.15, 20.0
+            )))
+        ));
+
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let angle = current_hinge_angle(&world, hinged_arm_hub(&world), arm);
+        assert!(
+            (angle - 1.0).abs() < 0.25,
+            "angle {angle} must converge to the motor target 1.0"
+        );
+    }
+
+    #[test]
+    fn hinge_spring_motor_oscillates_and_settles() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let (_, arm, id) = hinged_arm(&mut world);
+        assert!(world.set_hinge_motor(
+            id,
+            Some(HingeMotorCinfo::Spring(HingeSpringMotorCinfo::new(
+                0.5, 8.0, 2.0, 50.0
+            )))
+        ));
+
+        let mut max_deviation = 0.0f32;
+        for _ in 0..240 {
+            world.step(1.0 / 60.0);
+            let angle = current_hinge_angle(&world, hinged_arm_hub(&world), arm);
+            max_deviation = max_deviation.max((angle - 0.5).abs());
+        }
+        let angle = current_hinge_angle(&world, hinged_arm_hub(&world), arm);
+        assert!(
+            (angle - 0.5).abs() < 0.25,
+            "spring must settle near the rest angle: {angle}"
+        );
+        assert!(
+            max_deviation <= 0.5 + 1e-3,
+            "spring motion must stay bounded: {max_deviation}"
+        );
+    }
+
+    #[test]
+    fn prismatic_position_motor_drives_the_slider_to_the_target() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let slider = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::ZERO),
+        );
+        let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
+            slider,
+            parent,
+            Vector4::ZERO,
+            &world.body_transform(slider).unwrap(),
+            &world.body_transform(parent).unwrap(),
+            Vector4::UNIT_X,
+        ));
+        assert!(world.set_constraint_collisions_enabled(id, false));
+        assert!(world.set_prismatic_motor(
+            id,
+            Some(PrismaticMotorCinfo::Position(
+                PrismaticPositionMotorCinfo::new(2.0, 0.2, 20.0)
+            ))
+        ));
+
+        for _ in 0..180 {
+            world.step(1.0 / 60.0);
+        }
+        let x = world.body_position(slider).unwrap().x;
+        assert!(
+            (x - 2.0).abs() < 0.35,
+            "slider x {x} must converge to the motor target 2.0"
+        );
+        assert!(
+            world.body_position(slider).unwrap().y.abs() < 0.15,
+            "slider must not drift off the axis"
+        );
+    }
+
+    #[test]
+    fn prismatic_spring_motor_pulls_the_slider_to_the_rest_length() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let slider = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::ZERO),
+        );
+        let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
+            slider,
+            parent,
+            Vector4::ZERO,
+            &world.body_transform(slider).unwrap(),
+            &world.body_transform(parent).unwrap(),
+            Vector4::UNIT_X,
+        ));
+        assert!(world.set_constraint_collisions_enabled(id, false));
+        assert!(world.set_prismatic_motor(
+            id,
+            Some(PrismaticMotorCinfo::Spring(PrismaticSpringMotorCinfo::new(
+                0.0, 20.0, 4.0, 50.0
+            )))
+        ));
+
+        // `between_bodies` binds the current pose (translation 0), so the
+        // slider must be offset after creation to give the spring a
+        // compressed start.
+        world.set_body_transform(
+            slider,
+            Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(-2.0, 0.0, 0.0)),
+        );
+
+        for _ in 0..300 {
+            world.step(1.0 / 60.0);
+        }
+        let x = world.body_position(slider).unwrap().x;
+        assert!(
+            x.abs() < 0.35,
+            "spring must settle near the rest translation: x {x}"
+        );
+    }
+
+    #[test]
+    fn joint_motors_are_bitwise_deterministic() {
+        let run = || {
+            let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+            let (_, arm, id) = hinged_arm(&mut world);
+            world.set_hinge_motor(
+                id,
+                Some(HingeMotorCinfo::Spring(HingeSpringMotorCinfo::new(
+                    0.5, 8.0, 2.0, 50.0,
+                ))),
+            );
+            world.set_body_transform(
+                arm,
+                Transform::from_quaternion(
+                    Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.3),
+                    Vector4::from_xyz(2.0, 0.0, 0.0),
+                ),
+            );
+            for _ in 0..120 {
+                world.step(1.0 / 60.0);
+            }
+            world.snapshot()
+        };
+        assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn joint_warm_starting_is_bitwise_deterministic() {
+        let run = || {
+            let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+            let a = world.create_body(
+                &BodyCinfo::new(sphere_shape(0.5))
+                    .with_motion_type(MotionType::Dynamic)
+                    .with_mass(1.0)
+                    .with_position(Vector4::from_xyz(0.0, 4.0, 0.0))
+                    .with_linear_velocity(Vector4::UNIT_X),
+            );
+            let b = world.create_body(
+                &BodyCinfo::new(sphere_shape(0.5))
+                    .with_motion_type(MotionType::Dynamic)
+                    .with_mass(1.0)
+                    .with_position(Vector4::from_xyz(1.0, 4.0, 0.0)),
+            );
+            world.create_fixed_constraint(&FixedCinfo::between_bodies(
+                a,
+                b,
+                Vector4::from_xyz(0.5, 4.0, 0.0),
+                &world.body_transform(a).unwrap(),
+                &world.body_transform(b).unwrap(),
+            ));
+            for _ in 0..120 {
+                world.step(1.0 / 60.0);
+            }
+            world.snapshot()
+        };
+        assert_eq!(run(), run());
     }
 }

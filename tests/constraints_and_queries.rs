@@ -310,15 +310,7 @@ fn hinge_limits_stop_the_swing_at_the_bound() {
             Vector4::from_xyz(2.0, 0.0, 0.0),
         ),
     );
-    world.set_hinge_limits(
-        id,
-        Some(proton::world::HingeLimitsCinfo::new(
-            Vector4::UNIT_X,
-            Vector4::UNIT_X,
-            -0.2,
-            0.2,
-        )),
-    );
+    world.set_hinge_limits(id, Some(proton::world::HingeLimitsCinfo::new(-0.2, 0.2)));
 
     let initial = hinge_angle_of(&world, hub, arm);
     for _ in 0..120 {
@@ -341,7 +333,12 @@ fn hinge_limits_stop_the_swing_at_the_bound() {
 #[test]
 fn hinge_motor_spins_the_arm_at_target_speed() {
     let (mut world, _, arm, id) = hinged_arm_world();
-    world.set_hinge_motor(id, Some(proton::world::HingeMotorCinfo::new(1.5, 10.0)));
+    world.set_hinge_motor(
+        id,
+        Some(proton::world::HingeMotorCinfo::Velocity(
+            proton::world::HingeVelocityMotorCinfo::new(1.5, 10.0),
+        )),
+    );
 
     for _ in 0..60 {
         world.step(1.0 / 60.0);
@@ -365,16 +362,13 @@ fn hinge_motor_spins_the_arm_at_target_speed() {
 fn hinge_limits_and_motor_are_bitwise_deterministic() {
     let run = || {
         let (mut world, _, arm, id) = hinged_arm_world();
-        world.set_hinge_limits(
+        world.set_hinge_limits(id, Some(proton::world::HingeLimitsCinfo::new(-0.2, 0.2)));
+        world.set_hinge_motor(
             id,
-            Some(proton::world::HingeLimitsCinfo::new(
-                Vector4::UNIT_X,
-                Vector4::UNIT_X,
-                -0.2,
-                0.2,
+            Some(proton::world::HingeMotorCinfo::Velocity(
+                proton::world::HingeVelocityMotorCinfo::new(3.0, 2.0),
             )),
         );
-        world.set_hinge_motor(id, Some(proton::world::HingeMotorCinfo::new(3.0, 2.0)));
         world.set_body_transform(
             arm,
             proton::math::Transform::from_quaternion(

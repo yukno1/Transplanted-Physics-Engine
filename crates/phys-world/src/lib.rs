@@ -49,12 +49,14 @@
 //! solver uses one contact point per pair (multi-point clipping is deferred),
 //! together with a velocity-level Baumgarte recovery bias and Coulomb friction.
 //! Contact impulses are warm started across steps ([`World::clear_contact_cache`]
-//! drops the cache). Joints are solved after contacts within each island: pivots
-//! and axes are rebuilt from the body poses every step, so joint limits/motors
-//! are recomputed rather than warm-started. Islands are not yet used for
-//! sleeping or parallel solving. Material libraries, restitution, deactivation,
-//! broad-phase layers, command queues, events/modifiers and thread-parallel
-//! solving remain future work.
+//! drops the cache), and so are joint rows: each constraint slot keeps its
+//! accumulated solver-row impulses and replays them before the next step's
+//! sweeps (unilateral rows only while violated; disabling a constraint clears
+//! them). Motors (hinge velocity/position/spring, prismatic position/spring)
+//! are applied once per solve as clamped impulses. Islands are not yet used
+//! for sleeping or parallel solving. Material libraries, restitution,
+//! deactivation, broad-phase layers, command queues, events/modifiers and
+//! thread-parallel solving remain future work.
 //!
 //! # Not ported in this phase
 //!
@@ -77,8 +79,10 @@ pub mod world;
 
 pub use cinfo::WorldCinfo;
 pub use constraint::{
-    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointType,
-    PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
+    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo,
+    HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo, JointType,
+    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, PrismaticPositionMotorCinfo,
+    PrismaticSpringMotorCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
