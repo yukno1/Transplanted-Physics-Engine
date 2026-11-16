@@ -9,20 +9,31 @@
 //! | [`World`] | `hknpWorld` | owns body/motion managers and runs collide → solve → integrate |
 //! | [`ContactManifold`] | manifold stream item | body pair plus [`hknp_collide::Manifold`] |
 //! | [`WorldStats`] | counters | body/motion/step/contact counters |
-//! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`FixedCinfo`]/[`WorldJoint`] | `Dynamics/Constraint/Data` subset | joint constraints solved after contacts |
-//! | [`RayCastHit`] / [`ClosestPointHit`] | `Collide/Query` subset | world ray cast and closest-point queries |
+//! | [`BodySnapshot`]/[`WorldSnapshot`] | determinism trace | `hvk-trace v1` text |
+//! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`FixedCinfo`]/[`RagdollCinfo`]/[`PrismaticCinfo`]/[`SpringCinfo`]/[`PointToPlaneCinfo`] | `Dynamics/Constraint/Data` subset | local-space joint construction info |
+//! | [`WorldJoint`]/[`JointType`] | `hknpConstraintData::ConstraintType` subset | stored joint families and body↔constraint lookup |
+//! | [`QueryFilter`] | `hknpCollisionQuery` filter subset | body/motion-type filtering for world queries |
+//! | [`RayCastHit`]/[`ShapeCastHitInfo`]/[`ClosestPointHit`]/[`ClosestPointsHit`] | `Collide/Query` subset | world ray cast, shape cast, closest point/shape and AABB queries |
 //!
-//! # Step pipeline (Phase 8)
+//! # Step pipeline
 //!
 //! [`World::step`] runs the single-threaded simulation pipeline:
 //!
 //! 1. **Collide**: build world AABBs, run the deterministic grid broad phase,
 //!    then narrow-phase convex-convex contact generation (`hknp-collide`).
+//!    [`World::collect_contacts`] exposes this stage for tests/tools.
 //! 2. **Solve**: apply gravity to dynamic motions, build solver bodies and
 //!    single-point contact constraints, run the iterative sequential-impulse
-//!    solver (`hknp-solver`), and write solved velocities back to motions.
+//!    contact solver, then solve the enabled joints (ragdoll/prismatic/spring/
+//!    point-to-plane/… in constraint slot order), and write solved velocities
+//!    back to motions.
 //! 3. **Integrate**: semi-implicit Euler integration of dynamic motions and
 //!    refresh of body transforms/AABBs for the next step.
+//!
+//! Queries ([`World::raycast`], [`World::cast_shape`],
+//! [`World::closest_point`], [`World::closest_points_to_shape`],
+//! [`World::query_aabb`]) run against the current cached poses and never
+//! modify the world.
 //!
 //! The pipeline is deliberately single-threaded and deterministic: bodies are
 //! visited in slot order, contacts in canonical broad-phase pair order, and the
@@ -31,9 +42,12 @@
 //! # Scope limits
 //!
 //! Only convex shapes participate in narrow-phase contacts; mesh/height-field/
-//! compound bodies generate no contacts yet. The solver uses one contact point
-//! per pair (multi-point clipping is deferred), together with a velocity-level
-//! Baumgarte recovery bias and Coulomb friction. Material libraries, restitution,
+//! compound bodies generate no contacts yet (queries do traverse them). The
+//! solver uses one contact point per pair (multi-point clipping is deferred),
+//! together with a velocity-level Baumgarte recovery bias and Coulomb friction.
+//! Joints are solved after contacts with the same sequential-impulse sweeps: pivots
+//! and axes are rebuilt from the body poses each step, so limits/motors are
+//! recomputed rather than warm-started. Material libraries, restitution,
 //! warm starting, islands, deactivation, broad-phase layers, command queues,
 //! events/modifiers and thread-parallel solving remain future work.
 //!
@@ -42,7 +56,8 @@
 //! Body addition queues, command queue/determinism checking, deactivation
 //! manager, collision filters, events/modifiers, user body buffers,
 //! `hknpWorldReader`/`hknpWorldWriter` traits, body attachment and motion
-//! sharing.
+//! sharing, the SDK constraint-atom/constraint-group system, wheel/vehicle
+//! joints, and `hkx` asset loading.
 
 use hk_math::{Quaternion, Vector4};
 use hknp_collide::Manifold;
@@ -55,9 +70,10 @@ pub mod world;
 
 pub use cinfo::WorldCinfo;
 pub use constraint::{
-    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, WorldJoint,
+    BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointType,
+    PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
-pub use query::{ClosestPointHit, RayCastHit};
+pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
 pub use world::World;
 
 /// Deterministic per-body state captured by [`World::snapshot`].

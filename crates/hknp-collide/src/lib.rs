@@ -10,6 +10,8 @@
 //! | `epa` | `hkcdGsk` penetration branch | penetration depth/normal from the GJK tetrahedron |
 //! | [`Manifold`] / [`ContactPoint`] | `hknpManifold` / `hkcdManifold4` | normal B → A, positions on B, negative distance = penetration |
 //! | [`collide`] / [`collide_with_tolerance`] | `hknpConvexConvexCollisionDetector` | analytic sphere-sphere + GJK/EPA for general convex pairs |
+//! | [`raycast`] / [`ray_aabb`] / [`point_distance`] | `hknpCollisionQuery` (ray/point subset) | conservative-advancement ray cast, AABB slab test and GJK point distance |
+//! | [`shape_cast()`] | `hknpShapeCastFuncs` / `hknpFullCast` | conservative-advancement shape cast with composite leaf traversal |
 //!
 //! # Supported pairs
 //!
@@ -30,15 +32,16 @@
 //!
 //! SIMD-tree/CsGrid broad-phase layers and `hknpBroadPhaseConfig` layer
 //! semantics, collision filters, collision caches/welding, contact manifold
-//! clipping (up to 4 points), composite/height-field/mesh narrow phase, SDF and
-//! particle collision paths, queries (ray cast/AABB cast/closest points) and
-//! continuous collision detection.
+//! clipping (up to 4 points), composite/height-field/mesh narrow phase (only
+//! their queries are traversed), SDF and particle collision paths, rotating
+//! shape casts and continuous collision detection.
 
 pub mod broadphase;
 pub mod gjk;
 pub mod manifold;
 pub mod narrowphase;
 pub mod query;
+pub mod shape_cast;
 
 pub(crate) mod epa;
 pub(crate) mod support;
@@ -48,3 +51,4 @@ pub use gjk::{GjkResult, closest_points, intersects};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{collide, collide_with_tolerance};
 pub use query::{RayHit, point_distance, ray_aabb, raycast};
+pub use shape_cast::{DEFAULT_SHAPE_CAST_TOLERANCE, ShapeCastHit, shape_cast};

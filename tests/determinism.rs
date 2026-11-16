@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use havok::body::BodyCinfo;
-use havok::math::{Quaternion, Vector4};
-use havok::np_types::MotionType;
-use havok::shape::{BoxShape, Shape, SphereShape};
-use havok::world::{World, WorldCinfo, WorldSnapshot};
+use proton::body::BodyCinfo;
+use proton::math::{Quaternion, Vector4};
+use proton::np_types::MotionType;
+use proton::shape::{BoxShape, Shape, SphereShape};
+use proton::world::{World, WorldCinfo, WorldSnapshot};
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
     Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>

@@ -9,13 +9,14 @@ use hknp_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_toleranc
 use hknp_shape::Shape;
 use hknp_solver::{
     BallAndSocketJoint, ContactConstraint, FixedJoint, HingeJoint, HingeLimits, HingeMotor,
-    JointConstraint, Solver, SolverBody, SolverSettings,
+    JointConstraint, PointToPlaneJoint, PrismaticJoint, RagdollJoint, Solver, SolverBody,
+    SolverSettings, SpringJoint,
 };
 use hknp_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
-    WorldJoint,
+    PointToPlaneCinfo, PrismaticCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
 };
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
@@ -219,6 +220,43 @@ impl World {
         self.push_joint(WorldJoint::Fixed(*info))
     }
 
+    /// Add a ragdoll joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_ragdoll_constraint(&mut self, info: &RagdollCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Ragdoll(*info))
+    }
+
+    /// Add a prismatic joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_prismatic_constraint(&mut self, info: &PrismaticCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Prismatic(*info))
+    }
+
+    /// Add a stiff-spring joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_spring_constraint(&mut self, info: &SpringCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Spring(*info))
+    }
+
+    /// Add a point-to-plane joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_point_to_plane_constraint(&mut self, info: &PointToPlaneCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::PointToPlane(*info))
+    }
+
+    /// Resolve the joint slot of a live constraint.
+    fn live_joint_slot(&self, id: ConstraintId) -> Option<&JointSlot> {
+        if !id.is_valid() || !id.is_constraint_index() {
+            return None;
+        }
+        let slot = id.as_constraint_index().value() as usize;
+        self.joints.get(slot)?.as_ref()
+    }
+
     /// Destroy a joint constraint (`removeConstraint`).
     ///
     /// Slots are never reused, so the ID cannot alias a later constraint.
@@ -262,6 +300,94 @@ impl World {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Enable or disable contact generation between the joint's two bodies
+    /// (`hknpConstraint::DISABLE_COLLISIONS`).
+    ///
+    /// When disabled, the broad-phase pair is skipped for this constraint's
+    /// body pair during [`World::collect_contacts`] and stepping. Returns
+    /// `false` for IDs that do not resolve to a live joint.
+    pub fn set_constraint_collisions_enabled(&mut self, id: ConstraintId, enabled: bool) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => {
+                slot.collisions_enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a live constraint currently allows collisions between its two
+    /// bodies (default `true`).
+    pub fn constraint_collisions_enabled(&self, id: ConstraintId) -> Option<bool> {
+        self.live_joint_slot(id).map(|slot| slot.collisions_enabled)
+    }
+
+    /// Iterate the live constraints attached to `body_id`, in slot order
+    /// (`hknpBodyToConstraintsMap` subset).
+    pub fn constraints_of_body(
+        &self,
+        body_id: BodyId,
+    ) -> impl Iterator<Item = (ConstraintId, &WorldJoint)> + '_ {
+        self.joints
+            .iter()
+            .enumerate()
+            .filter_map(move |(slot, entry)| {
+                let entry = entry.as_ref()?;
+                let (body_a, body_b) = entry.joint.bodies();
+                if body_a == body_id || body_b == body_id {
+                    Some((crate::constraint::constraint_id(slot), &entry.joint))
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Set or clear the cone/twist limits of a ragdoll joint.
+    ///
+    /// Fails for IDs that do not resolve to a live ragdoll joint.
+    pub fn set_ragdoll_limits(
+        &mut self,
+        id: ConstraintId,
+        cone_angle: f32,
+        twist_min: f32,
+        twist_max: f32,
+    ) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Ragdoll(info) => {
+                    info.cone_angle = cone_angle.max(0.0);
+                    info.twist_min = twist_min;
+                    info.twist_max = twist_max.max(twist_min);
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Set the travel limits of a prismatic joint.
+    ///
+    /// Fails for IDs that do not resolve to a live prismatic joint.
+    pub fn set_prismatic_limits(
+        &mut self,
+        id: ConstraintId,
+        min_translation: f32,
+        max_translation: f32,
+    ) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Prismatic(info) => {
+                    info.min_translation = min_translation.min(max_translation);
+                    info.max_translation = max_translation;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
         }
     }
 
@@ -314,6 +440,7 @@ impl World {
         self.joints.push(Some(JointSlot {
             joint,
             enabled: true,
+            collisions_enabled: true,
         }));
         self.joint_count += 1;
         crate::constraint::constraint_id(slot)
@@ -402,6 +529,79 @@ impl World {
                         pivot_a: transform_a.transform_point(info.pivot_a),
                         pivot_b: transform_b.transform_point(info.pivot_b),
                         orientation_error: orientation_error_vector(error),
+                    }));
+                }
+                WorldJoint::Ragdoll(info) => {
+                    let twist_a = unit_vector(transform_a.rotation.rotate(info.twist_axis_a));
+                    let twist_b = unit_vector(transform_b.rotation.rotate(info.twist_axis_b));
+                    let swing_angle = twist_a.dot3(twist_b).clamp(-1.0, 1.0).acos();
+                    // Reference axes perpendicular to the twist axis define the
+                    // twist zero; degenerate reference axes fall back to a
+                    // deterministic perpendicular basis.
+                    let plane_a = perpendicular_reference(
+                        twist_a,
+                        transform_a.rotation.rotate(info.plane_axis_a),
+                    );
+                    let plane_b = perpendicular_reference(
+                        twist_a,
+                        transform_b.rotation.rotate(info.plane_axis_b),
+                    );
+                    let twist_angle = twist_a
+                        .dot3(plane_a.cross(plane_b))
+                        .atan2(plane_a.dot3(plane_b));
+                    result.push(JointConstraint::Ragdoll(RagdollJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                        twist_axis_a: twist_a,
+                        twist_axis_b: twist_b,
+                        swing_angle,
+                        cone_angle: info.cone_angle,
+                        twist_angle,
+                        twist_min: info.twist_min,
+                        twist_max: info.twist_max,
+                    }));
+                }
+                WorldJoint::Prismatic(info) => {
+                    let q_a = transform_a.rotation_quaternion();
+                    let q_b = transform_b.rotation_quaternion();
+                    let relative = q_a.inverse_mul(q_b);
+                    let error = relative.mul_inverse(info.relative_orientation);
+                    let axis_a = unit_vector(transform_a.rotation.rotate(info.axis_a));
+                    let pivot_a = transform_a.transform_point(info.pivot_a);
+                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                    result.push(JointConstraint::Prismatic(PrismaticJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a,
+                        pivot_b,
+                        axis_a,
+                        axis_b: unit_vector(transform_b.rotation.rotate(info.axis_b)),
+                        orientation_error: orientation_error_vector(error),
+                        translation: (pivot_a - pivot_b).dot3(axis_a),
+                        min_translation: info.min_translation,
+                        max_translation: info.max_translation,
+                    }));
+                }
+                WorldJoint::Spring(info) => {
+                    result.push(JointConstraint::Spring(SpringJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                        rest_length: info.rest_length,
+                    }));
+                }
+                WorldJoint::PointToPlane(info) => {
+                    result.push(JointConstraint::PointToPlane(PointToPlaneJoint {
+                        body_a: index_a,
+                        body_b: index_b,
+                        pivot_a: transform_a.transform_point(info.pivot_a),
+                        pivot_b: transform_b.transform_point(info.pivot_b),
+                        plane_normal: unit_vector(transform_b.rotation.rotate(info.plane_normal_b)),
+                        min_distance: info.min_distance,
+                        max_distance: info.max_distance,
                     }));
                 }
             }
@@ -708,6 +908,23 @@ impl World {
     }
 
     fn contact_candidates(&self) -> Vec<ContactCandidate> {
+        // Constraints with `DISABLE_COLLISIONS` suppress contact generation
+        // between their two bodies (the SDK's constraint-pair filter).
+        let blocked: std::collections::HashSet<(BodyId, BodyId)> = self
+            .joints
+            .iter()
+            .flatten()
+            .filter(|slot| slot.enabled && !slot.collisions_enabled)
+            .map(|slot| {
+                let (body_a, body_b) = slot.joint.bodies();
+                if body_a < body_b {
+                    (body_a, body_b)
+                } else {
+                    (body_b, body_a)
+                }
+            })
+            .collect();
+
         let entries: Vec<BodyAabb> = self
             .bodies
             .iter()
@@ -716,6 +933,14 @@ impl World {
         let pairs = self.broad_phase.find_pairs(&entries);
         let mut candidates = Vec::new();
         for pair in pairs {
+            let key = if pair.a < pair.b {
+                (pair.a, pair.b)
+            } else {
+                (pair.b, pair.a)
+            };
+            if blocked.contains(&key) {
+                continue;
+            }
             let (Some(body_a), Some(body_b)) = (self.bodies.get(pair.a), self.bodies.get(pair.b))
             else {
                 continue;
@@ -825,6 +1050,31 @@ fn orientation_error_vector(error: Quaternion) -> Vector4 {
     }
     let axis = Vector4::from_xyz(imag.x / sin_half, imag.y / sin_half, imag.z / sin_half);
     axis * error.angle()
+}
+
+/// Normalize a direction, falling back to `+X` for a degenerate input.
+fn unit_vector(direction: Vector4) -> Vector4 {
+    let length = direction.length3();
+    if length > 1e-10 {
+        direction * (1.0 / length)
+    } else {
+        Vector4::UNIT_X
+    }
+}
+
+/// Project `reference` onto the plane perpendicular to `axis` and normalize;
+/// fall back to a deterministic perpendicular basis when degenerate.
+fn perpendicular_reference(axis: Vector4, reference: Vector4) -> Vector4 {
+    let component = reference - axis * reference.dot3(axis);
+    if component.length3() > 1e-10 {
+        return unit_vector(component);
+    }
+    let helper = if axis.x.abs() < 0.9 {
+        Vector4::UNIT_X
+    } else {
+        Vector4::UNIT_Y
+    };
+    unit_vector(axis.cross(helper))
 }
 
 fn collide_candidate(candidate: &ContactCandidate, tolerance: f32) -> Option<ContactManifold> {
@@ -1441,5 +1691,321 @@ mod tests {
         assert!(!world.set_hinge_limits(ball_socket, Some(limits)));
         assert!(!world.set_hinge_motor(ball_socket, None));
         assert!(!world.set_hinge_limits(ConstraintId::INVALID, None));
+    }
+
+    /// World-space twist axis of a body for ragdoll tests (`+X` local).
+    fn world_twist_axis(world: &World, body: BodyId) -> Vector4 {
+        world
+            .body_transform(body)
+            .expect("live body")
+            .rotation
+            .rotate(Vector4::UNIT_X)
+    }
+
+    #[test]
+    fn ragdoll_cone_limit_holds_the_swing_angle() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let child = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        // Give the child real angular inertia so the cone row can act.
+        let motion_id = world.body(child).unwrap().motion_id;
+        world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+
+        let id = world.create_ragdoll_constraint(
+            &RagdollCinfo::new(
+                child,
+                parent,
+                Vector4::ZERO,
+                Vector4::ZERO,
+                Vector4::UNIT_X,
+                Vector4::UNIT_X,
+                Vector4::UNIT_Z,
+                Vector4::UNIT_Z,
+            )
+            .with_limits(0.2, -0.1, 0.1),
+        );
+        assert!(id.is_valid());
+
+        // Start the child outside the cone: 0.5 rad vs a 0.2 rad limit.
+        world.set_body_transform(
+            child,
+            Transform::from_quaternion(
+                Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.5),
+                Vector4::ZERO,
+            ),
+        );
+
+        let initial = world_twist_axis(&world, child).dot3(world_twist_axis(&world, parent));
+        for _ in 0..180 {
+            world.step(1.0 / 60.0);
+        }
+        let final_angle = world_twist_axis(&world, child)
+            .dot3(world_twist_axis(&world, parent))
+            .clamp(-1.0, 1.0)
+            .acos();
+        assert!(
+            final_angle < 0.35,
+            "swing must come back into the cone: initial cos {initial}, final {final_angle}"
+        );
+    }
+
+    #[test]
+    fn ragdoll_chain_is_deterministic() {
+        let build = || {
+            let mut world = World::new(WorldCinfo::new());
+            let root = world.create_body(
+                &BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+            );
+            let mut previous = root;
+            for index in 1..4 {
+                let body = world.create_body(
+                    &BodyCinfo::new(sphere_shape(0.5))
+                        .with_motion_type(MotionType::Dynamic)
+                        .with_mass(1.0)
+                        .with_position(Vector4::from_xyz(0.0, 10.0, index as f32)),
+                );
+                let motion_id = world.body(body).unwrap().motion_id;
+                world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+                world.create_ragdoll_constraint(
+                    &RagdollCinfo::new(
+                        body,
+                        previous,
+                        Vector4::ZERO,
+                        Vector4::ZERO,
+                        Vector4::UNIT_X,
+                        Vector4::UNIT_X,
+                        Vector4::UNIT_Z,
+                        Vector4::UNIT_Z,
+                    )
+                    .with_limits(0.6, -0.3, 0.3),
+                );
+                previous = body;
+            }
+            world
+        };
+        let mut first = build();
+        let mut second = build();
+        for _ in 0..180 {
+            first.step(1.0 / 60.0);
+            second.step(1.0 / 60.0);
+        }
+        assert_eq!(first.snapshot(), second.snapshot());
+    }
+
+    #[test]
+    fn prismatic_joint_allows_only_slider_travel() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let slider = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let transform_a = world.body_transform(slider).unwrap();
+        let transform_b = world.body_transform(parent).unwrap();
+        let id = world.create_prismatic_constraint(
+            &PrismaticCinfo::between_bodies(
+                slider,
+                parent,
+                Vector4::ZERO,
+                &transform_a,
+                &transform_b,
+                Vector4::UNIT_X,
+            )
+            .with_limits(-5.0, 5.0),
+        );
+        assert!(id.is_valid());
+        // Keep the overlapping bodies out of the contact pipeline so the test
+        // isolates the slider rows.
+        assert!(world.set_constraint_collisions_enabled(id, false));
+        world.set_body_linear_velocity(slider, Vector4::from_xyz(2.0, 1.0, 0.0));
+
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let position = world.body_position(slider).unwrap();
+        assert!(position.x > 1.0, "slider must travel: {position:?}");
+        assert!(
+            position.y.abs() < 0.15,
+            "slider must not drift in y: {position:?}"
+        );
+        assert!(
+            position.z.abs() < 0.15,
+            "slider must not drift in z: {position:?}"
+        );
+    }
+
+    #[test]
+    fn prismatic_limits_stop_the_travel() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let slider = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let transform_a = world.body_transform(slider).unwrap();
+        let transform_b = world.body_transform(parent).unwrap();
+        let id = world.create_prismatic_constraint(
+            &PrismaticCinfo::between_bodies(
+                slider,
+                parent,
+                Vector4::ZERO,
+                &transform_a,
+                &transform_b,
+                Vector4::UNIT_X,
+            )
+            .with_limits(-0.5, 0.5),
+        );
+        assert!(id.is_valid());
+        assert!(world.set_constraint_collisions_enabled(id, false));
+        world.set_body_linear_velocity(slider, Vector4::UNIT_X * 5.0);
+        for _ in 0..180 {
+            world.step(1.0 / 60.0);
+        }
+        let x = world.body_position(slider).unwrap().x;
+        assert!(x <= 0.8, "slider must stop at the limit: x {x}");
+        assert!(
+            world.body_linear_velocity(slider).unwrap().x.abs() < 0.2,
+            "slider must stop: {:?}",
+            world.body_linear_velocity(slider)
+        );
+    }
+
+    #[test]
+    fn spring_holds_the_pivot_distance() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let anchor = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+        );
+        let bob = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let id = world.create_spring_constraint(&SpringCinfo::new(
+            bob,
+            anchor,
+            Vector4::ZERO,
+            Vector4::ZERO,
+            1.0,
+        ));
+        assert!(id.is_valid());
+        for _ in 0..240 {
+            world.step(1.0 / 60.0);
+        }
+        let distance =
+            (world.body_position(bob).unwrap() - Vector4::from_xyz(0.0, 2.0, 0.0)).length3();
+        assert!(
+            (distance - 1.0).abs() < 0.35,
+            "spring distance {distance} must stay near 1.0"
+        );
+    }
+
+    #[test]
+    fn point_to_plane_keeps_the_pivot_on_the_plane() {
+        let mut world = World::new(WorldCinfo::new());
+        let plane_body = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let body = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+        );
+        let id = world.create_point_to_plane_constraint(&PointToPlaneCinfo::new(
+            body,
+            plane_body,
+            Vector4::from_xyz(0.0, -1.0, 0.0),
+            Vector4::ZERO,
+            Vector4::UNIT_Y,
+        ));
+        assert!(id.is_valid());
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let y = world.body_position(body).unwrap().y;
+        assert!(
+            (y - 1.0).abs() < 0.25,
+            "pivoted body must hang at y≈1 (pivot on the plane): y {y}"
+        );
+    }
+
+    #[test]
+    fn joint_collision_suppression_filters_contacts() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let a = world.create_body(
+            &BodyCinfo::new(sphere_shape(1.0))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let b = world.create_body(
+            &BodyCinfo::new(sphere_shape(1.0))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+        );
+        let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        assert!(
+            !world.collect_contacts().is_empty(),
+            "the overlapping bodies generate contacts by default"
+        );
+
+        assert!(world.set_constraint_collisions_enabled(id, false));
+        assert!(!world.constraint_collisions_enabled(id).unwrap());
+        assert!(
+            world.collect_contacts().is_empty(),
+            "overlapping jointed bodies must not generate contacts"
+        );
+
+        assert!(world.set_constraint_collisions_enabled(id, true));
+        assert!(
+            !world.collect_contacts().is_empty(),
+            "re-enabling collisions must restore the contact"
+        );
+    }
+
+    #[test]
+    fn constraints_of_body_lists_attached_joints() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let a = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let b = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0),
+        );
+        let c = world.create_body(
+            &BodyCinfo::new(sphere_shape(0.5))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+        );
+        let first = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        let second = world.create_spring_constraint(&SpringCinfo::new(
+            b,
+            c,
+            Vector4::ZERO,
+            Vector4::ZERO,
+            1.0,
+        ));
+        let attached: Vec<_> = world.constraints_of_body(b).map(|(id, _)| id).collect();
+        assert_eq!(attached, vec![first, second]);
+        assert_eq!(world.constraints_of_body(a).count(), 1);
+        assert_eq!(world.constraints_of_body(c).count(), 1);
+        assert!(!world.set_ragdoll_limits(first, 0.3, -0.1, 0.1));
+        assert!(!world.set_prismatic_limits(first, -1.0, 1.0));
     }
 }

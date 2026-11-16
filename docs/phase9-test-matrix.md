@@ -33,7 +33,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | # | 原版测试 | 覆盖点 | Rust 状态 | 说明/阻塞原因 |
 |---|---|---|---|---|
 | 1 | `NpBodyAllocationTest` | body 分配/销毁/索引复用 | Ported | `BodyManager` + serial；显式 desired `BodyIndex` 预留未实现 |
-| 2 | `NpBodyToConstraintsMapTest` | body↔constraint 映射 | Blocked | 约束系统（ConstraintAtom）未移植 |
+| 2 | `NpBodyToConstraintsMapTest` | body↔constraint 映射 | Partial（Phase 11） | `World::constraints_of_body` / `constraints_of_body` 槽序遍历已实现；SDK 的 `hknpBodyToConstraintsMap` 增量映射对象未移植 |
 | 3 | `NpBoundingSphereTest` | 形状包围球 | Ported（凸体） | sphere/box/capsule/hull 的 `bounding_radius`；scaled/compound 依赖未移植 |
 | 4 | `NpBoxShapeUnitTest` | box AABB/凸半径 | Ported（基础） | AABB/support/volume；`shrinkByRadius`/makeFromVertices 未实现 |
 | 5 | `NpBreakableCompoundShapeTest` | 可破坏复合体 | Blocked | `hknpBreakableCompoundShape` 未移植 |
@@ -46,7 +46,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | 12 | `NpConvexHullSimplificationLimitTest` | 凸包简化上限 | Blocked | 凸包构建器未移植 |
 | 13 | `NpConvexHullUtilTest` | 点云→凸包 | Blocked | `hknpConvexHullUtil` 未移植 |
 | 14 | `NpConvexShapeConstructionTest` | 凸形状构建/面信息 | Blocked | 凸包构建与 face connectivity 未移植 |
-| 15 | `NpDeflectedSphereCastTest` | 偏转球投射 | Blocked | shape cast/查询未移植 |
+| 15 | `NpDeflectedSphereCastTest` | 偏转球投射 | Blocked | 基础 `shape_cast` 已实现（Phase 11）；`hknpDeflectedLinearCast` 未移植 |
 | 16 | `NpEstimateNumShapeKeysTest` | shape key 数量估计 | Blocked | shape key 迭代器未移植 |
 | 17 | `NpEventsAfterWorldCopyTest` | world 拷贝后事件 | Blocked | world copy/事件未移植 |
 | 18 | `NpHeightFieldShapeUnitTest` | 高度场采样/AABB/单元 | Partial | 网格/scale/AABB 已覆盖；shape key、min/max 查询未移植 |
@@ -59,14 +59,14 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | 25 | `NpMotionSpeedLimitTest` | 速度上限 | Blocked | motion speed limit 未移植 |
 | 26 | `NpMutableConvexShapeTest` | 可变凸形状 | Blocked | mutability/signals 未移植 |
 | 27 | `NpMutablePrimitiveConvexShapeTest` | 可变基础凸体 | Blocked | 同上 |
-| 28 | `NpRayCastTest` | 射线查询 | Blocked | 查询系统未移植 |
+| 28 | `NpRayCastTest` | 射线查询 | Ported（Phase 11） | 凸体 raycast + mesh/height field/compound 遍历、范围/内部命中、确定性排序；`hkcdRayQueryFlags`/shape tag 解码未移植 |
 | 29 | `NpRebuildConvexShapeMassPropertiesAccuracyTest` | 重建质量属性精度 | Blocked | mass properties 未移植 |
 | 30 | `NpSerializeConvexTest` | 凸体序列化 | Blocked | hkx 序列化未移植 |
-| 31 | `NpShapeCastTest` | 形状投射 | Blocked | 查询系统未移植 |
+| 31 | `NpShapeCastTest` | 形状投射 | Ported（Phase 11） | 凸-凸 conservative advancement + 复合目标叶子遍历、容差、起始穿透；旋转 cast 未移植 |
 | 32 | `NpShapeManagerUnitTest` | shape manager | Blocked | shape manager 未移植 |
 | 33 | `NpShapeMemoryMapTest` | shape 内存布局 | Blocked | in-place shape buffer 未移植 |
 | 34 | `NpShapeSerializeTest` | shape 序列化 | Blocked | hkx 序列化未移植 |
-| 35 | `NpSpatialQueryUnitTest` | 空间查询 | Blocked | 查询系统未移植 |
+| 35 | `NpSpatialQueryUnitTest` | 空间查询 | Partial（Phase 11） | raycast / shape cast / closest point(s) / AABB 查询与 `QueryFilter` 已实现；broad-phase layer、shape tag codec、query determinism 检查未移植 |
 | 36 | `NpThreadSafeObjectPoolTest` | 线程安全对象池 | Blocked | object pool 未移植（BodyManager 是索引池，不是同一设施） |
 | 37 | `NpThreadSafeQueueTest` | 线程安全队列 | Blocked | `hknpThreadSafeQueue` 未移植 |
 | 38 | `NpUFMShapeTagCodecTest` | UFM shape tag codec | Blocked | shape tag codec 未移植 |
@@ -74,7 +74,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | 40 | `NpWorldSnapshotTest` | world 快照/拷贝 | Partial | 已新增 `World::snapshot`/`hvk-trace`；完整 world copy 未移植 |
 | 41 | `TimeStampHash` | 时间戳哈希（辅助） | Blocked | 原版 determinism util 未移植 |
 
-**结论**：41 个中当前可落地 6 个 Ported + 3 个 Partial，其余 32 个有明确前置系统。Phase 9 不假装“41 个全部通过”，而是把可测部分测透、把不可测部分记录为依赖阻塞。
+**结论**：41 个中当前可落地 6 个 Ported + 5 个 Partial（Phase 11 将 #28/#31 转为 Ported、#2/#35 转为 Partial），其余 30 个有明确前置系统。Phase 9 不假装“41 个全部通过”，而是把可测部分测透、把不可测部分记录为依赖阻塞。
 
 ## 3. Rust 测试矩阵（新增）
 
@@ -91,7 +91,19 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | S9 | 双 world 逐位一致 | L6 | 同场景 180 步，每个 body 的 pos/orientation/vel 的 `to_bits` 完全相同 | `crates/havok/tests/determinism.rs` |
 | S10 | snapshot/trace 稳定 | L6 | 重复运行 trace 文本相同、头部 `# hvk-trace v1`、含 step/body 行 | 同上 |
 | S11 | body 生命周期 | L2 | 复用槽后旧 BodyId 失效、新 id serial 不同 | `crates/havok/tests/original_unit_tests.rs` |
-| S12 | 原版结构性映射 | L1/L2 | 6 个 Ported + 3 个 Partial 的最小断言 | `crates/havok/tests/original_unit_tests.rs` |
+| S12 | 原版结构性映射 | L1/L2 | 6 个 Ported + 5 个 Partial 的最小断言 | `crates/havok/tests/original_unit_tests.rs` |
+| S13 | ball-socket 摆锤 | L4/L5 | 世界 pivot 与锚点始终接近（<0.4）、约束随 body 销毁 | `constraints_and_queries.rs` |
+| S14 | hinge 角度 limits | L4/L5 | 越过上限后角度被拉回窗口内；初始越界 −0.1 rad 以上 | 同上 |
+| S15 | hinge 速度 motor | L4/L5 | 60 步后绕轴角速度追踪目标（±0.2）、关闭后不制动 | 同上 |
+| S16 | fixed 刚性对 | L4/L5 | 双体下落间距保持（±0.3）、整体下落 | 同上 |
+| S17 | ragdoll cone/twist | L4/L5 | cone 外的摆动回到 cone 内（<0.35 rad）、twist 越界回复 | 同上 + `hknp-world` 单元 |
+| S18 | prismatic 滑块 | L4/L5 | 仅沿轴移动（垂直漂移 <0.15）、越界停在 limit 附近 | 同上 |
+| S19 | spring / point-to-plane | L4/L5 | 距离收敛到 rest length（±0.35）、pivot 保持在平面（±0.25） | 同上 |
+| S20 | 约束碰撞屏蔽 + body↔constraint 映射 | L4 | `set_constraint_collisions_enabled(false)` → 接触为空；`constraints_of_body` 槽序 | 同上 |
+| S21 | world raycast（复合体） | L3/L5 | mesh/height field/compound 命中距离与法线、过滤忽略 body、确定性 | `hknp-world` 单元 |
+| S22 | shape cast（复合体） | L3/L5 | mesh 地面分数 4.5、起始穿透 `start_penetrating`、忽略 caster | `hknp-collide` 单元 + 集成 |
+| S23 | 查询 filter / closest points / AABB | L3 | ignore body、motion-type 开关、重叠负距离、槽序 AABB 结果 | `hknp-world` 单元 + 集成 |
+| S24 | 关节场景逐位一致 | L6 | 含 ball-socket/hinge/prismatic 的 180 步双 world snapshot 逐位相等 | `constraints_and_queries.rs` |
 
 ## 4. 基准场景（`cargo bench -p havok --bench simulation`）
 
@@ -111,6 +123,9 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | `solver_100_contacts` | 100 body/100 约束 | ms/solve | 求解器迭代成本 |
 | `world_fall_n` | 64 个动态球 + 地面，60 步 | ms/step + contacts | 完整 step 管线 |
 | `world_stack_10` | 10 个盒子，120 步 | ms/step + contacts | 堆叠稳定性/成本 |
+| `raycast_world` | 17 个 body，2000 次 | ms/iter | 世界 raycast（AABB 粗测 + 形状求交） |
+| `shape_cast_world` | 1 地面，2000 次球 cast | ms/iter | 世界 shape cast（conservative advancement） |
+| `joint_chain_ragdoll` | 24 个 ragdoll 链接，60 步 | ms/step | 关节求解/重建成本 |
 
 基准只记录本机数值，不设置跨机器硬阈值；README 记录运行命令，Phase 9 验收以“harness 能稳定运行并输出指标”为准。
 

@@ -2,8 +2,8 @@
 //! workspace). Run:
 //!
 //! ```text
-//! cargo bench -p havok --bench simulation -- --quick
-//! cargo bench -p havok --bench simulation
+//! cargo bench -p proton --bench simulation -- --quick
+//! cargo bench -p proton --bench simulation
 //! ```
 
 use std::env;
@@ -11,13 +11,13 @@ use std::hint::black_box;
 use std::sync::Arc;
 use std::time::Instant;
 
-use havok::body::BodyCinfo;
-use havok::collide::{BodyAabb, BroadPhase, BroadPhaseConfig, closest_points, collide};
-use havok::math::{Aabb, Quaternion, Transform, Vector4};
-use havok::np_types::{BodyId, MotionType};
-use havok::shape::{BoxShape, Shape, SphereShape};
-use havok::solver::{ContactConstraint, Solver, SolverBody};
-use havok::world::{World, WorldCinfo};
+use proton::body::BodyCinfo;
+use proton::collide::{BodyAabb, BroadPhase, BroadPhaseConfig, closest_points, collide};
+use proton::math::{Aabb, Quaternion, Transform, Vector4};
+use proton::np_types::{BodyId, MotionType};
+use proton::shape::{BoxShape, Shape, SphereShape};
+use proton::solver::{ContactConstraint, Solver, SolverBody};
+use proton::world::{World, WorldCinfo};
 
 fn main() {
     let quick = env::args().any(|argument| argument == "--quick");
@@ -30,6 +30,9 @@ fn main() {
     let fall_bodies = if quick { 16 } else { 64 };
     let fall_steps = if quick { 10 } else { 60 };
     let stack_steps = if quick { 30 } else { 120 };
+    let query_iterations = if quick { 200 } else { 2000 };
+    let joint_bodies = if quick { 8 } else { 24 };
+    let joint_steps = if quick { 10 } else { 60 };
 
     println!("# hvk-bench v1 quick={quick}");
     println!("# name\tvalue\tunit\tdetail");
@@ -41,6 +44,9 @@ fn main() {
     benchmark_world_fall(fall_bodies, fall_steps, 1, "world_fall_n");
     benchmark_world_fall(fall_bodies, fall_steps, 4, "world_fall_n_parallel");
     benchmark_world_stack(stack_steps);
+    benchmark_raycast_world(query_iterations);
+    benchmark_shape_cast_world(query_iterations);
+    benchmark_joint_chain(joint_bodies, joint_steps);
 }
 
 fn benchmark_broadphase(count: usize, iterations: u32) {
@@ -232,6 +238,120 @@ fn benchmark_world_stack(steps: usize) {
     );
 }
 
+fn benchmark_raycast_world(iterations: u32) {
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let ground_shape = Arc::new(BoxShape::with_convex_radius(
+        Vector4::from_xyz(6.0, 0.5, 6.0),
+        0.0,
+    )) as Arc<dyn Shape>;
+    world.create_body(
+        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+    );
+    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    for index in 0..16 {
+        let x = (index % 4) as f32 * 1.5 - 2.5;
+        let z = (index / 4) as f32 * 1.5 - 2.5;
+        world.create_body(
+            &BodyCinfo::new(Arc::clone(&sphere))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(x, 3.0, z)),
+        );
+    }
+    let mut hits = 0;
+    let elapsed = measure(iterations, || {
+        let hit = world.raycast(Vector4::from_xyz(0.0, 20.0, 0.0), -Vector4::UNIT_Y, 30.0);
+        if hit.is_some() {
+            hits += 1;
+        }
+        hits
+    });
+    report(
+        "raycast_world",
+        elapsed,
+        iterations,
+        "ms/iter",
+        format!("bodies=17 hits={hits}"),
+    );
+}
+
+fn benchmark_shape_cast_world(iterations: u32) {
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let ground_shape = Arc::new(BoxShape::with_convex_radius(
+        Vector4::from_xyz(6.0, 0.5, 6.0),
+        0.0,
+    )) as Arc<dyn Shape>;
+    world.create_body(
+        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+    );
+    let query = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
+    let filter = proton::world::QueryFilter::default();
+    let mut hits = 0;
+    let elapsed = measure(iterations, || {
+        let hit = world.cast_shape(query.as_ref(), &start, -Vector4::UNIT_Y, 10.0, &filter);
+        if hit.is_some() {
+            hits += 1;
+        }
+        hits
+    });
+    report(
+        "shape_cast_world",
+        elapsed,
+        iterations,
+        "ms/iter",
+        format!("bodies=1 hits={hits}"),
+    );
+}
+
+fn benchmark_joint_chain(body_count: usize, steps: usize) {
+    let mut world = World::new(WorldCinfo::new());
+    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let anchor = world.create_body(
+        &BodyCinfo::new(Arc::clone(&sphere)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+    );
+    let mut previous = anchor;
+    for index in 1..=body_count {
+        let body = world.create_body(
+            &BodyCinfo::new(Arc::clone(&sphere))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(1.0)
+                .with_position(Vector4::from_xyz(0.0, 10.0, index as f32)),
+        );
+        let motion = world.body(body).expect("live body").motion_id;
+        world
+            .motion_mut(motion)
+            .expect("live motion")
+            .inverse_inertia = Vector4::splat(0.5);
+        world.create_ragdoll_constraint(
+            &proton::world::RagdollCinfo::new(
+                body,
+                previous,
+                Vector4::ZERO,
+                Vector4::ZERO,
+                Vector4::UNIT_X,
+                Vector4::UNIT_X,
+                Vector4::UNIT_Z,
+                Vector4::UNIT_Z,
+            )
+            .with_limits(0.6, -0.3, 0.3),
+        );
+        previous = body;
+    }
+    let start = Instant::now();
+    for _ in 0..steps {
+        world.step(1.0 / 60.0);
+    }
+    let elapsed = start.elapsed();
+    report(
+        "joint_chain_ragdoll",
+        elapsed,
+        steps as u32,
+        "ms/step",
+        format!("bodies={} joints={body_count}", body_count + 1),
+    );
+}
+
 fn measure(iterations: u32, mut function: impl FnMut() -> usize) -> std::time::Duration {
     // Warm up once to keep allocator/page faults out of the measured loop.
     black_box(function());
@@ -241,7 +361,6 @@ fn measure(iterations: u32, mut function: impl FnMut() -> usize) -> std::time::D
     }
     start.elapsed()
 }
-
 fn report(name: &str, elapsed: std::time::Duration, units: u32, unit: &str, detail: String) {
     let per_unit = elapsed.as_secs_f64() * 1000.0 / f64::from(units.max(1));
     println!("{name}\t{per_unit:.3}\t{unit}\t{detail}");

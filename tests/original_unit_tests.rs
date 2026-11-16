@@ -6,13 +6,13 @@
 
 use std::sync::Arc;
 
-use havok::body::BodyCinfo;
-use havok::math::Vector4;
-use havok::np_types::MotionType;
-use havok::shape::{
+use proton::body::BodyCinfo;
+use proton::math::Vector4;
+use proton::np_types::MotionType;
+use proton::shape::{
     BoxShape, CapsuleShape, ConvexHullShape, HeightFieldShape, MeshShape, Shape, SphereShape,
 };
-use havok::world::{World, WorldCinfo};
+use proton::world::{World, WorldCinfo};
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
     Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
@@ -166,7 +166,7 @@ fn np_mesh_shape_unit_test_structural() {
 }
 
 fn collect_leaf_triangles(
-    nodes: &[havok::shape::BvhNode],
+    nodes: &[proton::shape::BvhNode],
     order: &[u32],
     node: usize,
     output: &mut Vec<u32>,

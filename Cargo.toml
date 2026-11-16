@@ -15,6 +15,41 @@ rust-version = "1.85"
 # Source derived from proprietary Havok code: never publish to crates.io.
 publish = false
 
+[package]
+name = "proton-engine"            # package 名必须与子 crate 的 "havok" 区分
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Umbrella library bundling the whole Havok Rust port behind one crate"
+
+[lib]
+name = "proton"                   # 使用者写 use havok::world::World;
+path = "src/lib.rs"
+# 需要 C ABI 动态库时再打开:
+# crate-type = ["rlib", "cdylib"]
+
+[dependencies]
+hk-types        = { path = "crates/hk-types" }
+hk-math         = { path = "crates/hk-math" }
+hk-memory       = { path = "crates/hk-memory" }
+hk-container    = { path = "crates/hk-container" }
+hk-thread       = { path = "crates/hk-thread" }
+hk-geometry     = { path = "crates/hk-geometry" }
+hk-serialize    = { path = "crates/hk-serialize" }
+hknp-types      = { path = "crates/hknp-types" }
+hknp-shape      = { path = "crates/hknp-shape" }
+hknp-collide    = { path = "crates/hknp-collide" }
+hknp-body       = { path = "crates/hknp-body" }
+hknp-solver     = { path = "crates/hknp-solver" }
+hknp-world      = { path = "crates/hknp-world" }
+hknp-extensions = { path = "crates/hknp-extensions" }
+
+# benches/simulation.rs 使用 harness = false，搬过来后必须显式声明
+[[bench]]
+name = "simulation"
+harness = false
+
 # Floating-point determinism note:
 # Havok's simulation relies on bit-exact float32 reproduction. Rust does not
 # reorder or contract FP expressions by default - keep it that way. Never

@@ -10,22 +10,28 @@
 //! triangle, convex hull) through one code path; the query shape itself is
 //! exposed as a degenerate point via GJK.
 //!
+//! Composite shapes are traversed with their acceleration structures:
+//! [`MeshShape`] uses its BVH over triangle ranges, [`HeightFieldShape`] walks
+//! the grid cells inside the ray interval and [`CompoundShape`] recurses into
+//! its children with composed transforms. Leaf triangles use the analytic
+//! two-sided Möller–Trumbore test.
+//!
 //! # Conventions
 //!
 //! * `direction` is normalized defensively; `max_length` is measured in world
 //!   units along the normalized direction.
 //! * `RayHit::hit_fraction` is the distance from `origin` to the hit, in
 //!   `[0, max_length]`; `position` is on the shape surface and `normal` is the
-//!   outward surface normal.
-//! * A ray starting inside the shape hits at fraction `0` with `normal`
+//!   outward surface normal (flipped towards the ray for triangle hits).
+//! * A ray starting inside a convex shape hits at fraction `0` with `normal`
 //!   approximated by `-direction`.
-//! * Shapes without a support function (meshes/compounds/height fields) return
-//!   `None`; traversal of composite children is future work.
+//! * Mesh/height-field/compound targets return the closest leaf hit; ties are
+//!   broken by leaf order so results are deterministic.
 
 use core::any::Any;
 
 use hk_math::{Aabb, Transform, Vector4};
-use hknp_shape::Shape;
+use hknp_shape::{CompoundShape, HeightFieldShape, MeshShape, Shape};
 use hknp_types::ShapeType;
 
 use crate::gjk::{GjkResult, closest_points};
@@ -46,11 +52,59 @@ pub struct RayHit {
     pub normal: Vector4,
 }
 
-/// Cast a ray against a convex shape.
+/// Cast a ray against a convex or composite shape.
 ///
-/// Returns `None` when the shape has no support function, the direction is
-/// degenerate, or the ray misses within `max_length`.
+/// Returns `None` when the direction is degenerate or the ray misses within
+/// `max_length`. Composite targets recurse into their children/leaves.
 pub fn raycast(
+    shape: &dyn Shape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    let direction_length = direction.length3();
+    if direction_length <= 1e-10 || max_length <= 0.0 {
+        return None;
+    }
+    let direction = direction / direction_length;
+    match shape.shape_type() {
+        ShapeType::Mesh => raycast_mesh(
+            shape
+                .as_any()
+                .downcast_ref::<MeshShape>()
+                .expect("mesh shape type without MeshShape"),
+            transform,
+            origin,
+            direction,
+            max_length,
+        ),
+        ShapeType::HeightField => raycast_height_field(
+            shape
+                .as_any()
+                .downcast_ref::<HeightFieldShape>()
+                .expect("height field shape type without HeightFieldShape"),
+            transform,
+            origin,
+            direction,
+            max_length,
+        ),
+        ShapeType::Compound => raycast_compound(
+            shape
+                .as_any()
+                .downcast_ref::<CompoundShape>()
+                .expect("compound shape type without CompoundShape"),
+            transform,
+            origin,
+            direction,
+            max_length,
+        ),
+        _ => raycast_convex(shape, transform, origin, direction, max_length),
+    }
+}
+
+/// Cast a ray against a convex shape.
+fn raycast_convex(
     shape: &dyn Shape,
     transform: &Transform,
     origin: Vector4,
@@ -60,11 +114,6 @@ pub fn raycast(
     if !shape.is_convex() {
         return None;
     }
-    let direction_length = direction.length3();
-    if direction_length <= 1e-10 || max_length <= 0.0 {
-        return None;
-    }
-    let direction = direction / direction_length;
 
     let mut fraction = 0.0;
     for _ in 0..MAX_ADVANCE_STEPS {
@@ -103,6 +152,236 @@ pub fn raycast(
         }
     }
     None
+}
+
+/// Traverse a mesh's BVH and test its leaf triangles.
+fn raycast_mesh(
+    mesh: &MeshShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    if mesh.bvh_nodes().is_empty() {
+        return None;
+    }
+    let local_origin = transform.inverse_transform_point(origin);
+    let local_direction = transform.rotation.rotate_inverse(direction);
+    let mut best: Option<(f32, u32, Vector4, Vector4)> = None;
+
+    let mut stack = vec![0usize];
+    while let Some(node_index) = stack.pop() {
+        let node = mesh.bvh_nodes()[node_index];
+        let Some((entry, exit)) = ray_aabb(local_origin, local_direction, &node.aabb) else {
+            continue;
+        };
+        if entry > max_length || exit < 0.0 {
+            continue;
+        }
+        match node.children {
+            Some((left, right)) => {
+                stack.push(right as usize);
+                stack.push(left as usize);
+            }
+            None => {
+                for &triangle_index in mesh.node_triangles(node_index) {
+                    let triangle = mesh.triangles()[triangle_index as usize];
+                    let a = mesh.vertices()[triangle[0] as usize];
+                    let b = mesh.vertices()[triangle[1] as usize];
+                    let c = mesh.vertices()[triangle[2] as usize];
+                    let Some((t, normal)) = ray_triangle(local_origin, local_direction, a, b, c)
+                    else {
+                        continue;
+                    };
+                    if t > max_length {
+                        continue;
+                    }
+                    let better = match &best {
+                        Some((current, index, _, _)) => (t, triangle_index) < (*current, *index),
+                        None => true,
+                    };
+                    if better {
+                        best = Some((
+                            t,
+                            triangle_index,
+                            local_origin + local_direction * t,
+                            normal,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    best.map(|(fraction, _, position, normal)| RayHit {
+        hit_fraction: fraction,
+        position: transform.transform_point(position),
+        normal: transform.rotation.rotate(normal),
+    })
+}
+
+/// Best height-field leaf hit: `(distance, (cell z, cell x, sub-triangle),
+/// local position, local normal)`.
+type HeightFieldHit = (f32, (usize, usize, usize), Vector4, Vector4);
+
+/// Walk the height-field cells inside the ray interval.
+fn raycast_height_field(
+    heightfield: &HeightFieldShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    let size_x = heightfield.int_size_x();
+    let size_z = heightfield.int_size_z();
+    if size_x < 2 || size_z < 2 {
+        return None;
+    }
+    let local_origin = transform.inverse_transform_point(origin);
+    let local_direction = transform.rotation.rotate_inverse(direction);
+    let (entry, exit) = ray_aabb(local_origin, local_direction, &heightfield.aabb())?;
+    let start = entry.max(0.0);
+    let end = exit.min(max_length);
+    if start > end {
+        return None;
+    }
+    let point_a = local_origin + local_direction * start;
+    let point_b = local_origin + local_direction * end;
+    let scale = heightfield.scale();
+    let min_x = point_a.x.min(point_b.x) / scale.x;
+    let max_x = point_a.x.max(point_b.x) / scale.x;
+    let min_z = point_a.z.min(point_b.z) / scale.z;
+    let max_z = point_a.z.max(point_b.z) / scale.z;
+
+    let cell_min_x = min_x.floor().max(0.0) as usize;
+    let cell_max_x = (max_x.ceil() as usize).min(size_x - 2);
+    let cell_min_z = min_z.floor().max(0.0) as usize;
+    let cell_max_z = (max_z.ceil() as usize).min(size_z - 2);
+    if cell_min_x > cell_max_x || cell_min_z > cell_max_z {
+        return None;
+    }
+
+    let mut best: Option<HeightFieldHit> = None;
+    for z in cell_min_z..=cell_max_z {
+        for x in cell_min_x..=cell_max_x {
+            let p00 = heightfield.vertex(x, z);
+            let p10 = heightfield.vertex(x + 1, z);
+            let p01 = heightfield.vertex(x, z + 1);
+            let p11 = heightfield.vertex(x + 1, z + 1);
+            for (points, sub) in [([p00, p10, p11], 0usize), ([p00, p11, p01], 1usize)] {
+                let Some((t, normal)) = ray_triangle(
+                    local_origin,
+                    local_direction,
+                    points[0],
+                    points[1],
+                    points[2],
+                ) else {
+                    continue;
+                };
+                if t > max_length {
+                    continue;
+                }
+                let key = (z, x, sub);
+                let better = match &best {
+                    Some((current, current_key, _, _)) => (t, key) < (*current, *current_key),
+                    None => true,
+                };
+                if better {
+                    best = Some((t, key, local_origin + local_direction * t, normal));
+                }
+            }
+        }
+    }
+
+    best.map(|(fraction, _, position, normal)| RayHit {
+        hit_fraction: fraction,
+        position: transform.transform_point(position),
+        normal: transform.rotation.rotate(normal),
+    })
+}
+
+/// Recurse into compound children with composed transforms.
+fn raycast_compound(
+    compound: &CompoundShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    let mut best: Option<(f32, usize, RayHit)> = None;
+    for (child_index, child) in compound.children().iter().enumerate() {
+        let child_transform = compose_transform(transform, &child.transform);
+        let Some(hit) = raycast(
+            child.shape.as_ref(),
+            &child_transform,
+            origin,
+            direction,
+            max_length,
+        ) else {
+            continue;
+        };
+        let better = match &best {
+            Some((fraction, index, _)) => (hit.hit_fraction, child_index) < (*fraction, *index),
+            None => true,
+        };
+        if better {
+            best = Some((hit.hit_fraction, child_index, hit));
+        }
+    }
+    best.map(|(_, _, hit)| hit)
+}
+
+/// Analytic two-sided ray/triangle intersection (Möller–Trumbore).
+///
+/// Returns the ray parameter `t >= 0` and a unit normal oriented against the
+/// ray direction. Degenerate or parallel triangles return `None`.
+fn ray_triangle(
+    origin: Vector4,
+    direction: Vector4,
+    a: Vector4,
+    b: Vector4,
+    c: Vector4,
+) -> Option<(f32, Vector4)> {
+    let edge_ab = b - a;
+    let edge_ac = c - a;
+    let pvec = direction.cross(edge_ac);
+    let determinant = edge_ab.dot3(pvec);
+    if determinant.abs() <= 1e-10 {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    let tvec = origin - a;
+    let u = tvec.dot3(pvec) * inverse;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let qvec = tvec.cross(edge_ab);
+    let v = direction.dot3(qvec) * inverse;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = edge_ac.dot3(qvec) * inverse;
+    if t < 0.0 {
+        return None;
+    }
+    let mut normal = edge_ab.cross(edge_ac);
+    let length = normal.length3();
+    if length <= 1e-10 {
+        return None;
+    }
+    normal *= 1.0 / length;
+    if normal.dot3(direction) > 0.0 {
+        normal = -normal;
+    }
+    Some((t, normal))
+}
+
+/// Compose a parent world transform with a child local transform.
+fn compose_transform(parent: &Transform, child: &Transform) -> Transform {
+    Transform::new(
+        parent.rotation.mul_mat(&child.rotation),
+        parent.transform_point(child.translation),
+    )
 }
 
 /// GJK distance between a world-space point and a shape.
@@ -396,5 +675,162 @@ mod tests {
 
         let result = point_distance(shape.as_ref(), &Transform::IDENTITY, Vector4::ZERO).unwrap();
         assert!(result.intersects);
+    }
+
+    fn quad_mesh(size: f32) -> Arc<dyn Shape> {
+        Arc::new(MeshShape::new(
+            vec![
+                Vector4::from_xyz(-size, 0.0, -size),
+                Vector4::from_xyz(size, 0.0, -size),
+                Vector4::from_xyz(size, 0.0, size),
+                Vector4::from_xyz(-size, 0.0, size),
+            ],
+            vec![[0, 1, 2], [0, 2, 3]],
+        )) as Arc<dyn Shape>
+    }
+
+    #[test]
+    fn ray_hits_mesh_triangle_through_bvh() {
+        let mesh = quad_mesh(2.0);
+        let hit = raycast(
+            mesh.as_ref(),
+            &Transform::IDENTITY,
+            Vector4::from_xyz(0.5, 5.0, 0.5),
+            -Vector4::UNIT_Y,
+            10.0,
+        )
+        .expect("ray must hit the mesh quad");
+        assert!(
+            (hit.hit_fraction - 5.0).abs() < 1e-3,
+            "fraction {}",
+            hit.hit_fraction
+        );
+        assert!(
+            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            "normal {:?}",
+            hit.normal
+        );
+        assert!(
+            hit.position
+                .all_equal3(Vector4::from_xyz(0.5, 0.0, 0.5), 1e-3),
+            "position {:?}",
+            hit.position
+        );
+    }
+
+    #[test]
+    fn ray_misses_mesh_outside_its_silhouette() {
+        let mesh = quad_mesh(1.0);
+        assert!(
+            raycast(
+                mesh.as_ref(),
+                &Transform::IDENTITY,
+                Vector4::from_xyz(5.0, 5.0, 0.0),
+                -Vector4::UNIT_Y,
+                10.0,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn ray_hits_rotated_mesh() {
+        // Rotate the quad 90° about X: its plane normal becomes -Z.
+        let mesh = quad_mesh(1.0);
+        let rotation = Quaternion::from_axis_angle(Vector4::UNIT_X, core::f32::consts::FRAC_PI_2);
+        let transform = Transform::from_quaternion(rotation, Vector4::ZERO);
+        let hit = raycast(
+            mesh.as_ref(),
+            &transform,
+            Vector4::from_xyz(0.0, 0.0, 5.0),
+            -Vector4::UNIT_Z,
+            10.0,
+        )
+        .expect("ray must hit the rotated mesh");
+        assert!(
+            (hit.hit_fraction - 5.0).abs() < 1e-3,
+            "fraction {}",
+            hit.hit_fraction
+        );
+        assert!(
+            hit.normal.dot3(Vector4::UNIT_Z) > 0.9,
+            "normal {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
+    fn ray_hits_height_field() {
+        let heightfield: Arc<dyn Shape> = Arc::new(
+            HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).expect("valid height field"),
+        );
+        let hit = raycast(
+            heightfield.as_ref(),
+            &Transform::IDENTITY,
+            Vector4::from_xyz(1.5, 5.0, 1.5),
+            -Vector4::UNIT_Y,
+            10.0,
+        )
+        .expect("ray must hit the flat height field");
+        assert!(
+            (hit.hit_fraction - 5.0).abs() < 1e-3,
+            "fraction {}",
+            hit.hit_fraction
+        );
+        assert!(
+            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            "normal {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
+    fn ray_hits_compound_child_with_world_transform() {
+        use hknp_shape::{CompoundShape, ShapeInstance};
+        let compound: Arc<dyn Shape> = Arc::new(CompoundShape::new(vec![
+            ShapeInstance::new(
+                Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 2.0, 0.0)),
+                sphere(1.0, Vector4::ZERO),
+            ),
+            ShapeInstance::new(
+                Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(5.0, 2.0, 0.0)),
+                sphere(1.0, Vector4::ZERO),
+            ),
+        ]));
+        let transform = Transform::from_quaternion(
+            Quaternion::from_axis_angle(Vector4::UNIT_Z, core::f32::consts::FRAC_PI_2),
+            Vector4::from_xyz(10.0, 0.0, 0.0),
+        );
+        // Child sphere at local (0,2,0) maps to world (8,0,0); a ray along -Z
+        // from z=5 reaches its surface at z=1 (fraction 4).
+        let hit = raycast(
+            compound.as_ref(),
+            &transform,
+            Vector4::from_xyz(8.0, 0.0, 5.0),
+            -Vector4::UNIT_Z,
+            10.0,
+        )
+        .expect("ray must hit the rotated compound child");
+        assert!(
+            (hit.hit_fraction - 4.0).abs() < 1e-2,
+            "fraction {}",
+            hit.hit_fraction
+        );
+    }
+
+    #[test]
+    fn mesh_ray_respects_max_length() {
+        let mesh = quad_mesh(1.0);
+        // Start below the plane: the hit is 5 units away, beyond a 3 unit ray.
+        assert!(
+            raycast(
+                mesh.as_ref(),
+                &Transform::IDENTITY,
+                Vector4::from_xyz(0.0, -5.0, 0.0),
+                Vector4::UNIT_Y,
+                3.0,
+            )
+            .is_none()
+        );
     }
 }

@@ -12,6 +12,11 @@
 //! | Module | Contents |
 //! |---|---|
 //! | `solver` | `SolverBody`, `ContactConstraint`, `SolverSettings`, `Solver`, `SolverStats` |
+//! | `constraint` | `JointConstraint` (`BallAndSocket`, `Hinge`, `Fixed`, `Ragdoll`, `Prismatic`, `Spring`, `PointToPlane`) and `Solver::solve_joints` |
+//!
+//! Joint pivots/axes are supplied in world space by the world each step; the
+//! solver applies sequential impulses with a Baumgarte drift bias, unilateral
+//! limits and clamped motors, in slice order.
 //!
 //! # Determinism
 //!
@@ -25,6 +30,6 @@ pub mod solver;
 
 pub use constraint::{
     BallAndSocketJoint, FixedJoint, HingeJoint, HingeLimits, HingeMotor, JointConstraint,
-    JointSolverStats,
+    JointSolverStats, PointToPlaneJoint, PrismaticJoint, RagdollJoint, SpringJoint,
 };
 pub use solver::{ContactConstraint, Solver, SolverBody, SolverSettings, SolverStats};

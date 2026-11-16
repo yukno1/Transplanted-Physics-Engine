@@ -106,10 +106,10 @@ havok/                             # 本仓库根目录
 | `hk-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
 | `hknp-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `hknp-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
-| `hknp-collide` | 宽相/窄相/Manifold | ✅ 已实现（Phase 7） |
+| `hknp-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
 | `hknp-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `hknp-solver` | 迭代式接触求解器（SolverBody/ContactConstraint） | ✅ 已实现（Phase 8） |
-| `hknp-world` | hknpWorld 组装 + collide→solve→integrate 单线程管线 | ✅ 已实现（Phase 8） |
+| `hknp-solver` | 迭代式接触求解器 + 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits/motor） | ✅ 已实现（Phase 8/11） |
+| `hknp-world` | hknpWorld 组装 + collide→solve(contacts+joints)→integrate 管线 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11） |
 | `hknp-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `havok` | 门面 crate，重导出公共 API | 🚧 骨架（重导出已接好） |
 
@@ -304,9 +304,30 @@ havok/                             # 本仓库根目录
 
 - **完整 `hknpMultithreadedSimulation`**：任务图/求解器/积分并行、work stealing、`hknpTaskGraph` 物理调度未移植；当前只并行窄相，且每步重建 scoped worker（小场景并行反而更慢，见 bench）。
 - **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`hk-serialize` 不能替代资产加载。
-- **Ragdoll / Vehicle / CharacterControl**：前置的约束/joint 系统、射线查询与铰链 limits/motors 已交付（见上）；仍缺 springs/位置电机、shape cast（非 raycast）、碰撞过滤、action 调度、多体约束岛。均未移植。
+- **Ragdoll / Vehicle / CharacterControl**：前置的 `约束/joint` 与 `查询` 系统已在 Phase 11 完成（见下）；扩展层本身（ragdoll 驱动/身体绑定、wheel 悬挂约束与 vehicle 调度、character action 调度）仍未移植。
 - 大世界 `hkPreciseTransform`（double 平移）仍待（当前 f32 Transform）。
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；`cargo bench --quick` 输出全部指标。
+
+### Phase 11：约束/joint 系统 + 查询系统（✅ 已完成，2026-11-16）
+交付（`hknp-solver` 34 个单元测试；`hknp-collide` 47 个单元测试；`hknp-world` 48 个单元测试 + 1 个文档测试；集成测试 `constraints_and_queries.rs` 22 个）：
+
+| crate | 内容 |
+|---|---|
+| `hknp-solver` | `Solver::solve_joints`：世界空间关节行按 slice 顺序做顺序脉冲求解。`BallAndSocketJoint`（3 线性行）、`HingeJoint`（3 线性 + 2 轴对齐 + 可选角度 limits + 速度 motor）、`FixedJoint`（3 线性 + 3 角度锁定 + 四元数误差偏置）、`RagdollJoint`（3 线性 + cone 摆动限制 + twist 角度限制）、`PrismaticJoint`（2 垂直线性行 + 3 角度锁定 + 沿轴行程限制）、`SpringJoint`（距离行）、`PointToPlaneJoint`（沿平面法线的距离行，零宽区间为双边）。limits 单边符号检查，motor 单次限幅冲量 |
+| `hknp-world` | 约束管理器：`ConstraintId` 槽表（不复用）、`WorldJoint`/`JointType`、`create_*_constraint`、`destroy_constraint`、`set_constraint_enabled`、hinge/ragdoll/prismatic 参数 setter、`set_constraint_collisions_enabled`（`DISABLE_COLLISIONS`：成对 body 不生成接触）、`constraints_of_body`（body↔constraint 映射）。每步从 body pose 重建世界空间行（pivot/axis、hinge/ragdoll 角度、prismatic 行程、fixed 相对朝向误差） |
+| `hknp-collide` | 查询：`raycast`（凸体 conservative advancement；mesh BVH、height field 单元、compound 递归；三角形 Möller–Trumbore）、`point_distance`、`ray_aabb`、`shape_cast`（凸-凸 conservative advancement + 复合目标叶子遍历；`ShapeCastHit` 带 fraction/position/normal/witness/start_penetrating） |
+| `hknp-world` 查询 | `QueryFilter`（ignore body + static/dynamic/keyframed 开关）、`raycast`/`raycast_filtered`、`cast_shape`、`closest_point`/`closest_point_filtered`、`closest_points_to_shape`（重叠时用 EPA 深度返回负距离）、`query_aabb`；结果按 `(distance, body id)` 决定，遍历顺序不影响确定性 |
+
+决策与偏差：
+
+- **不做 1:1 constraint-atom 直译**：SDK 的 `hknpConstraintAtom`（49 文件）、constraint group、connectivity graph 未移植；本阶段以“世界空间关节行 + 顺序脉冲”覆盖 Ragdoll/Vehicle/CharacterControl 所需的主要约束族，pivot/axis、limits、motor、碰撞屏蔽语义与 SDK 对齐
+- **Ragdoll**：实现 cone（swing）与 twist 限制，SDK 的 plane-angle limits 未移植（cone 是 ragdoll 主限制）；twist 参考轴由 `plane_axis_a/b` 投影得到
+- **Prismatic**：锁住两个平移方向与全部转动（相对朝向误差用四元数误差向量），沿轴行程用单边限制；`±inf` 表示无行程限制
+- **Wheel/Vehicle**：wheel 约束（悬挂 + 转向/驱动）未移植，依赖后续 vehicle 阶段；查询系统已提供 vehicle 悬挂 raycast 所需 API
+- **Shape cast**：仅凸体可作为 query shape（与 `hknpShapeCastQuery` 常见用法一致）；旋转 cast、`hknpDeflectedLinearCast` 与专用连续算法未移植；容差默认 `0.001`（`HKNP_DEFAULT_SHAPE_CAST_ACCURACY`）
+- **查询**：`closest_points_to_shape` 仅凸体；mesh/height field/compound 的最近点查询未移植；shape key/material/filter codec 的 per-leaf 解码未移植
+- **接触/约束**：约束求解在接触求解之后执行（同一速度缓冲），未做 island/constraint-batch 分区与 warm starting
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿；bench 新增 `raycast_world` / `shape_cast_world` / `joint_chain_ragdoll`
 
 ---
 
@@ -327,6 +348,8 @@ havok/                             # 本仓库根目录
 | Body/Motion 生命周期 | `BodyId` 携带 8 位 serial，槽复用后旧 ID 失效；`MotionId` 无 serial（与 SDK 一致），需先用 body 校验；静态 motion 固定 slot 0 |
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
 | 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、单切向摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
+| 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
+| 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `hk-types` 测试锁定，后续改动不得破坏 |
@@ -385,11 +408,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 9：测试与验证（Rust 侧）—— 41 个原版 UnitTest 矩阵（6 Ported / 3 Partial / 32 Blocked）、19 个集成测试、确定性 trace、无依赖基准 harness 完成；C++ 黄金基准待原版 SDK 可构建
 - [x] Phase 10（可交付子集）：并行窄相 + `step_with_threads`、HFF + Tagfile 容器解析、WorldHash 完成
 - [x] Phase 10（后续子集，2026-11-12）：约束/joint 系统（BallSocket/Hinge/Fixed + 世界接入）、查询系统（world raycast / closest point）与铰链 limits/motors 完成
-- [ ] 后续：约束岛与 warm starting、springs/位置电机、shape cast 与 AABB cast 查询、碰撞过滤 → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 11（约束/joint + 查询系统，2026-11-16）：Ragdoll cone/twist、Prismatic、StiffSpring、PointToPlane 关节与约束碰撞屏蔽、body↔constraint 映射；shape cast（凸-凸 conservative advancement + mesh/height field/compound 目标）、mesh/height field/compound raycast、`QueryFilter`、`closest_points_to_shape`、AABB 查询完成
+- [ ] 后续：约束岛与 warm starting、位置/弹性电机、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
-仓库现状（2026-11-12）：
+仓库现状（2026-11-16）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
-- git：最新提交 `927b8fd havok/tests & havok/benches & hknp-world`；Phase 10 及后续改动（`hk-serialize`/`hknp-extensions`/并行窄相/约束与查询/bench/README）尚未提交
+- git：最新提交 `70889e4 hknp-solver & hknp-world`（约束/查询子集）；Phase 11 改动（solver 关节族、collide 查询、world 约束/查询、tests/bench/README）尚未提交
 - 外部依赖：0
 

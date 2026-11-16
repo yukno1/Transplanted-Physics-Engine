@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "havok"
-version = "0.1.0"
-dependencies = [
- "hk-container",
- "hk-geometry",
- "hk-math",
- "hk-memory",
- "hk-thread",
- "hk-types",
- "hknp-body",
- "hknp-collide",
- "hknp-shape",
- "hknp-solver",
- "hknp-types",
- "hknp-world",
-]
-
-[[package]]
 name = "hk-container"
 version = "0.1.0"
 
@@ -109,4 +91,24 @@ dependencies = [
  "hknp-shape",
  "hknp-solver",
  "hknp-types",
+]
+
+[[package]]
+name = "proton-engine"
+version = "0.1.0"
+dependencies = [
+ "hk-container",
+ "hk-geometry",
+ "hk-math",
+ "hk-memory",
+ "hk-serialize",
+ "hk-thread",
+ "hk-types",
+ "hknp-body",
+ "hknp-collide",
+ "hknp-extensions",
+ "hknp-shape",
+ "hknp-solver",
+ "hknp-types",
+ "hknp-world",
 ]

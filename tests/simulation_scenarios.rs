@@ -1,16 +1,16 @@
 //! Phase 9 integration scenarios (README §4, matrix S1–S8).
 //!
-//! These tests exercise the full public facade (`havok`) rather than crate
+//! These tests exercise the full public facade (`proton`) rather than crate
 //! internals: gravity, broad/narrow phase, contact solving and integration.
 
 use std::sync::Arc;
 
-use havok::body::BodyCinfo;
-use havok::collide::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
-use havok::math::{Quaternion, Vector4};
-use havok::np_types::{BodyId, MotionType};
-use havok::shape::{BoxShape, CapsuleShape, CylinderShape, Shape, SphereShape};
-use havok::world::{World, WorldCinfo};
+use proton::body::BodyCinfo;
+use proton::collide::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
+use proton::math::{Quaternion, Vector4};
+use proton::np_types::{BodyId, MotionType};
+use proton::shape::{BoxShape, CapsuleShape, CylinderShape, Shape, SphereShape};
+use proton::world::{World, WorldCinfo};
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
     Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
@@ -224,15 +224,15 @@ fn s8_broadphase_is_deterministic_and_canonical() {
     let bodies = vec![
         BodyAabb::new(
             BodyId::new(5),
-            havok::math::Aabb::new(Vector4::ZERO, Vector4::splat(1.0)),
+            proton::math::Aabb::new(Vector4::ZERO, Vector4::splat(1.0)),
         ),
         BodyAabb::new(
             BodyId::new(3),
-            havok::math::Aabb::new(Vector4::from_xyz(0.2, 0.2, 0.2), Vector4::splat(1.2)),
+            proton::math::Aabb::new(Vector4::from_xyz(0.2, 0.2, 0.2), Vector4::splat(1.2)),
         ),
         BodyAabb::new(
             BodyId::new(9),
-            havok::math::Aabb::new(Vector4::from_xyz(10.0, 0.0, 0.0), Vector4::splat(11.0)),
+            proton::math::Aabb::new(Vector4::from_xyz(10.0, 0.0, 0.0), Vector4::splat(11.0)),
         ),
     ];
     let broadphase = BroadPhase::new(BroadPhaseConfig::default());
@@ -271,7 +271,7 @@ fn s10_dont_collide_is_filtered() {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let a = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0)))
-            .with_flags(havok::np_types::CollisionFlags::DONT_COLLIDE),
+            .with_flags(proton::np_types::CollisionFlags::DONT_COLLIDE),
     );
     let b = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
