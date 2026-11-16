@@ -33,6 +33,20 @@ pub struct WorldCinfo {
     pub solver_iterations: u32,
     /// Whether deactivation is enabled (default true).
     pub enable_deactivation: bool,
+    /// Whether island sleeping is enabled (default false).
+    ///
+    /// This is the deactivation subset actually implemented: constraint islands
+    /// whose dynamic bodies stay below the sleeping velocity thresholds for
+    /// `time_to_sleep` seconds fall asleep (zero velocity, no narrow-phase
+    /// contacts) until touched by an active body or woken explicitly.
+    pub enable_sleeping: bool,
+    /// Seconds a body must stay below the sleeping thresholds before its
+    /// island falls asleep (default 0.5).
+    pub time_to_sleep: f32,
+    /// Linear velocity below which a body counts as low-energy (default 0.1).
+    pub sleeping_linear_threshold: f32,
+    /// Angular velocity below which a body counts as low-energy (default 0.1).
+    pub sleeping_angular_threshold: f32,
     /// Whether contact impulses are warm started across steps (default true).
     pub enable_warm_starting: bool,
     /// Expected step delta time (default 1/30 s).
@@ -51,6 +65,10 @@ impl Default for WorldCinfo {
             solver_damp: 1.0,
             solver_iterations: 4,
             enable_deactivation: true,
+            enable_sleeping: false,
+            time_to_sleep: 0.5,
+            sleeping_linear_threshold: 0.1,
+            sleeping_angular_threshold: 0.1,
             enable_warm_starting: true,
             expected_delta_time: 1.0 / 30.0,
         }
@@ -114,6 +132,27 @@ impl WorldCinfo {
         self
     }
 
+    /// Enable or disable island sleeping (the implemented deactivation subset).
+    #[must_use]
+    pub fn with_sleeping(mut self, enabled: bool) -> Self {
+        self.enable_sleeping = enabled;
+        self
+    }
+
+    /// Set the island sleeping parameters.
+    #[must_use]
+    pub fn with_sleeping_settings(
+        mut self,
+        time_to_sleep: f32,
+        linear_threshold: f32,
+        angular_threshold: f32,
+    ) -> Self {
+        self.time_to_sleep = time_to_sleep;
+        self.sleeping_linear_threshold = linear_threshold;
+        self.sleeping_angular_threshold = angular_threshold;
+        self
+    }
+
     /// Enable or disable contact warm starting.
     #[must_use]
     pub fn with_warm_starting(mut self, enabled: bool) -> Self {
@@ -144,6 +183,10 @@ mod tests {
         assert_eq!(cinfo.solver_damp, 1.0);
         assert_eq!(cinfo.solver_iterations, 4);
         assert!(cinfo.enable_deactivation);
+        assert!(!cinfo.enable_sleeping);
+        assert!((cinfo.time_to_sleep - 0.5).abs() < 1e-6);
+        assert!((cinfo.sleeping_linear_threshold - 0.1).abs() < 1e-6);
+        assert!((cinfo.sleeping_angular_threshold - 0.1).abs() < 1e-6);
         assert!(cinfo.enable_warm_starting);
         assert!((cinfo.expected_delta_time - 1.0 / 30.0).abs() < 1e-6);
     }
@@ -158,12 +201,18 @@ mod tests {
             .with_collision_tolerance(0.1)
             .with_solver_settings(0.5, 0.9, 8)
             .with_deactivation(false)
+            .with_sleeping(true)
+            .with_sleeping_settings(1.0, 0.2, 0.3)
             .with_warm_starting(false);
         assert_eq!(cinfo.name.as_deref(), Some("test"));
         assert_eq!(cinfo.body_buffer_capacity, 10);
         assert_eq!(cinfo.solver_tau, 0.5);
         assert_eq!(cinfo.solver_iterations, 8);
         assert!(!cinfo.enable_deactivation);
+        assert!(cinfo.enable_sleeping);
+        assert!((cinfo.time_to_sleep - 1.0).abs() < 1e-6);
+        assert!((cinfo.sleeping_linear_threshold - 0.2).abs() < 1e-6);
+        assert!((cinfo.sleeping_angular_threshold - 0.3).abs() < 1e-6);
         assert!(!cinfo.enable_warm_starting);
     }
 }

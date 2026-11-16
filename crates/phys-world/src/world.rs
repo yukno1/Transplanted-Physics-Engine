@@ -1,6 +1,6 @@
 //! `hknpWorld` — world assembly and single-threaded step pipeline.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use base_math::{Quaternion, Transform, Vector4};
@@ -21,6 +21,15 @@ use crate::constraint::{
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
+
+/// Per-body deactivation state (the world's deactivation-manager subset).
+#[derive(Clone, Copy, Debug, Default)]
+struct SleepState {
+    /// Seconds the body has continuously stayed below the sleeping thresholds.
+    timer: f32,
+    /// Whether the body is currently asleep (velocity zero, no narrow phase).
+    sleeping: bool,
+}
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
 #[derive(Clone)]
@@ -50,6 +59,7 @@ pub struct World {
     joint_count: usize,
     solver: Solver,
     contact_cache: ContactImpulseCache,
+    sleep_states: HashMap<BodyId, SleepState>,
     last_islands: Vec<IslandInfo>,
     step_count: u64,
     last_delta_time: f32,
@@ -74,6 +84,7 @@ impl World {
             joint_count: 0,
             solver: Solver::new(solver_settings),
             contact_cache: ContactImpulseCache::default(),
+            sleep_states: HashMap::new(),
             last_islands: Vec::new(),
             cinfo,
             gravity,
@@ -202,8 +213,85 @@ impl World {
         let destroyed = self.bodies.destroy(body_id);
         if destroyed {
             self.remove_joints_of(body_id);
+            self.sleep_states.remove(&body_id);
         }
         destroyed
+    }
+
+    /// Whether a dynamic body is currently asleep (deactivation subset).
+    ///
+    /// Static and keyframed bodies are never asleep. Bodies are awake unless
+    /// [`WorldCinfo::enable_sleeping`] put their island to sleep.
+    pub fn body_is_sleeping(&self, body_id: BodyId) -> Option<bool> {
+        let body = self.bodies.get(body_id)?;
+        Some(body.is_dynamic() && self.is_sleeping(body_id))
+    }
+
+    /// Wake a body and every body transitively connected to it through live
+    /// joint constraints (contacts propagate the wake one step later).
+    ///
+    /// Returns `false` when the body does not exist or is not dynamic.
+    pub fn wake_body(&mut self, body_id: BodyId) -> bool {
+        let Some(body) = self.bodies.get(body_id) else {
+            return false;
+        };
+        if !body.is_dynamic() {
+            return false;
+        }
+
+        // Breadth-first traversal of the joint graph, in slot order.
+        let mut queue = vec![body_id];
+        let mut visited = HashSet::new();
+        while let Some(current) = queue.pop() {
+            if !visited.insert(current) {
+                continue;
+            }
+            if let Some(state) = self.sleep_states.get_mut(&current) {
+                state.sleeping = false;
+                state.timer = 0.0;
+            }
+            for (_, joint) in self.constraints_of_body(current) {
+                let (body_a, body_b) = joint.bodies();
+                for neighbour in [body_a, body_b] {
+                    if neighbour != current
+                        && !visited.contains(&neighbour)
+                        && self
+                            .bodies
+                            .get(neighbour)
+                            .map(|body| body.is_dynamic())
+                            .unwrap_or(false)
+                    {
+                        queue.push(neighbour);
+                    }
+                }
+            }
+        }
+        true
+    }
+
+    /// Internal sleeping check (bodies absent from the map are awake).
+    fn is_sleeping(&self, body_id: BodyId) -> bool {
+        self.cinfo.enable_sleeping
+            && self
+                .sleep_states
+                .get(&body_id)
+                .map(|state| state.sleeping)
+                .unwrap_or(false)
+    }
+
+    /// Clear a dynamic body's sleep state after user-driven state changes.
+    fn wake_if_dynamic(&mut self, body_id: BodyId) {
+        if self
+            .bodies
+            .get(body_id)
+            .map(|body| body.is_dynamic())
+            .unwrap_or(false)
+        {
+            if let Some(state) = self.sleep_states.get_mut(&body_id) {
+                state.sleeping = false;
+                state.timer = 0.0;
+            }
+        }
     }
 
     /// Add a ball-and-socket joint (`addConstraint`).
@@ -728,6 +816,7 @@ impl World {
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.set_transform(transform);
         }
+        self.wake_if_dynamic(body_id);
         self.bodies
             .get_mut(body_id)
             .map(|body| body.set_transform(transform))
@@ -751,8 +840,10 @@ impl World {
         if body.is_static() {
             return false;
         }
+        let motion_id = body.motion_id;
+        self.wake_if_dynamic(body_id);
         self.motions
-            .get_mut(body.motion_id)
+            .get_mut(motion_id)
             .map(|motion| motion.linear_velocity = velocity)
             .is_some()
     }
@@ -765,8 +856,10 @@ impl World {
         if body.is_static() {
             return false;
         }
+        let motion_id = body.motion_id;
+        self.wake_if_dynamic(body_id);
         self.motions
-            .get_mut(body.motion_id)
+            .get_mut(motion_id)
             .map(|motion| motion.angular_velocity = velocity)
             .is_some()
     }
@@ -866,10 +959,11 @@ impl World {
 
         let gravity = self.gravity;
         if delta_time > 0.0 {
+            // Sleeping bodies do not accumulate gravity; they keep zero velocity.
             let dynamic_motions: Vec<MotionId> = self
                 .bodies
                 .iter()
-                .filter(|body| body.is_dynamic())
+                .filter(|body| body.is_dynamic() && !self.is_sleeping(body.id))
                 .map(|body| body.motion_id)
                 .collect();
             for motion_id in dynamic_motions {
@@ -1006,24 +1100,94 @@ impl World {
             })
             .collect();
 
-        for island in &islands {
-            if !island.contacts.is_empty() {
-                self.solver.solve_contacts_subset(
-                    &mut solver_bodies,
-                    &constraints,
-                    &island.contacts,
-                    &mut contact_impulses,
-                    delta_time,
-                );
+        // Wake propagation: an island holding an awake dynamic body or touching
+        // a keyframed body wakes all of its sleeping members (a sleeping body
+        // only ends up in an island via an active partner or keyframed body).
+        if self.cinfo.enable_sleeping {
+            let keyframed_members: Vec<bool> = islands
+                .iter()
+                .map(|island| {
+                    island.bodies.iter().any(|&index| {
+                        !is_dynamic[index]
+                            && self
+                                .bodies
+                                .get(body_ids[index])
+                                .map(|body| body.is_keyframed())
+                                .unwrap_or(false)
+                    })
+                })
+                .collect();
+            for (island_index, island) in islands.iter().enumerate() {
+                let has_awake = island
+                    .bodies
+                    .iter()
+                    .any(|&index| is_dynamic[index] && !self.is_sleeping(body_ids[index]));
+                if !has_awake && !keyframed_members[island_index] {
+                    continue;
+                }
+                for &index in &island.bodies {
+                    if !is_dynamic[index] {
+                        continue;
+                    }
+                    let body_id = body_ids[index];
+                    if let Some(state) = self.sleep_states.get_mut(&body_id) {
+                        if state.sleeping {
+                            state.sleeping = false;
+                            state.timer = 0.0;
+                        }
+                    }
+                }
             }
-            if !island.joints.is_empty() {
-                self.solver.solve_joints_subset_with_impulses(
-                    &mut solver_bodies,
-                    &solver_joints,
-                    &island.joints,
-                    &mut joint_impulses,
-                    delta_time,
-                );
+        }
+
+        // Islands are disjoint in solver-body space (static/keyframed members
+        // never change), so solving island groups in parallel and merging the
+        // per-island results yields exactly the sequential impulses.
+        if threads > 1 && islands.len() >= MIN_PARALLEL_ISLANDS {
+            let results = solve_islands_parallel(
+                &self.solver,
+                &IslandSolveBuffers {
+                    solver_bodies: &solver_bodies,
+                    constraints: &constraints,
+                    contact_impulses: &contact_impulses,
+                    solver_joints: &solver_joints,
+                    joint_impulses: &joint_impulses,
+                },
+                &islands,
+                delta_time,
+                threads,
+            );
+            for result in results {
+                for (index, body) in result.bodies {
+                    solver_bodies[index] = body;
+                }
+                for (index, impulse) in result.contacts {
+                    contact_impulses[index] = impulse;
+                }
+                for (index, impulse) in result.joints {
+                    joint_impulses[index] = impulse;
+                }
+            }
+        } else {
+            for island in &islands {
+                if !island.contacts.is_empty() {
+                    self.solver.solve_contacts_subset(
+                        &mut solver_bodies,
+                        &constraints,
+                        &island.contacts,
+                        &mut contact_impulses,
+                        delta_time,
+                    );
+                }
+                if !island.joints.is_empty() {
+                    self.solver.solve_joints_subset_with_impulses(
+                        &mut solver_bodies,
+                        &solver_joints,
+                        &island.joints,
+                        &mut joint_impulses,
+                        delta_time,
+                    );
+                }
             }
         }
 
@@ -1062,11 +1226,92 @@ impl World {
             }
         }
 
+        // Update deactivation timers and put fully low-energy islands to sleep.
+        if self.cinfo.enable_sleeping && delta_time > 0.0 {
+            for (index, &body_id) in body_ids.iter().enumerate() {
+                if !is_dynamic[index] {
+                    continue;
+                }
+                let state = self.sleep_states.entry(body_id).or_default();
+                if state.sleeping {
+                    continue;
+                }
+                let solved = solver_bodies[index];
+                let low_energy = solved.linear_velocity.dot3(solved.linear_velocity)
+                    < self.cinfo.sleeping_linear_threshold * self.cinfo.sleeping_linear_threshold
+                    && solved.angular_velocity.dot3(solved.angular_velocity)
+                        < self.cinfo.sleeping_angular_threshold
+                            * self.cinfo.sleeping_angular_threshold;
+                if low_energy {
+                    state.timer += delta_time;
+                } else {
+                    state.timer = 0.0;
+                }
+            }
+
+            // An island sleeps only when every dynamic member is low-energy and
+            // no keyframed body keeps it active.
+            let mut newly_sleeping: Vec<BodyId> = Vec::new();
+            let mut sleep_joint_slots: Vec<usize> = Vec::new();
+            for island in &islands {
+                let ready = island.bodies.iter().all(|&index| {
+                    if !is_dynamic[index] {
+                        // Keyframed members count as active; statics do not.
+                        return self
+                            .bodies
+                            .get(body_ids[index])
+                            .map(|body| !body.is_keyframed())
+                            .unwrap_or(true);
+                    }
+                    self.sleep_states
+                        .get(&body_ids[index])
+                        .map(|state| state.timer >= self.cinfo.time_to_sleep)
+                        .unwrap_or(false)
+                });
+                if !ready {
+                    continue;
+                }
+                for &index in &island.bodies {
+                    if !is_dynamic[index] {
+                        continue;
+                    }
+                    let body_id = body_ids[index];
+                    if let Some(state) = self.sleep_states.get_mut(&body_id) {
+                        if !state.sleeping {
+                            state.sleeping = true;
+                            newly_sleeping.push(body_id);
+                        }
+                    }
+                }
+                for &joint_index in &island.joints {
+                    if let Some(&slot) = joint_slots.get(joint_index) {
+                        sleep_joint_slots.push(slot);
+                    }
+                }
+            }
+            for body_id in newly_sleeping {
+                if let Some(motion_id) = self.bodies.get(body_id).map(|body| body.motion_id) {
+                    if let Some(motion) = self.motions.get_mut(motion_id) {
+                        motion.linear_velocity = Vector4::ZERO;
+                        motion.angular_velocity = Vector4::ZERO;
+                    }
+                }
+            }
+            // Sleeping islands lose their contact rows anyway (the narrow phase
+            // skips them); stale joint warm-start impulses are cleared too.
+            for slot in sleep_joint_slots {
+                if let Some(Some(entry)) = self.joints.get_mut(slot) {
+                    entry.impulses = JointImpulse::default();
+                }
+            }
+        }
+
         // Integrate and refresh body transforms/AABBs for the next step.
+        // Sleeping bodies keep their frozen pose.
         let dynamic_bodies: Vec<(BodyId, MotionId)> = self
             .bodies
             .iter()
-            .filter(|body| body.is_dynamic())
+            .filter(|body| body.is_dynamic() && !self.is_sleeping(body.id))
             .map(|body| (body.id, body.motion_id))
             .collect();
         for (body_id, motion_id) in dynamic_bodies {
@@ -1173,6 +1418,16 @@ impl World {
             if !body_a.is_dynamic() && !body_b.is_dynamic() {
                 continue;
             }
+            // Sleeping bodies skip narrow phase against each other and against
+            // static geometry; an active or keyframed partner still wakes them.
+            let sleep_a = self.is_sleeping(pair.a);
+            let sleep_b = self.is_sleeping(pair.b);
+            if (sleep_a && sleep_b)
+                || (sleep_a && body_b.is_static())
+                || (sleep_b && body_a.is_static())
+            {
+                continue;
+            }
             if body_a.flags.contains(CollisionFlags::DONT_COLLIDE)
                 || body_b.flags.contains(CollisionFlags::DONT_COLLIDE)
             {
@@ -1199,6 +1454,11 @@ impl World {
             last_manifold_count: self.last_manifold_count,
             last_contact_count: self.last_contact_count,
             last_island_count: self.last_islands.len(),
+            sleeping_body_count: self
+                .sleep_states
+                .values()
+                .filter(|state| state.sleeping)
+                .count(),
         }
     }
 
@@ -1242,6 +1502,84 @@ fn contacts_from_candidates(
         .iter()
         .filter_map(|candidate| collide_candidate(candidate, tolerance))
         .collect()
+}
+
+/// Minimum island count for the parallel per-island solver to kick in; below
+/// it the sequential path avoids per-step thread spawn overhead.
+const MIN_PARALLEL_ISLANDS: usize = 2;
+
+/// Solved state of one island, extracted from a worker's private buffers.
+struct IslandSolveResult {
+    bodies: Vec<(usize, SolverBody)>,
+    contacts: Vec<(usize, ContactImpulse)>,
+    joints: Vec<(usize, JointImpulse)>,
+}
+
+/// The step's solver buffers handed to [`solve_islands_parallel`].
+struct IslandSolveBuffers<'a> {
+    solver_bodies: &'a [SolverBody],
+    constraints: &'a [ContactConstraint],
+    contact_impulses: &'a [ContactImpulse],
+    solver_joints: &'a [JointConstraint],
+    joint_impulses: &'a [JointImpulse],
+}
+
+/// Solve the islands in parallel over deterministic contiguous chunks.
+///
+/// Each worker clones the solver buffers, solves its islands sequentially (in
+/// ascending island order) and returns the per-island state. Islands are
+/// disjoint in dynamic solver bodies, so merging is order-independent; static
+/// members are copied back unchanged.
+fn solve_islands_parallel(
+    solver: &Solver,
+    buffers: &IslandSolveBuffers<'_>,
+    islands: &[crate::island::Island],
+    delta_time: f32,
+    threads: usize,
+) -> Vec<IslandSolveResult> {
+    let results: Mutex<Vec<IslandSolveResult>> = Mutex::new(Vec::new());
+    base_thread::parallel::parallel_for_chunks(islands.len(), threads, |start, end| {
+        let mut bodies = buffers.solver_bodies.to_vec();
+        let mut contacts = buffers.contact_impulses.to_vec();
+        let mut joints = buffers.joint_impulses.to_vec();
+        for island in &islands[start..end] {
+            if !island.contacts.is_empty() {
+                solver.solve_contacts_subset(
+                    &mut bodies,
+                    buffers.constraints,
+                    &island.contacts,
+                    &mut contacts,
+                    delta_time,
+                );
+            }
+            if !island.joints.is_empty() {
+                solver.solve_joints_subset_with_impulses(
+                    &mut bodies,
+                    buffers.solver_joints,
+                    &island.joints,
+                    &mut joints,
+                    delta_time,
+                );
+            }
+        }
+        let mut local = Vec::with_capacity(end - start);
+        for island in &islands[start..end] {
+            local.push(IslandSolveResult {
+                bodies: island.bodies.iter().map(|&i| (i, bodies[i])).collect(),
+                contacts: island.contacts.iter().map(|&i| (i, contacts[i])).collect(),
+                joints: island.joints.iter().map(|&i| (i, joints[i])).collect(),
+            });
+        }
+        if !local.is_empty() {
+            results
+                .lock()
+                .expect("parallel island worker panicked")
+                .extend(local);
+        }
+    });
+    results
+        .into_inner()
+        .expect("parallel island worker panicked")
 }
 
 /// Signed angle between the reference (twist) axes about the hinge axis.
@@ -1586,6 +1924,7 @@ mod tests {
                 last_manifold_count: 0,
                 last_contact_count: 0,
                 last_island_count: 0,
+                sleeping_body_count: 0,
             }
         );
     }
@@ -2601,5 +2940,165 @@ mod tests {
             world.snapshot()
         };
         assert_eq!(run(), run());
+    }
+
+    // Island sleeping (deactivation subset).
+
+    fn sleeping_world() -> World {
+        World::new(
+            WorldCinfo::new()
+                .with_sleeping(true)
+                .with_sleeping_settings(0.2, 0.1, 0.1),
+        )
+    }
+
+    #[test]
+    fn quiet_island_falls_asleep_and_skips_narrow_phase() {
+        let mut world = sleeping_world();
+        let ground = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let ball =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+
+        for _ in 0..30 {
+            world.step(1.0 / 60.0);
+        }
+
+        assert_eq!(world.body_is_sleeping(ball), Some(true));
+        assert_eq!(world.body_is_sleeping(ground), Some(false));
+        assert_eq!(world.stats().sleeping_body_count, 1);
+        // Frozen state: zero velocity, no narrow phase against the ground.
+        assert_eq!(
+            world.body_linear_velocity(ball),
+            Some(Vector4::ZERO),
+            "sleeping motions must be zeroed"
+        );
+        assert_eq!(world.last_contact_count(), 0);
+        assert!(world.collect_contacts().is_empty());
+        assert_eq!(world.last_island_count(), 0);
+        // The pose is frozen (no integration), so body states are stable.
+        let before = world.snapshot();
+        world.step(1.0 / 60.0);
+        assert_eq!(world.snapshot().bodies, before.bodies);
+    }
+
+    #[test]
+    fn falling_body_wakes_a_sleeping_island() {
+        let mut world = sleeping_world();
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let resting =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+        for _ in 0..30 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.body_is_sleeping(resting), Some(true));
+
+        // Drop an active ball onto the sleeping island: the contact with an
+        // awake body must wake it.
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.5, 0.0)));
+        for _ in 0..30 {
+            world.step(1.0 / 60.0);
+            if !world.body_is_sleeping(resting).unwrap() {
+                break;
+            }
+        }
+        assert_eq!(world.body_is_sleeping(resting), Some(false));
+        assert!(world.last_contact_count() > 0);
+        // The woken island is solveable again, so both balls rest on the ground.
+        let x = world.body_position(resting).unwrap();
+        assert!(
+            x.y > 0.0 && x.y < 0.75,
+            "woken ball must stay on ground: {x:?}"
+        );
+    }
+
+    #[test]
+    fn wake_body_covers_the_joint_graph() {
+        let mut world = World::new(
+            WorldCinfo::new()
+                .with_gravity(Vector4::ZERO)
+                .with_sleeping(true)
+                .with_sleeping_settings(0.1, 0.1, 0.1),
+        );
+        let a = world.create_body(&dynamic_cinfo(0.5));
+        let b = world.create_body(&dynamic_cinfo(0.5));
+        world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            a,
+            b,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        for _ in 0..12 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.body_is_sleeping(a), Some(true));
+        assert_eq!(world.body_is_sleeping(b), Some(true));
+
+        assert!(world.wake_body(a));
+        assert_eq!(world.body_is_sleeping(a), Some(false));
+        assert_eq!(
+            world.body_is_sleeping(b),
+            Some(false),
+            "jointed partner wakes too"
+        );
+        assert!(!world.wake_body(BodyId::invalid()));
+    }
+
+    #[test]
+    fn setting_velocity_or_transform_wakes_the_body() {
+        let mut world = sleeping_world();
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let ball =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+        for _ in 0..30 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.body_is_sleeping(ball), Some(true));
+
+        assert!(world.set_body_linear_velocity(ball, Vector4::UNIT_X));
+        assert_eq!(world.body_is_sleeping(ball), Some(false));
+
+        // Sleep again, then teleport.
+        for _ in 0..30 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.body_is_sleeping(ball), Some(true));
+        assert!(world.set_body_position(ball, Vector4::from_xyz(0.0, 3.0, 0.0)));
+        assert_eq!(world.body_is_sleeping(ball), Some(false));
+    }
+
+    #[test]
+    fn keyframed_partner_keeps_an_island_awake() {
+        let mut world = World::new(
+            WorldCinfo::new()
+                .with_gravity(Vector4::ZERO)
+                .with_sleeping(true)
+                .with_sleeping_settings(0.1, 0.1, 0.1),
+        );
+        let anchor = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        let pendulum =
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+        world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
+            pendulum,
+            anchor,
+            Vector4::ZERO,
+            Vector4::ZERO,
+        ));
+        for _ in 0..60 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(
+            world.body_is_sleeping(pendulum),
+            Some(false),
+            "a joint to a keyframed body must keep the island awake"
+        );
     }
 }

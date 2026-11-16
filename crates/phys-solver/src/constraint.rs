@@ -42,7 +42,7 @@
 //!
 //! Every joint owns a fixed set of solver rows documented per variant (the
 //! maximum is [`MAX_JOINT_ROWS`]). [`JointImpulse`] stores the accumulated
-//! impulse of each row; [`Solver::solve_joints_with_impulses`] replays the
+//! impulse of each row; [`crate::solver::Solver::solve_joints_with_impulses`] replays the
 //! cached impulses before the first sweep — bilateral rows unconditionally,
 //! unilateral rows only while they are violated — and writes the new
 //! accumulation back, mirroring the contact warm starting. Unilateral rows
@@ -381,7 +381,7 @@ pub const MAX_JOINT_ROWS: usize = 8;
 /// Accumulated impulses of one joint's rows (joint warm starting).
 ///
 /// Row order is documented per [`JointConstraint`] variant; unused trailing
-/// entries stay zero. [`Solver::solve_joints_with_impulses`] replays these
+/// entries stay zero. [`crate::solver::Solver::solve_joints_with_impulses`] replays these
 /// impulses before the first sweep (bilateral rows unconditionally, unilateral
 /// rows only while violated) and stores the new accumulation back. Motors are
 /// applied once per solve and never cached.
@@ -453,8 +453,8 @@ impl crate::solver::Solver {
     /// `impulses` is indexed like `joints`; entries carried over from a
     /// previous step are applied before the first sweep (bilateral rows
     /// unconditionally, unilateral rows only while violated). When
-    /// [`SolverSettings::warm_starting`] is `false` the incoming impulses are
-    /// discarded and the call behaves like [`Solver::solve_joints`].
+    /// [`crate::solver::SolverSettings::warm_starting`] is `false` the incoming impulses are
+    /// discarded and the call behaves like [`crate::solver::Solver::solve_joints`].
     pub fn solve_joints_with_impulses(
         &self,
         bodies: &mut [SolverBody],

@@ -116,7 +116,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器 + 查询 API | ✅ 已实现（Phase 8/11/12） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器 + 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
 | `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
@@ -368,6 +368,22 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **精确行的回放被完全吸收**：双边行 `λ` 与累积值无关（线性精确解），因此 warm start 在当前行实现下对速度结果中性（与接触行 `max(0,·)` 截断的路径依赖不同）；缓存结构为后续 clamped/松弛行铺路，并有测试固化该不变量
 - **验证**：铰链位置电机 120 步收敛到目标角（±0.25）、弹簧电机阻尼振荡收敛、prismatic 位置/弹簧电机驱动滑块到位、电机与关节 warm starting 场景 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc` / release build 全绿
 
+### Phase 12（后续子集）：岛级休眠/唤醒 + 按岛并行求解（✅ 已完成，2026-11-16）
+交付（`phys-world` 75 个单元测试；新增集成测试 `sleeping_and_parallel_solving.rs` 4 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-world` | **岛级休眠**（deactivation 子集，`WorldCinfo::enable_sleeping` 默认关闭）：每个动态体维护低能量计时（线/角速度低于 `sleeping_linear_threshold`/`sleeping_angular_threshold` 累积，超阈值清零），整岛全部动态体计时达到 `time_to_sleep` 且无 keyframed 成员时入睡——速度清零、跳过窄相（休眠-休眠与休眠-静态对不再生成候选）、不施加重力、不积分（位姿冻结），岛内关节 warm-start 冲量清零；**唤醒传播**：岛内含醒着的动态体或 keyframed 成员即唤醒全部休眠成员（keyframed 接触/关节防止入睡），`wake_body` 沿关节图 BFS 传播，`set_body_transform/position/linear_velocity/angular_velocity` 自动唤醒；`World::body_is_sleeping`、`WorldStats::sleeping_body_count`；**按岛并行求解**：`step_with_threads(threads)` 在 `threads > 1` 且岛数 ≥ 2 时按确定性连续分块并行——每个 worker 克隆求解器缓冲、顺序求解自己的岛、按岛回并（岛在动态 solver 体上不相交，静态成员不变），结果与单线程**逐位一致** |
+
+决策与偏差：
+
+- **不移植 `hknpDeactivationManager`**：SDK 用位置/旋转量化与簇（cluster）比较判休眠，本阶段用 Box2D 风格的速度阈值 + 计时（简化实现，语义子集）；`enable_deactivation` 字段保留不动，实际开关为新增的 `enable_sleeping`（默认关闭，保证既有确定性基线与测试不变）
+- **休眠体跳过窄相的代价**：休眠岛与外界的接触丢失，唤醒依赖"有活动伙伴的岛"重建接触；堆叠岛逐层唤醒（每步一层），不重建休眠期间的接触缓存
+- **自由体（无接触/关节）不参与岛**，因此不会休眠（重力场景下也无法静止，语义一致）
+- **并行求解不改变数值**：岛在动态 solver 体上不相交、静态体不被修改，逐岛求解与全局顺序在数学上等价；合并顺序无关；已有测试与新增集成测试固化 `threads=1` 与 `threads>1` 的 `hvk-trace v1` 逐位一致
+- 顺手修复 `phys-solver/constraint.rs` 中 4 处失效的 intra-doc 链接（`doc -D warnings` 由红转绿）
+- **验证**：静置球 30 步内入睡（位姿冻结、接触为空）、落球接触唤醒、`wake_body` 关节链传播、速度/transform 设置唤醒、keyframed 关节岛不入睡；双堆叠 + 飞行球场景 180 步 `threads=4` 与串行逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -388,6 +404,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 碰撞流形 | 法线 B→A、接触位置在 B、负距离=穿透；凸-凸单点；宽相网格对 `(a,b)` 规范化并排序去重 |
 | 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、双切向盒式摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
 | 约束岛 + warm starting | union-find 按接触/关节连通动态体（静态体不合并岛）；逐岛 solve(contacts→joints)，因岛间无共享动态体而与全局顺序等价；接触冲量按 body 对 + B 局部点匹配后跨步复用，切向基仅由法线决定以保证可复用 |
+| 岛级休眠 + 并行求解 | 休眠判定用速度阈值 + 低能量计时（`enable_sleeping` 默认关，不破坏既有确定性基线）；整岛同时入睡/唤醒（keyframed 成员或醒着的动态体阻止入睡），`wake_body` 沿关节图 BFS；休眠体跳过窄相/重力/积分，位姿冻结；并行求解按岛分块（worker 克隆缓冲后按岛回并），岛在动态体上不相交故与串行逐位一致 |
 | 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
@@ -451,12 +468,13 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 11（约束/joint + 查询系统，2026-11-16）：Ragdoll cone/twist、Prismatic、StiffSpring、PointToPlane 关节与约束碰撞屏蔽、body↔constraint 映射；shape cast（凸-凸 conservative advancement + mesh/height field/compound 目标）、mesh/height field/compound raycast、`QueryFilter`、`closest_points_to_shape`、AABB 查询完成
 - [x] Phase 12（约束岛 + warm starting，2026-11-16）：接触冲量累积与跨步缓存（B 局部点 + 法线匹配）、union-find 约束岛（静态体不合并）、逐岛 solve(contacts→joints)、`World::islands`/`WorldStats::last_island_count`/`WorldCinfo::with_warm_starting` 完成；`phys-solver` 40、`phys-world` 62 个单元测试，集成测试 5 个
 - [x] Phase 12 后续子集（位置/弹性电机 + 关节 warm starting，2026-11-16）：铰链 `HingeMotor::{Velocity,Position,Spring}` 与滑轴 `PrismaticMotor::{Position,Spring}` 电机、`JointImpulse` 关节冲量缓存跨步复用（单边行接触式 clamp + 越界回放）、`HingeCinfo` 参考轴提升、`set_prismatic_motor` API 完成；`phys-solver` 51、`phys-world` 70 个单元测试，新增集成测试 `motors_and_joint_warm_starting.rs` 5 个
-- [ ] 后续：岛级休眠/唤醒与按岛并行、wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 12 后续子集（岛级休眠/唤醒 + 按岛并行求解，2026-11-16）：`enable_sleeping` 速度阈值休眠（整岛入睡/唤醒传播、`wake_body` 关节图 BFS、休眠跳过窄相/重力/积分）与 `step_with_threads` 按岛并行求解（worker 分块克隆缓冲 + 按岛回并，与串行逐位一致）完成；`phys-world` 75 个单元测试，新增集成测试 `sleeping_and_parallel_solving.rs` 4 个
+- [ ] 后续：wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
 仓库现状（2026-11-16）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：最新提交 `ddee0d7 重命名`，其前为 `9b2d8b1 phase11`；Phase 11 已全部提交，Phase 12（solver warm starting、world 冲量缓存/约束岛、tests/README）尚未提交
+- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解（Phase 12 后续子集）已实现，尚未提交
 - 外部依赖：0
 

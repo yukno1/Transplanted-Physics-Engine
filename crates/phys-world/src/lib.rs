@@ -53,10 +53,21 @@
 //! accumulated solver-row impulses and replays them before the next step's
 //! sweeps (unilateral rows only while violated; disabling a constraint clears
 //! them). Motors (hinge velocity/position/spring, prismatic position/spring)
-//! are applied once per solve as clamped impulses. Islands are not yet used
-//! for sleeping or parallel solving. Material libraries, restitution,
-//! deactivation, broad-phase layers, command queues, events/modifiers and
-//! thread-parallel solving remain future work.
+//! are applied once per solve as clamped impulses.
+//!
+//! # Island sleeping and parallel solving
+//!
+//! With [`WorldCinfo::enable_sleeping`] (default off) an island whose dynamic
+//! bodies stay under the sleeping velocity thresholds for
+//! [`WorldCinfo::time_to_sleep`] seconds falls asleep: its motions freeze, its
+//! narrow-phase contacts are skipped and gravity no longer applies, until an
+//! active or keyframed body touches it (wake propagation through the island)
+//! or [`World::wake_body`] is called. Islands are disjoint in dynamic solver
+//! bodies, so [`World::step_with_threads`] can solve island groups in parallel
+//! and merge the per-island results with bit-identical velocities.
+//!
+//! Material libraries, restitution, broad-phase layers, command queues and
+//! events/modifiers remain future work.
 //!
 //! # Not ported in this phase
 //!
@@ -176,4 +187,6 @@ pub struct WorldStats {
     pub last_contact_count: usize,
     /// Constraint islands solved during the most recent step.
     pub last_island_count: usize,
+    /// Dynamic bodies currently asleep (deactivation subset).
+    pub sleeping_body_count: usize,
 }
