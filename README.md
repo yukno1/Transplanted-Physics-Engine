@@ -159,7 +159,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层子集（raycast 悬挂 / 默认 engine / transmission / 简化 friction solver） | 🚧 部分实现（Phase 10/13；Ragdoll/CharacterControl 仍阻塞） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -443,6 +443,24 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 未纳入：wheel 的软约束 tau/damping 因子（`m_lin0Soft` 的 solver 因子形式）、`WheelComponentParams` 的轮胎摩擦参数、`hknpVehicleInstance` 整车调度（引擎/传动/空气动力学/相机等）
 - **验证**：悬挂支撑底盘落地收敛（180 步后静止于行程内）、驱动推动小车沿 axle 垂直方向前进、转向改变行进方向、destroy chassis 级联删约束、120 步场景 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿
 
+### Phase 13：vehicle 扩展层（✅ 已完成，2026-11-17）
+交付（`phys-extensions` 17 个单元测试 + 1 个文档测试；新增集成测试 `vehicle_extension.rs` 8 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-extensions/vehicle` | `VehicleInstance::step`（`hknpVehicleInstance::applyAction` 子集，调用方显式驱动）：`DriverInput`（throttle/brake/steering/handbrake/reverse）→ raycast 轮碰撞（`World::raycast_filtered` 忽略底盘；`suspension_length = hit_distance − wheel_radius`，closing speed 按 SDK 约定压缩为负）→ 默认 transmission（`m_noSlipIdealSpinVelocity` 加权轮速 → RPM、upshift/downshift 阈值即时换挡、倒挡负齿比）→ 默认 engine（`calcEngine` 抛物线扭矩曲线 + clutch slip + resistance 逐式直译）→ 悬挂弹簧-阻尼力（`calcSuspension` 逐式直译，参数按单位底盘质量、力非负）→ 摩擦求解器（bullet 风格：驱动/制动力作为接触点前向冲量、刹车不过冲越滚动条件、侧向冲量消除侧滑、摩擦圆钳制 `μ·susp_force·dt`）→ 冲量写回底盘与地面速度（含运动空间对角惯量的角响应，经 `set_body_*` 自动唤醒） |
+
+决策与偏差：
+
+- **显式 step 代替 Action**：SDK 用 `hknpUnaryAction` 挂进 world 的 action manager；本阶段暴露 `vehicle.step(&mut world, dt, &input)` 由调用方在 `world.step` 之间调用（世界仍负责重力与接触）
+- **raycast 悬挂子集**：仅 `hknpVehicleRayCastWheelCollide`；地面摩擦取轮胎设置（`WheelSetup::tyre_friction`）而非地面材质（材质库未接入）；法线裁剪角/`suspensionScalingFactor` 未移植
+- **简化 friction solver**：不做 per-axle 2×2 jacobian 系统、无轮自旋状态与摩擦表曲线；采用 bullet 风格 raycast vehicle 模型（驱动力直推前向冲量 + 侧向锁滑移 + 摩擦圆钳制）
+- **换挡无离合延迟**：阈值越线即时换挡（SDK 的 `m_delayed` 计时器未移植）；engine RPM 用 `|avg_spin·ratio|` 保证倒挡非负
+- **冲量含角响应**：悬挂/摩擦冲量经运动空间对角惯量产生角速度变化；`inverse_inertia == 0` 的底盘不会俯仰/偏航（与关节一致的限制），集成测试显式设置底盘惯量
+- **几何注意事项**：接触式悬挂下，若 COM 高度/轴距使摩擦受限的驱动或制动力（≈1g）载荷转移超过静轴载，空载轴会离地弹跳——场景设计需保证 `μ·m·g·h/L < 静轴载`（集成测试用低 COM + 长轴距固定该前提）
+- 未纳入：`LinearCastWheelCollide`、Aerodynamics/VelocityDamper/Tyremarks/Camera、DriverInput 过滤管线、`m_lin0Soft` 软约束因子、per-leaf shape key/material codec
+- **验证**：悬挂支撑沉降到位（y≈0.82，4 轮接触 + 非零弹簧力、怠速 RPM 来自 clutch slip）、油门沿 `suspension×axle` 方向加速、倒挡反向、转向改变航向、全刹/手刹（后轴载荷限制减速度）停车、转向角按 fraction 分配到轮、同场景两次运行 `WorldHash` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿；顺手补了门面 `base-serialize` 重导出消除 unused dependency 警告
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -466,6 +484,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 岛级休眠 + 并行求解 | 休眠判定用速度阈值 + 低能量计时（`enable_sleeping` 默认关，不破坏既有确定性基线）；整岛同时入睡/唤醒（keyframed 成员或醒着的动态体阻止入睡），`wake_body` 沿关节图 BFS；休眠体跳过窄相/重力/积分，位姿冻结；并行求解按岛分块（worker 克隆缓冲后按岛回并），岛在动态体上不相交故与串行逐位一致 |
 | 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；wheel 用悬挂平面锁定 + 行程单边限位 + axle 对齐（转向 = 底盘侧 axle 旋转由对齐行拉正），悬挂弹簧/驱动电机每 solve 一次限幅冲量；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
+| vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
@@ -529,13 +548,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 12 后续子集（位置/弹性电机 + 关节 warm starting，2026-11-16）：铰链 `HingeMotor::{Velocity,Position,Spring}` 与滑轴 `PrismaticMotor::{Position,Spring}` 电机、`JointImpulse` 关节冲量缓存跨步复用（单边行接触式 clamp + 越界回放）、`HingeCinfo` 参考轴提升、`set_prismatic_motor` API 完成；`phys-solver` 51、`phys-world` 70 个单元测试，新增集成测试 `motors_and_joint_warm_starting.rs` 5 个
 - [x] Phase 12 后续子集（岛级休眠/唤醒 + 按岛并行求解，2026-11-16）：`enable_sleeping` 速度阈值休眠（整岛入睡/唤醒传播、`wake_body` 关节图 BFS、休眠跳过窄相/重力/积分）与 `step_with_threads` 按岛并行求解（worker 分块克隆缓冲 + 按岛回并，与串行逐位一致）完成；`phys-world` 75 个单元测试，新增集成测试 `sleeping_and_parallel_solving.rs` 4 个
 - [x] Phase 12 后续子集（wheel 约束，2026-11-17）：`WheelJoint`（悬挂平面锁定 + 行程限位 + 弹簧-阻尼 + axle 对齐/转向 + 速度驱动电机）与 `WheelCinfo`/`set_steering_angle`/`set_wheel_suspension`/`set_wheel_drive` 完成；`phys-solver` 56、`phys-world` 78 个单元测试，新增集成测试 `wheel_constraints.rs` 6 个
-- [ ] 后续：碰撞过滤 codec、vehicle 扩展层（raycast 悬挂/engine/friction solver）→ Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 13（vehicle 扩展层，2026-11-17）：`phys-extensions/vehicle`——raycast 悬挂（ray 距离 → 悬挂长度、SDK closing speed 约定）、默认 transmission/engine（扭矩曲线逐式直译 + 阈值换挡 + 倒挡）、悬挂弹簧-阻尼力（单位质量参数）、bullet 风格摩擦求解器（前向驱动/刹车冲量 + 侧向锁滑移 + 摩擦圆钳制）、冲量写回底盘/地面（含角响应）；`phys-extensions` 17 个单元测试，新增集成测试 `vehicle_extension.rs` 8 个（行驶/倒挡/转向/刹车/手刹/确定性）
+- [ ] 后续：碰撞过滤 codec → CharacterControl（shape cast/碰撞过滤/contact listener）+ `hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）
 
 仓库现状（2026-11-17）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解与 wheel 约束（Phase 12 后续子集）已实现，尚未提交
+- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解、wheel 约束（Phase 12 后续子集）与 vehicle 扩展层（Phase 13）已实现，尚未提交
 - 外部依赖：0
 
 ## 9. 文档

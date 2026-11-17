@@ -57,6 +57,8 @@ name = "phys-extensions"
 version = "0.1.0"
 dependencies = [
  "base-math",
+ "phys-body",
+ "phys-shape",
  "phys-types",
  "phys-world",
 ]
