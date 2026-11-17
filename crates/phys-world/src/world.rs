@@ -10,14 +10,16 @@ use phys_shape::Shape;
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
-    RagdollJoint, Solver, SolverBody, SolverSettings, SpringJoint,
+    RagdollJoint, Solver, SolverBody, SolverSettings, SpringJoint, WheelDrive, WheelJoint,
+    WheelSuspension,
 };
 use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
 use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
-    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
+    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo, SpringCinfo, WheelCinfo,
+    WheelDriveCinfo, WheelSuspensionCinfo, WorldJoint,
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
@@ -341,6 +343,66 @@ impl World {
     /// Returns [`ConstraintId::INVALID`] when either body does not exist.
     pub fn create_point_to_plane_constraint(&mut self, info: &PointToPlaneCinfo) -> ConstraintId {
         self.push_joint(WorldJoint::PointToPlane(*info))
+    }
+
+    /// Add a wheel joint (`addConstraint`).
+    ///
+    /// Returns [`ConstraintId::INVALID`] when either body does not exist.
+    pub fn create_wheel_constraint(&mut self, info: &WheelCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::Wheel(*info))
+    }
+
+    /// Set the steering angle of a wheel joint (radians; rotates the
+    /// chassis-side axle about the steering axis).
+    ///
+    /// Fails for IDs that do not resolve to a live wheel joint.
+    pub fn set_steering_angle(&mut self, id: ConstraintId, angle: f32) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Wheel(info) => {
+                    info.steering_angle = angle;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Set or clear the suspension spring-damper of a wheel joint.
+    ///
+    /// Fails for IDs that do not resolve to a live wheel joint.
+    pub fn set_wheel_suspension(
+        &mut self,
+        id: ConstraintId,
+        suspension: Option<WheelSuspensionCinfo>,
+    ) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Wheel(info) => {
+                    info.suspension = suspension;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Set or clear the drive motor of a wheel joint (`None` is frictionless).
+    ///
+    /// Fails for IDs that do not resolve to a live wheel joint.
+    pub fn set_wheel_drive(&mut self, id: ConstraintId, drive: Option<WheelDriveCinfo>) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Wheel(info) => {
+                    info.drive = drive;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
     }
 
     /// Resolve the joint slot of a live constraint.
@@ -792,6 +854,55 @@ impl World {
                             ),
                             min_distance: info.min_distance,
                             max_distance: info.max_distance,
+                        }),
+                    ));
+                }
+                WorldJoint::Wheel(info) => {
+                    // Steering rotates the chassis-side axle about the
+                    // steering axis (in chassis-local space), matching
+                    // `hknpWheelConstraintData::setSteeringAngle`.
+                    let steering = Quaternion::from_axis_angle(
+                        unit_vector(info.steering_axis_b),
+                        info.steering_angle,
+                    );
+                    let axle_b = unit_vector(
+                        transform_b
+                            .rotation
+                            .rotate(steering.rotate(unit_vector(info.axle_b))),
+                    );
+                    let axle_a = unit_vector(transform_a.rotation.rotate(info.axle_a));
+                    let suspension_axis =
+                        unit_vector(transform_b.rotation.rotate(info.suspension_axis_b));
+                    let pivot_a = transform_a.transform_point(info.pivot_a);
+                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                    let suspension = info.suspension.map(|suspension| WheelSuspension {
+                        stiffness: suspension.stiffness,
+                        damping: suspension.damping,
+                        max_impulse: suspension.max_impulse,
+                    });
+                    let drive = info.drive.map(|drive| WheelDrive {
+                        target_spin_velocity: drive.target_spin_velocity,
+                        max_impulse: drive.max_impulse,
+                    });
+                    result.push((
+                        slot_index,
+                        JointConstraint::Wheel(WheelJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a,
+                            pivot_b,
+                            suspension_axis,
+                            suspension_length: (pivot_a - pivot_b).dot3(suspension_axis),
+                            rest_length: info
+                                .suspension
+                                .map(|suspension| suspension.rest_length)
+                                .unwrap_or((pivot_a - pivot_b).dot3(suspension_axis)),
+                            min_length: info.min_length,
+                            max_length: info.max_length,
+                            suspension,
+                            axle_a,
+                            axle_b,
+                            drive,
                         }),
                     ));
                 }
@@ -3100,5 +3211,117 @@ mod tests {
             Some(false),
             "a joint to a keyframed body must keep the island awake"
         );
+    }
+
+    // Wheel joints (suspension + driven axle).
+
+    /// A chassis box resting on two sphere wheels via wheel joints.
+    ///
+    /// Returns `(chassis, [front, rear], [front_id, rear_id])`.
+    fn wheeled_cart(world: &mut World) -> (BodyId, [BodyId; 2], [ConstraintId; 2]) {
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        let chassis = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(1.0, 0.25, 0.5)))
+                .with_motion_type(MotionType::Dynamic)
+                .with_mass(2.0)
+                .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+        );
+        let mut wheels = [BodyId::invalid(); 2];
+        let mut ids = [ConstraintId::INVALID; 2];
+        for (index, x) in [0.7, -0.7].into_iter().enumerate() {
+            let wheel = world.create_body(
+                &BodyCinfo::new(sphere_shape(0.3))
+                    .with_motion_type(MotionType::Dynamic)
+                    .with_mass(0.2)
+                    .with_position(Vector4::from_xyz(x, 0.3, 0.0)),
+            );
+            let motion_id = world.body(wheel).unwrap().motion_id;
+            world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.05);
+            // Hardpoint under the chassis bottom (y = 0.75 in chassis-local
+            // space: 1.0 - 0.25), suspension axis down, wheel center 0.45
+            // below the hardpoint at setup.
+            let mut info = WheelCinfo::new(
+                wheel,
+                chassis,
+                Vector4::ZERO,
+                Vector4::from_xyz(x, -0.25, 0.0),
+                Vector4::from_xyz(0.0, -1.0, 0.0),
+                Vector4::UNIT_X,
+                Vector4::UNIT_Z,
+            )
+            .with_suspension(WheelSuspensionCinfo::new(0.45, 120.0, 8.0, 50.0))
+            .with_travel(0.25, 0.65);
+            info.axle_b = Vector4::UNIT_X;
+            ids[index] = world.create_wheel_constraint(&info);
+            wheels[index] = wheel;
+        }
+        (chassis, wheels, ids)
+    }
+
+    #[test]
+    fn wheel_suspension_supports_the_chassis_on_the_ground() {
+        let mut world = World::new(WorldCinfo::new());
+        let (chassis, wheels, ids) = wheeled_cart(&mut world);
+        for id in ids {
+            assert!(id.is_valid());
+            assert!(matches!(world.constraint(id), Some(WorldJoint::Wheel(_))));
+        }
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let chassis_y = world.body_position(chassis).unwrap().y;
+        assert!(
+            chassis_y > 0.5 && chassis_y < 1.5,
+            "chassis must settle on its suspension: y {chassis_y}"
+        );
+        for wheel in wheels {
+            let position = world.body_position(wheel).unwrap();
+            assert!(
+                position.y > 0.0 && position.y < 0.9,
+                "wheel must stay under the hardpoint: {position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wheel_drive_propels_the_chassis_forward() {
+        let mut world = World::new(WorldCinfo::new());
+        let (chassis, _, ids) = wheeled_cart(&mut world);
+        for id in ids {
+            assert!(world.set_wheel_drive(id, Some(WheelDriveCinfo::new(20.0, 2.0))));
+        }
+        for _ in 0..120 {
+            world.step(1.0 / 60.0);
+        }
+        let position = world.body_position(chassis).unwrap();
+        // The axles point along X, so the cart drives along +Z for a positive
+        // spin velocity (contact-point friction pushes it forward).
+        assert!(
+            position.z > 0.5,
+            "driven wheels must move the chassis forward: {position:?}"
+        );
+        assert!(
+            position.y > 0.0 && position.y < 1.6,
+            "chassis must stay above the ground: {position:?}"
+        );
+    }
+
+    #[test]
+    fn wheel_api_validates_ids_and_clears_suspension() {
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let (chassis, _, ids) = wheeled_cart(&mut world);
+        let id = ids[0];
+        assert!(world.set_steering_angle(id, 0.2));
+        assert!(world.set_wheel_suspension(id, None));
+        assert!(world.set_wheel_drive(id, None));
+        assert!(!world.set_steering_angle(ConstraintId::INVALID, 0.2));
+        assert!(world.body_position(chassis).is_some());
+
+        // Joint type lookups stay in sync.
+        assert_eq!(world.constraints_of_body(chassis).count(), 2);
+        assert!(matches!(world.constraint(id), Some(WorldJoint::Wheel(_))));
     }
 }

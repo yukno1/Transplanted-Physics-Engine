@@ -12,7 +12,7 @@
 //! | Module | Contents |
 //! |---|---|
 //! | `solver` | `SolverBody`, `ContactConstraint`, `ContactImpulse`, `contact_tangents`, `SolverSettings`, `Solver`, `SolverStats` |
-//! | `constraint` | `JointConstraint` (`BallAndSocket`, `Hinge`, `Fixed`, `Ragdoll`, `Prismatic`, `Spring`, `PointToPlane`), hinge/prismatic motors (`HingeMotor`, `PrismaticMotor`), `JointImpulse` and `Solver::solve_joints[_with_impulses]` |
+//! | `constraint` | `JointConstraint` (`BallAndSocket`, `Hinge`, `Fixed`, `Ragdoll`, `Prismatic`, `Spring`, `PointToPlane`, `Wheel`), hinge/prismatic motors (`HingeMotor`, `PrismaticMotor`), wheel suspension/drive (`WheelSuspension`, `WheelDrive`), `JointImpulse` and `Solver::solve_joints[_with_impulses]` |
 //!
 //! Joint pivots/axes are supplied in world space by the world each step; the
 //! solver applies sequential impulses with a Baumgarte drift bias, unilateral
@@ -38,7 +38,7 @@ pub mod solver;
 pub use constraint::{
     BallAndSocketJoint, FixedJoint, HingeJoint, HingeLimits, HingeMotor, JointConstraint,
     JointImpulse, JointSolverStats, MAX_JOINT_ROWS, PointToPlaneJoint, PrismaticJoint,
-    PrismaticMotor, RagdollJoint, SpringJoint,
+    PrismaticMotor, RagdollJoint, SpringJoint, WheelDrive, WheelJoint, WheelSuspension,
 };
 pub use solver::{
     ContactConstraint, ContactImpulse, Solver, SolverBody, SolverSettings, SolverStats,

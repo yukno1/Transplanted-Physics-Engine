@@ -656,6 +656,152 @@ impl PointToPlaneCinfo {
     }
 }
 
+/// Wheel joint construction info (`hknpWheelConstraintData` subset).
+///
+/// Body A is the wheel, body B the chassis. The suspension axis and steering
+/// axis live in the chassis's local space; the axle lives in the wheel's local
+/// space. Steering ([`WheelCinfo::steering_angle`]) rotates the chassis-side
+/// axle about the steering axis; the solver's axle-alignment rows then pull the
+/// wheel onto the commanded axle. Drive is a velocity motor about the axle
+/// (the SDK resolves drive through the vehicle friction solver, which is not
+/// ported).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelCinfo {
+    /// Wheel body.
+    pub body_a: BodyId,
+    /// Chassis body.
+    pub body_b: BodyId,
+    /// Wheel center in body A's local space.
+    pub pivot_a: Vector4,
+    /// Suspension hardpoint in body B's local space.
+    pub pivot_b: Vector4,
+    /// Suspension direction in body B's local space (unit; typically down).
+    pub suspension_axis_b: Vector4,
+    /// Spin axle in body A's local space (unit).
+    pub axle_a: Vector4,
+    /// Initial axle in body B's local space (unit). Defaults to
+    /// [`WheelCinfo::axle_a`]; use [`WheelCinfo::with_axle_b`] when the two
+    /// local frames disagree on the axle direction. Steering rotates this
+    /// axle about [`WheelCinfo::steering_axis_b`].
+    pub axle_b: Vector4,
+    /// Steering rotation axis in body B's local space (unit).
+    pub steering_axis_b: Vector4,
+    /// Current steering angle in radians (B's axle rotates about
+    /// [`WheelCinfo::steering_axis_b`] by this amount).
+    pub steering_angle: f32,
+    /// Optional suspension spring-damper.
+    pub suspension: Option<WheelSuspensionCinfo>,
+    /// Lower suspension travel bound (fully compressed; signed distance of
+    /// the wheel center relative to the hardpoint along the suspension axis).
+    pub min_length: f32,
+    /// Upper suspension travel bound (fully extended).
+    pub max_length: f32,
+    /// Optional drive motor about the axle.
+    pub drive: Option<WheelDriveCinfo>,
+}
+
+impl WheelCinfo {
+    /// Construct with explicit local pivots, suspension/steering axes and
+    /// axle; travel is unlimited (`±inf`) and no suspension/drive is attached.
+    pub fn new(
+        body_a: BodyId,
+        body_b: BodyId,
+        pivot_a: Vector4,
+        pivot_b: Vector4,
+        suspension_axis_b: Vector4,
+        axle_a: Vector4,
+        steering_axis_b: Vector4,
+    ) -> Self {
+        Self {
+            body_a,
+            body_b,
+            pivot_a,
+            pivot_b,
+            suspension_axis_b,
+            axle_a,
+            axle_b: axle_a,
+            steering_axis_b,
+            steering_angle: 0.0,
+            suspension: None,
+            min_length: f32::NEG_INFINITY,
+            max_length: f32::INFINITY,
+            drive: None,
+        }
+    }
+
+    /// Attach a suspension spring-damper with rest length.
+    pub fn with_suspension(mut self, suspension: WheelSuspensionCinfo) -> Self {
+        self.suspension = Some(suspension);
+        self
+    }
+
+    /// Override the chassis-side initial axle (body B's local space).
+    pub fn with_axle_b(mut self, axle_b: Vector4) -> Self {
+        self.axle_b = axle_b;
+        self
+    }
+
+    /// Limit the suspension travel (signed lengths along the axis).
+    pub fn with_travel(mut self, min_length: f32, max_length: f32) -> Self {
+        self.min_length = min_length.min(max_length);
+        self.max_length = max_length;
+        self
+    }
+
+    /// Attach a drive motor about the axle.
+    pub fn with_drive(mut self, drive: WheelDriveCinfo) -> Self {
+        self.drive = Some(drive);
+        self
+    }
+}
+
+/// Suspension spring-damper construction info
+/// (`hknpVehicleDefaultSuspension::WheelSpringSuspensionParameters` force
+/// subset applied to the wheel constraint).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelSuspensionCinfo {
+    /// Suspension length the spring pulls toward (signed along the axis).
+    pub rest_length: f32,
+    /// Spring stiffness (force per meter).
+    pub stiffness: f32,
+    /// Damping coefficient (force per m/s).
+    pub damping: f32,
+    /// Maximum impulse magnitude the spring may apply per solve.
+    pub max_impulse: f32,
+}
+
+impl WheelSuspensionCinfo {
+    /// Construct with explicit parameters.
+    pub fn new(rest_length: f32, stiffness: f32, damping: f32, max_impulse: f32) -> Self {
+        Self {
+            rest_length,
+            stiffness,
+            damping,
+            max_impulse,
+        }
+    }
+}
+
+/// Wheel drive motor construction info (velocity motor about the axle).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelDriveCinfo {
+    /// Target spin velocity of the wheel relative to the chassis, in rad/s
+    /// about the axle (signed by the axle direction).
+    pub target_spin_velocity: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+impl WheelDriveCinfo {
+    /// Construct with explicit parameters.
+    pub fn new(target_spin_velocity: f32, max_impulse: f32) -> Self {
+        Self {
+            target_spin_velocity,
+            max_impulse,
+        }
+    }
+}
+
 /// Any world-level joint constraint.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WorldJoint {
@@ -673,6 +819,9 @@ pub enum WorldJoint {
     Spring(SpringCinfo),
     /// Point pinned to a plane (optionally a distance range).
     PointToPlane(PointToPlaneCinfo),
+    /// Wheel: suspension slider (spring-damper + travel limits) and a driven
+    /// spin axle.
+    Wheel(WheelCinfo),
 }
 
 impl WorldJoint {
@@ -686,6 +835,7 @@ impl WorldJoint {
             Self::Prismatic(info) => (info.body_a, info.body_b),
             Self::Spring(info) => (info.body_a, info.body_b),
             Self::PointToPlane(info) => (info.body_a, info.body_b),
+            Self::Wheel(info) => (info.body_a, info.body_b),
         }
     }
 
@@ -699,6 +849,7 @@ impl WorldJoint {
             Self::Prismatic(_) => JointType::Prismatic,
             Self::Spring(_) => JointType::Spring,
             Self::PointToPlane(_) => JointType::PointToPlane,
+            Self::Wheel(_) => JointType::Wheel,
         }
     }
 }
@@ -720,6 +871,8 @@ pub enum JointType {
     Spring,
     /// Point-to-plane.
     PointToPlane,
+    /// Wheel (suspension + driven axle).
+    Wheel,
 }
 
 /// A stored joint plus its flags and warm-start state.

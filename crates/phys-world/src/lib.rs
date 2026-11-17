@@ -74,8 +74,9 @@
 //! Body addition queues, command queue/determinism checking, deactivation
 //! manager, collision filters, events/modifiers, user body buffers,
 //! `hknpWorldReader`/`hknpWorldWriter` traits, body attachment and motion
-//! sharing, the SDK constraint-atom/constraint-group system, wheel/vehicle
-//! joints, and `hkx` asset loading.
+//! sharing, the SDK constraint-atom/constraint-group system, the vehicle
+//! extension layer (suspension raycast / engine / friction solver), and `hkx`
+//! asset loading.
 
 use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
@@ -93,7 +94,8 @@ pub use constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo,
     HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo, JointType,
     PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, PrismaticPositionMotorCinfo,
-    PrismaticSpringMotorCinfo, RagdollCinfo, SpringCinfo, WorldJoint,
+    PrismaticSpringMotorCinfo, RagdollCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo,
+    WheelSuspensionCinfo, WorldJoint,
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};

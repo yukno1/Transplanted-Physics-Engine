@@ -33,6 +33,11 @@
 //!   pivot distance toward the rest length.
 //! * **Point-to-plane** ([`PointToPlaneJoint`]): one signed-distance row along
 //!   the plane normal, bilateral when the range collapses to a value.
+//! * **Wheel** ([`WheelJoint`]): lateral translation lock, a limited suspension
+//!   slider, an optional suspension spring-damper and drive motor (the
+//!   `hknpWheelConstraintData` subset; the vehicle friction-solver route is not
+//!   ported). Steering is expressed by rotating the chassis axle; the axle
+//!   alignment rows pull the wheel onto it.
 //!
 //! Rotation about a hinge axis and free spinning of a ball-and-socket remain
 //! unconstrained; constraint islands and the SDK's constraint-atom system are
@@ -348,6 +353,81 @@ pub struct PointToPlaneJoint {
     pub max_distance: f32,
 }
 
+/// Suspension spring-damper of a wheel joint (`hknpWheelConstraintData`
+/// `m_lin0Soft` subset, physical force form).
+///
+/// Applied once per solve as a clamped impulse along the suspension axis:
+/// impulse `-(stiffness * (length - rest_length) + damping * relative_velocity)
+/// * delta_time`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelSuspension {
+    /// Spring stiffness (force per meter of compression).
+    pub stiffness: f32,
+    /// Damping coefficient (force per m/s of closing speed).
+    pub damping: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+/// Drive motor of a wheel joint (spin about the axle; the SDK resolves drive
+/// through the vehicle friction solver, this subset uses a velocity motor).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelDrive {
+    /// Target spin velocity of the wheel relative to the chassis, in rad/s
+    /// about the axle (signed by the axle direction).
+    pub target_spin_velocity: f32,
+    /// Maximum impulse magnitude applied per solve.
+    pub max_impulse: f32,
+}
+
+/// Solver-level wheel joint (`hknpWheelConstraintData` subset).
+///
+/// Body A is the wheel, body B the chassis. Translation is locked in the plane
+/// perpendicular to the suspension axis, the travel along that axis is limited
+/// and optionally sprung toward [`WheelJoint::rest_length`]. Rotation is free
+/// about the axle (the drive DOF) and locked about the two axes perpendicular
+/// to it; because the chassis side commands its own axle direction, steering
+/// is expressed by rotating [`WheelJoint::axle_b`], and the alignment rows
+/// pull the wheel axle onto it.
+///
+/// Row order: `[u, v]` lateral lock (deterministic perpendicular basis of the
+/// suspension axis), row 2 the suspension travel limit (unilateral), `[u', v']`
+/// axle alignment (perpendicular basis of the wheel axle). The suspension
+/// spring-damper ([`WheelJoint::suspension`]) and the drive motor
+/// ([`WheelJoint::drive`]) are applied once per solve and are not cached.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WheelJoint {
+    /// Solver index of body A (the wheel).
+    pub body_a: usize,
+    /// Solver index of body B (the chassis).
+    pub body_b: usize,
+    /// Wheel center in world space.
+    pub pivot_a: Vector4,
+    /// Suspension hardpoint on the chassis in world space.
+    pub pivot_b: Vector4,
+    /// Suspension axis in world space (unit; points from the hardpoint toward
+    /// the ground).
+    pub suspension_axis: Vector4,
+    /// Current suspension length: signed distance of the wheel center
+    /// relative to the hardpoint along the suspension axis.
+    pub suspension_length: f32,
+    /// Suspension length the spring-damper pulls toward.
+    pub rest_length: f32,
+    /// Lower suspension travel bound (fully compressed).
+    pub min_length: f32,
+    /// Upper suspension travel bound (fully extended).
+    pub max_length: f32,
+    /// Optional spring-damper along the suspension axis (`None` leaves the
+    /// suspension as a plain limited slider).
+    pub suspension: Option<WheelSuspension>,
+    /// Wheel spin axle in world space (unit).
+    pub axle_a: Vector4,
+    /// Chassis-commanded axle in world space (unit; steering already applied).
+    pub axle_b: Vector4,
+    /// Optional spin motor about the axle (`None` is frictionless).
+    pub drive: Option<WheelDrive>,
+}
+
 /// Any solver-level joint constraint, dispatched to a specialized solve path.
 ///
 /// Each variant owns a fixed set of solver rows (maximum
@@ -373,6 +453,10 @@ pub enum JointConstraint {
     Spring(SpringJoint),
     /// Point constrained to a plane. Rows: row 0 the plane-normal row.
     PointToPlane(PointToPlaneJoint),
+    /// Wheel: suspension slider with spring-damper and drive motor. Rows:
+    /// `[u, v]` lateral lock, row 2 the travel limit, `[u', v']` axle
+    /// alignment.
+    Wheel(WheelJoint),
 }
 
 /// Maximum number of accumulated solver rows of one joint.
@@ -417,6 +501,7 @@ impl JointConstraint {
             Self::Prismatic(joint) => (joint.body_a, joint.body_b),
             Self::Spring(joint) => (joint.body_a, joint.body_b),
             Self::PointToPlane(joint) => (joint.body_a, joint.body_b),
+            Self::Wheel(joint) => (joint.body_a, joint.body_b),
         }
     }
 }
@@ -522,6 +607,12 @@ impl crate::solver::Solver {
                         solve_prismatic_motor(bodies, joint, motor, delta_time);
                     }
                 }
+                JointConstraint::Wheel(joint) => {
+                    solve_wheel_suspension(bodies, joint, delta_time);
+                    if let Some(drive) = joint.drive {
+                        solve_wheel_drive(bodies, joint, drive);
+                    }
+                }
                 _ => {}
             }
         }
@@ -595,6 +686,15 @@ impl crate::solver::Solver {
                     }
                     JointConstraint::PointToPlane(joint) => {
                         solve_point_to_plane_rows(
+                            bodies,
+                            &joint,
+                            rows,
+                            bias_scale,
+                            settings.max_recovery_speed,
+                        );
+                    }
+                    JointConstraint::Wheel(joint) => {
+                        solve_wheel_rows(
                             bodies,
                             &joint,
                             rows,
@@ -1011,6 +1111,127 @@ fn solve_point_to_plane_rows(
         bias_scale,
         max_bias,
     );
+}
+
+/// Wheel joint: two lateral lock rows, the suspension travel limit and the
+/// two axle-alignment rows.
+fn solve_wheel_rows(
+    bodies: &mut [SolverBody],
+    joint: &WheelJoint,
+    rows: &mut [f32],
+    bias_scale: f32,
+    max_bias: f32,
+) {
+    let axis = normalized(joint.suspension_axis);
+    let [u, v] = perpendicular_axes(axis);
+    solve_linear_rows(
+        bodies,
+        joint.body_a,
+        joint.body_b,
+        joint.pivot_a,
+        joint.pivot_b,
+        &[u, v],
+        &mut rows[0..2],
+        bias_scale,
+        max_bias,
+    );
+    solve_unilateral_linear_row(
+        bodies,
+        joint.body_a,
+        joint.body_b,
+        joint.pivot_a,
+        joint.pivot_b,
+        axis,
+        joint.suspension_length,
+        joint.min_length,
+        joint.max_length,
+        &mut rows[2],
+        bias_scale,
+        max_bias,
+    );
+    let axle_a = normalized(joint.axle_a);
+    let axle_b = normalized(joint.axle_b);
+    // Misalignment error: rotating A about this vector brings axle_a onto
+    // axle_b (this is what steers the wheel when the chassis axle rotates).
+    let error = axle_a.cross(axle_b);
+    let [au, av] = perpendicular_axes(axle_a);
+    solve_angular_rows(
+        bodies,
+        joint.body_a,
+        joint.body_b,
+        error,
+        &[au, av],
+        &mut rows[3..5],
+        bias_scale,
+        max_bias,
+    );
+}
+
+/// Wheel suspension spring-damper along the suspension axis, applied once per
+/// solve as a clamped impulse (like the motors; not cached for warm starting).
+fn solve_wheel_suspension(bodies: &mut [SolverBody], joint: &WheelJoint, delta_time: f32) {
+    let Some(suspension) = joint.suspension else {
+        return;
+    };
+    if suspension.max_impulse <= 0.0 || (suspension.stiffness <= 0.0 && suspension.damping <= 0.0) {
+        return;
+    }
+    let (Ok(a), Ok(b)) = (
+        body_index(bodies.len(), joint.body_a),
+        body_index(bodies.len(), joint.body_b),
+    ) else {
+        return;
+    };
+    if a == b {
+        return;
+    }
+    let axis = normalized(joint.suspension_axis);
+    let mass = linear_effective_mass(bodies, a, b, axis, joint.pivot_a, joint.pivot_b);
+    if mass <= 1e-12 {
+        return;
+    }
+    // The suspension length grows with the relative velocity of the wheel
+    // center w.r.t. the hardpoint along the axis.
+    let relative =
+        (bodies[a].velocity_at(joint.pivot_a) - bodies[b].velocity_at(joint.pivot_b)).dot3(axis);
+    let error = joint.suspension_length - joint.rest_length;
+    let lambda = -(suspension.stiffness.max(0.0) * error + suspension.damping.max(0.0) * relative)
+        * delta_time;
+    let lambda = lambda.clamp(-suspension.max_impulse, suspension.max_impulse);
+    if lambda != 0.0 {
+        let impulse = axis * lambda;
+        bodies[a].apply_impulse_at(joint.pivot_a, impulse);
+        bodies[b].apply_impulse_at(joint.pivot_b, -impulse);
+    }
+}
+
+/// Wheel drive: one clamped spin impulse about the axle, applied once per
+/// solve (velocity motor; mirrors `solve_hinge_motor` for the wheel side).
+fn solve_wheel_drive(bodies: &mut [SolverBody], joint: &WheelJoint, drive: WheelDrive) {
+    if drive.max_impulse <= 0.0 {
+        return;
+    }
+    let (Ok(a), Ok(b)) = (
+        body_index(bodies.len(), joint.body_a),
+        body_index(bodies.len(), joint.body_b),
+    ) else {
+        return;
+    };
+    if a == b {
+        return;
+    }
+    let axis = normalized(joint.axle_a);
+    let mass = angular_effective_mass(bodies, a, b, axis);
+    if mass <= 1e-12 {
+        return;
+    }
+    // Spin velocity of the wheel relative to the chassis about the axle.
+    let relative = (bodies[a].angular_velocity - bodies[b].angular_velocity).dot3(axis);
+    let lambda = ((drive.target_spin_velocity - relative) / mass)
+        .clamp(-drive.max_impulse, drive.max_impulse);
+    if lambda != 0.0 {
+        apply_angular_impulse(bodies, a, b, axis, lambda);
+    }
 }
 
 /// Hinge joint: three linear rows, two axis-alignment rows and the optional
@@ -1574,6 +1795,35 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
                     rows[0],
                 );
             }
+        }
+        JointConstraint::Wheel(joint) => {
+            let axis = normalized(joint.suspension_axis);
+            let [u, v] = perpendicular_axes(axis);
+            warm_start_linear_rows(
+                bodies,
+                joint.body_a,
+                joint.body_b,
+                joint.pivot_a,
+                joint.pivot_b,
+                &[u, v],
+                &rows[0..2],
+            );
+            if joint.suspension_length > joint.max_length
+                || joint.suspension_length < joint.min_length
+            {
+                warm_start_unilateral_linear_row(
+                    bodies,
+                    joint.body_a,
+                    joint.body_b,
+                    joint.pivot_a,
+                    joint.pivot_b,
+                    axis,
+                    rows[2],
+                );
+            }
+            let axle_a = normalized(joint.axle_a);
+            let [au, av] = perpendicular_axes(axle_a);
+            warm_start_angular_rows(bodies, joint.body_a, joint.body_b, &[au, av], &rows[3..5]);
         }
     }
 }
@@ -2848,6 +3098,124 @@ mod tests {
             bodies[0].angular_velocity.x < -1.0,
             "wx {}",
             bodies[0].angular_velocity.x
+        );
+    }
+
+    fn wheel_pair(wheel_position: Vector4, wheel_velocity: Vector4) -> Vec<SolverBody> {
+        vec![
+            SolverBody::new(
+                1.0,
+                Vector4::splat(0.5),
+                wheel_position,
+                wheel_velocity,
+                Vector4::ZERO,
+            ),
+            static_body(Vector4::ZERO),
+        ]
+    }
+
+    fn wheel_joint(wheel_position: Vector4) -> WheelJoint {
+        // Chassis hardpoint at the origin, suspension axis pointing down
+        // (-Y), wheel center below it.
+        WheelJoint {
+            body_a: 0,
+            body_b: 1,
+            pivot_a: wheel_position,
+            pivot_b: Vector4::ZERO,
+            suspension_axis: Vector4::from_xyz(0.0, -1.0, 0.0),
+            suspension_length: wheel_position.y.abs(),
+            rest_length: 1.0,
+            min_length: f32::NEG_INFINITY,
+            max_length: f32::INFINITY,
+            suspension: None,
+            axle_a: Vector4::UNIT_X,
+            axle_b: Vector4::UNIT_X,
+            drive: None,
+        }
+    }
+
+    #[test]
+    fn wheel_locks_lateral_translation() {
+        let mut bodies = wheel_pair(
+            Vector4::from_xyz(0.0, -1.0, 0.0),
+            Vector4::from_xyz(3.0, 0.0, 0.0),
+        );
+        Solver::default().solve_joints(
+            &mut bodies,
+            &[JointConstraint::Wheel(wheel_joint(Vector4::from_xyz(
+                0.0, -1.0, 0.0,
+            )))],
+            1.0 / 60.0,
+        );
+        // Lateral velocity (perpendicular to the suspension axis) is zeroed.
+        assert!(bodies[0].linear_velocity.x.abs() < 1e-6);
+        assert!(bodies[0].linear_velocity.z.abs() < 1e-6);
+    }
+
+    #[test]
+    fn wheel_suspension_pushes_a_compressed_wheel_to_rest_length() {
+        // Wheel center at length 0.6 < rest 1.0: the spring pushes it outward
+        // (down along the suspension axis).
+        let position = Vector4::from_xyz(0.0, -0.6, 0.0);
+        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let mut joint = wheel_joint(position);
+        joint.suspension = Some(WheelSuspension {
+            stiffness: 10.0,
+            damping: 0.0,
+            max_impulse: 100.0,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
+        // impulse = -k * error * dt = 10 * 0.4 / 60 ≈ 0.0667 downward.
+        let velocity_along_axis = -bodies[0].linear_velocity.y;
+        assert!(
+            (velocity_along_axis - 10.0 * 0.4 / 60.0).abs() < 1e-5,
+            "v_axis {}",
+            velocity_along_axis
+        );
+    }
+
+    #[test]
+    fn wheel_travel_limit_stops_extension() {
+        // Wheel beyond max_length moving outward: the unilateral limit row
+        // removes the outward velocity.
+        let position = Vector4::from_xyz(0.0, -0.8, 0.0);
+        let mut bodies = wheel_pair(position, Vector4::from_xyz(0.0, -0.5, 0.0));
+        let mut joint = wheel_joint(position);
+        joint.max_length = 0.5;
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
+        let outward = -bodies[0].linear_velocity.y;
+        assert!(outward <= 1e-6, "outward {}", outward);
+    }
+
+    #[test]
+    fn wheel_drive_spins_the_wheel_about_the_axle() {
+        let position = Vector4::from_xyz(0.0, -1.0, 0.0);
+        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let mut joint = wheel_joint(position);
+        joint.drive = Some(WheelDrive {
+            target_spin_velocity: 10.0,
+            max_impulse: 100.0,
+        });
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
+        // Angular mass = inverse inertia along X (0.5); the impulse reaches
+        // the target exactly.
+        let spin = bodies[0].angular_velocity.dot3(Vector4::UNIT_X);
+        assert!((spin - 10.0).abs() < 1e-5, "spin {}", spin);
+    }
+
+    #[test]
+    fn wheel_alignment_rows_steer_the_wheel_toward_the_commanded_axle() {
+        let position = Vector4::from_xyz(0.0, -1.0, 0.0);
+        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let mut joint = wheel_joint(position);
+        // The chassis commands an axle rotated about Z; the wheel must start
+        // rotating toward it.
+        joint.axle_b = Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.1).rotate(Vector4::UNIT_X);
+        Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
+        assert!(
+            bodies[0].angular_velocity.dot3(Vector4::UNIT_Z).abs() > 1e-4,
+            "wz {}",
+            bodies[0].angular_velocity.dot3(Vector4::UNIT_Z)
         );
     }
 }

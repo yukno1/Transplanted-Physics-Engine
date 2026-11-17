@@ -10,6 +10,48 @@
 > **快速开始**：需要 Rust（edition 2024 / MSRV 1.85），在仓库根目录执行
 > `cargo test --workspace`。完整命令与仓库约定见第 7 节。
 
+## 0. 快速上手
+
+用户侧通过门面 crate `proton` 使用（依赖 `proton-engine` 即可）：
+
+```rust,ignore
+use std::sync::Arc;
+
+use proton::body::BodyCinfo;
+use proton::math::Vector4;
+use proton::np_types::MotionType;
+use proton::shape::{BoxShape, Shape, SphereShape};
+use proton::world::{World, WorldCinfo};
+
+let mut world = World::new(WorldCinfo::new());
+world.set_gravity(Vector4::from_xyz(0.0, -9.81, 0.0));
+
+// 静态地面（半长 10 x 0.5 x 10 的盒子，顶面位于 y = 0）
+let ground = BoxShape::with_convex_radius(Vector4::from_xyz(10.0, 0.5, 10.0), 0.0);
+world.create_body(
+    &BodyCinfo::new(Arc::new(ground) as Arc<dyn Shape>)
+        .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+);
+
+// 动态球：从 y = 10 自由下落
+let ball = SphereShape::new(Vector4::ZERO, 0.5);
+let body = world.create_body(
+    &BodyCinfo::new(Arc::new(ball) as Arc<dyn Shape>)
+        .with_motion_type(MotionType::Dynamic)
+        .with_mass(1.0)
+        .with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+);
+
+for _ in 0..60 {
+    world.step(1.0 / 60.0);
+}
+
+let position = world.body_position(body).unwrap();
+let velocity = world.body_linear_velocity(body).unwrap();
+```
+
+更多完整可运行的场景见 `tests/`（自由落体解析解、堆叠、摩擦滑动、约束/查询、休眠与并行求解等）与基准 `benches/simulation.rs`。
+
 ---
 
 ## 1. 原始项目结构（`../original/`，不纳入本仓库）
@@ -115,8 +157,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
-| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器 + 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
+| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
 | `phys-extensions` | WorldHash（Ragdoll/Vehicle/Character 阻塞） | 🚧 部分实现（Phase 10） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
 
@@ -384,6 +426,23 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 顺手修复 `phys-solver/constraint.rs` 中 4 处失效的 intra-doc 链接（`doc -D warnings` 由红转绿）
 - **验证**：静置球 30 步内入睡（位姿冻结、接触为空）、落球接触唤醒、`wake_body` 关节链传播、速度/transform 设置唤醒、keyframed 关节岛不入睡；双堆叠 + 飞行球场景 180 步 `threads=4` 与串行逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿
 
+### Phase 12（后续子集）：wheel 约束（✅ 已完成，2026-11-17）
+交付（`phys-solver` 56 个单元测试；`phys-world` 78 个单元测试；新增集成测试 `wheel_constraints.rs` 6 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-solver` | `WheelJoint`（`hknpWheelConstraintData` 子集）：悬挂轴垂直平面双线性锁定行、沿悬挂轴行程单边限位行、绕 axle 两轴对齐行（共 5 行）；`WheelSuspension` 弹簧-阻尼（`-(k·(length−rest) + c·rel_v)·Δt`，限幅冲量、不缓存）与 `WheelDrive` 速度电机（绕 axle 单次限幅冲量）均在扫掠前施加一次 |
+| `phys-world` | `WheelCinfo`（body A = 车轮、body B = 底盘；pivot/悬挂轴/转向轴存底盘局部空间、axle 存车轮局部空间，`axle_b` 默认取 `axle_a` 可用 `with_axle_b` 覆盖）+ `WheelSuspensionCinfo`/`WheelDriveCinfo`；`create_wheel_constraint`、`set_steering_angle`（底盘侧 axle 绕转向轴旋转，对齐行据此拉正车轮）、`set_wheel_suspension`/`set_wheel_drive` 运行时 API；行程限位 `with_travel`，默认 `±inf` |
+
+决策与偏差：
+
+- **移植约束路线而非 vehicle 扩展层**：SDK 有两条独立路线——`hknpWheelConstraintData`（约束 atom 组，无 motor）与 `Extensions/Vehicle`（raycast 悬挂 + 手工冲量 + 摩擦求解器）。本阶段移植前者为世界空间关节行子集；vehicle 扩展层（engine/transmission/friction solver/raycast wheel collide）未移植
+- **无 motor atom → 电机子集**：原约束的驱动自由度只是 2dAng 的自由旋转；本阶段按既有 hinge/prismatic 电机模式补了 `WheelDrive` 速度电机（SDK 靠 vehicle friction solver 施加驱动，不走约束）
+- **转向通过对齐行实现**：`steering_angle` 只旋转底盘侧命令 axle（`setSteeringAngle` 语义），车轮 axle 由两行角对齐拉正（Baumgarte bias），不做独立 steering 约束
+- 每步由 body pose 重建世界空间行；`suspension_length` 为 `(wheel_center − hardpoint)·axis` 有符号距离；悬挂弹簧与驱动电机与电机语义一致（每 solve 一次、不参与 warm starting 缓存）
+- 未纳入：wheel 的软约束 tau/damping 因子（`m_lin0Soft` 的 solver 因子形式）、`WheelComponentParams` 的轮胎摩擦参数、`hknpVehicleInstance` 整车调度（引擎/传动/空气动力学/相机等）
+- **验证**：悬挂支撑底盘落地收敛（180 步后静止于行程内）、驱动推动小车沿 axle 垂直方向前进、转向改变行进方向、destroy chassis 级联删约束、120 步场景 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -405,7 +464,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 求解器/步进 | 顺序脉冲：法向累积 clamp≥0、Baumgarte 穿透恢复、双切向盒式摩擦 clamp；step 单线程按 body 槽位/宽相顺序/约束插入顺序确定性执行；材质未接入时摩擦 0.5、restitution 0 |
 | 约束岛 + warm starting | union-find 按接触/关节连通动态体（静态体不合并岛）；逐岛 solve(contacts→joints)，因岛间无共享动态体而与全局顺序等价；接触冲量按 body 对 + B 局部点匹配后跨步复用，切向基仅由法线决定以保证可复用 |
 | 岛级休眠 + 并行求解 | 休眠判定用速度阈值 + 低能量计时（`enable_sleeping` 默认关，不破坏既有确定性基线）；整岛同时入睡/唤醒（keyframed 成员或醒着的动态体阻止入睡），`wake_body` 沿关节图 BFS；休眠体跳过窄相/重力/积分，位姿冻结；并行求解按岛分块（worker 克隆缓冲后按岛回并），岛在动态体上不相交故与串行逐位一致 |
-| 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
+| 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；wheel 用悬挂平面锁定 + 行程单边限位 + axle 对齐（转向 = 底盘侧 axle 旋转由对齐行拉正），悬挂弹簧/驱动电机每 solve 一次限幅冲量；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
@@ -469,12 +528,32 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 12（约束岛 + warm starting，2026-11-16）：接触冲量累积与跨步缓存（B 局部点 + 法线匹配）、union-find 约束岛（静态体不合并）、逐岛 solve(contacts→joints)、`World::islands`/`WorldStats::last_island_count`/`WorldCinfo::with_warm_starting` 完成；`phys-solver` 40、`phys-world` 62 个单元测试，集成测试 5 个
 - [x] Phase 12 后续子集（位置/弹性电机 + 关节 warm starting，2026-11-16）：铰链 `HingeMotor::{Velocity,Position,Spring}` 与滑轴 `PrismaticMotor::{Position,Spring}` 电机、`JointImpulse` 关节冲量缓存跨步复用（单边行接触式 clamp + 越界回放）、`HingeCinfo` 参考轴提升、`set_prismatic_motor` API 完成；`phys-solver` 51、`phys-world` 70 个单元测试，新增集成测试 `motors_and_joint_warm_starting.rs` 5 个
 - [x] Phase 12 后续子集（岛级休眠/唤醒 + 按岛并行求解，2026-11-16）：`enable_sleeping` 速度阈值休眠（整岛入睡/唤醒传播、`wake_body` 关节图 BFS、休眠跳过窄相/重力/积分）与 `step_with_threads` 按岛并行求解（worker 分块克隆缓冲 + 按岛回并，与串行逐位一致）完成；`phys-world` 75 个单元测试，新增集成测试 `sleeping_and_parallel_solving.rs` 4 个
-- [ ] 后续：wheel/vehicle 约束、碰撞过滤 codec → Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
+- [x] Phase 12 后续子集（wheel 约束，2026-11-17）：`WheelJoint`（悬挂平面锁定 + 行程限位 + 弹簧-阻尼 + axle 对齐/转向 + 速度驱动电机）与 `WheelCinfo`/`set_steering_angle`/`set_wheel_suspension`/`set_wheel_drive` 完成；`phys-solver` 56、`phys-world` 78 个单元测试，新增集成测试 `wheel_constraints.rs` 6 个
+- [ ] 后续：碰撞过滤 codec、vehicle 扩展层（raycast 悬挂/engine/friction solver）→ Ragdoll/Vehicle/CharacterControl + `hkx` 对象加载（packfile 反射/rebuild）
 
-仓库现状（2026-11-16）：
+仓库现状（2026-11-17）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解（Phase 12 后续子集）已实现，尚未提交
+- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解与 wheel 约束（Phase 12 后续子集）已实现，尚未提交
 - 外部依赖：0
+
+## 9. 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/phase9-test-matrix.md](docs/phase9-test-matrix.md) | 41 个原版 UnitTest 的逐项映射（Ported / Partial / Blocked）、S1–S12 场景矩阵、基准矩阵与验收标准 |
+| 各 crate 模块级 doc comment | 决策与偏差随 Phase 交付记录在对应 `crates/*/src/` 模块文档中 |
+
+生成 API 文档：
+
+```powershell
+$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps --open
+```
+
+## 10. 许可证
+
+[MIT License](LICENSE)。
+
+注意：本仓库源码衍生自专有的 Havok SDK 代码，仅用于学习与研究；所有 crate 均设为 `publish = false`，不发布到 crates.io。原始 C++ SDK（`../original/`）受其自身许可约束，不随本仓库分发。
 
