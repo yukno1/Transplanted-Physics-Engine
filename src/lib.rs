@@ -6,6 +6,8 @@
 //!
 //! This crate is currently a scaffold; re-exports grow as phases land.
 
+pub mod convert;
+
 pub use base_container as container;
 pub use base_geometry as geometry;
 pub use base_math as math;

@@ -160,7 +160,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
 | `phys-extensions` | WorldHash + Vehicle 扩展层子集（raycast 悬挂 / 默认 engine / transmission / 简化 friction solver） | 🚧 部分实现（Phase 10/13；Ragdoll/CharacterControl 仍阻塞） |
-| `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API | ✅ 已迁至根目录（重导出已接好） |
+| `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
 
@@ -512,6 +512,22 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **无真实资产**：`original/` 与仓库内均无 `.hkx` 样例，测试使用与 `hff.rs` 一致的合成二进制 writer；reader/writer 同时固化误解的风险由逐式直译 C++ 常量 optbits/VLE/字段布局降低，但仍不宣称与真实 Havok 资产逐位兼容。
 - **验证**：VLE 全宽度往返、类型身份/类型体解析、记录字段/字符串/指针/固定数组/动态数组/布尔、非法 item/patch 长度、legacy 段拒绝、门面 smoke test；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### Phase 17：hkx → phys-world 对象转换（✅ 已完成，2026-11-18）
+交付（门面 `src/convert.rs` 新模块；新增集成测试 `hkx_scene_loading.rs` 5 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `proton::convert` | `shape_from_item` / `body_cinfo_from_item` / `scene_from_bundle` / `LoadedScene::populate` / `load_world`：按 `TypeMeta.name` 子串（`hknpSphereShape` / `hknpBoxShape` / `hknpCapsuleShape` / `hknpCylinderShape` / `hknpConvexPolytopeShape` / `hknpMeshShape` / `hknpHeightFieldShape` / `hknp*CompoundShape`）分发到 9 种 `phys-shape` 构造器，字段读取兼容 `m_` 前缀与裸名；vector/quaternion 同时接受 float 数组与 record；body 解析 `m_shape`（Ref 或内联 record）、`m_motionType`、`m_position`/`m_orientation`、`m_mass`、`m_collisionFilterInfo`、`m_userData`、`m_name`；`ConvertError` 覆盖越界/类型未知/缺字段/非法值 |
+
+决策与偏差：
+
+- **转换层放门面 crate**：`base-serialize` 不反向依赖 `phys-*` 的约束不变（Phase 16 决策）；依赖方向 `serialize → convert → shape/body/world`，`convert` 通过门面别名引用各 crate
+- **type name 由 `bundle.type_info.types[type_id].name` 取**（源自 TNA1/TST1），`Record` 本身只含 `type_id` + `(字段名, Value)` 列表；形状族判断用 name 子串匹配，不做真实 Havok 类型继承图解析
+- `BodyId` 仍由 `World::create_body` 分配（`create_body_with_id` 未移植），`LoadedScene::populate` 按 item 顺序返回 ID；复合体子形状支持内联 record 与 `Ref`；高度场 scale 用 `m_scale`，Mesh/凸体顶点已是局部坐标
+- **非资产级兼容**：不处理版本 patching / compendium / vtable / binary packfile；测试用合成 `TAG0`（`Bundle::load` → `scene_from_bundle` → `World::step` 240 步落地收敛，两次加载 `position.to_bits` 逐位一致），仍不宣称与真实 Havok 资产逐位兼容
+
+- **验证**：5 个集成测试覆盖形状转换（Box/Sphere 具体类型与半径/半长）、body 字段、错误输入、端到端仿真落球、跨加载确定性；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -538,7 +554,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
-| 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 只解析容器，不重建对象；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
+| 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -604,13 +620,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 14（碰撞过滤系统，2026-11-17）：`phys-collide/filter.rs`——`CollisionFilter` trait（info/body-pair/query 三入口）、`GroupCollisionFilter`（5/5/5/16 位 filter info + 32 项 layer LUT，按原版 `.inl` 直译）、`PairCollisionFilter`（引用计数禁用表 + 子过滤器链）；`World::set_collision_filter` 接入候选对收集与全部查询（`QueryFilter::filter_info`）；新增集成测试 `collision_filters.rs` 8 个
 - [x] Phase 15（CharacterControl，2026-11-18）：`phys-extensions/character`——`hkSimplexSolver` 逐式直译（1d/2d/3d 平面约束 + 摩擦 + 罚距）、`hknpCharacterProxy` 子集（自维护流形 + shape cast 移动 + maxSlope 阻挡平面 + 贯穿恢复 + resolveContacts 线性冲量）、`hknpCharacterSurfaceInfo`、状态机（MovementUtil + OnGround/Jumping/InAir + Manager/Context 速度滤波）；`phys-extensions` 单元测试 17 → 46 个，新增集成测试 `character_control.rs` 5 个
 - [x] Phase 16（hkx 对象加载子集，2026-11-18）：`base-serialize` 新增 `hkUintVle`、`TNA1`/`TBDY` 反射元数据、`ITEM`/`PTCH` fixup 与 generic `Bundle`/`Value` 重建；`base-serialize` 单元测试 10 → 18 个，新增门面集成测试 `hkx_object_loading.rs` 2 个
-- [ ] 后续：`hkx` 版本 patching / compendium / binary packfile（Phase 16 仅覆盖当前 `TAG0` 子集）；generic bundle → `phys-world` 对象转换；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
+- [x] Phase 17（hkx → phys-world 对象转换，2026-11-18）：门面 `src/convert.rs` 把 generic `Value` 树转成 shape/body（支持 9 种形状族 + body 字段），放门面避免 `base-serialize` 反向依赖；新增集成测试 `hkx_scene_loading.rs` 5 个（类型名分发/字段转换/错误输入/端到端落球仿真/跨加载逐位一致）
+- [ ] 后续：`hkx` 版本 patching / compendium / binary packfile（Phase 16 仅覆盖当前 `TAG0` 子集）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
 仓库现状（2026-11-18）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（最新 `faf2ce5 CharacterControl`）；Phase 16（hkx 对象加载子集）已实现并全绿
+- git：Phase 12/13/14/15 均已提交（最新 `faf2ce5 CharacterControl`）；Phase 16（hkx 对象加载子集）与 Phase 17（hkx → phys-world 转换）已实现并全绿
 - 外部依赖：0
 
 ## 9. 文档
