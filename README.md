@@ -476,6 +476,24 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - `CollisionQueryType` 参数未移植（内建过滤器从不分支查询类型）；`hknpQueryFilterData` 子集为 `QueryFilter.filter_info`（material id/user data 未进入过滤决策）
 - **验证**：layer 禁用/恢复、同组绕过 LUT、subsystem 排斥、pair 禁用/启用、查询 filter info 过滤、过滤场景两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
+### Phase 15：CharacterControl（✅ 已完成，2026-11-18）
+交付（`phys-extensions` 新增 `character` 模块，新增 29 个单元测试（surface/simplex/proxy/state machine，模块总计 17 → 46 个），新增集成测试 `character_control.rs` 5 个；`phys-extensions` 新增 `phys-collide` 依赖）：
+
+| 模块 | 内容 |
+|---|---|
+| `character/surface.rs` | `hknpCharacterSurfaceInfo` 子集：`SupportedState`（Unsupported/Sliding/Supported）+ 支撑面平均 normal/速度/角速度（`m_surfaceDistanceExcess` 未移植，proxy 恒为 0） |
+| `character/simplex_solver.rs` | `hkSimplexSolver` 逐式直译：活动平面集 1d/2d/3d 求解（退化/近平行回退顺序求解）、priority+速度长度冒泡排序、静态摩擦（圆/盒两模型 + extra up/down）、动态摩擦、`max_surface_velocity` 钳制回退、罚距增长防重入、逐约束 `SurfaceInteraction` |
+| `character/proxy.rs` | `hknpCharacterProxy` 子集：Cinfo 全默认值（keepDistance 0.05、maxSlope π/2、maxCastIterations 10 等）+ builder；自维护接触流形（validate/findContact(1.1)/最近新接触合并(0.1)/相似剔除、compareContacts 几何项）；`check_support` 静态几何查询（约束速度清零 + 状态分类）；`integrate` 线性 cast → updateManifold → 约束（keepDistance 平面 + maxSlope 阻挡平面 + 贯穿恢复 + HVK-1477 速度回移）→ simplex 求解 → re-cast 验证 + keepDistance 停距 → resolveContacts 线性冲量推挤（含 character_mass/character_strength 钳制） |
+| `character/state_machine.rs` | `hknpCharacterMovementUtil`（表面坐标系 + 增益限幅 + 最大速度增量钳制）逐式直译；`CharacterState` trait（update/get_next_state/enter/leave）；默认状态 `OnGround`（增益 0.95/走速 10/加速度 200/ground hugging/水平投影）、`Jumping`（v²=2as 单帧冲量，num==1 触发）、`InAir`（增益 0.05/空速 10/加速度 50 + 重力）逐式直译；`CharacterStateManager` 注册表；`CharacterContext`（update/predict、强制下一状态、`newState == previousState` 跳一帧语义、输出速度滤波 active `#else` 分支、默认 gain 1.0/maxSpeed 20/maxAccel 625） |
+
+决策与偏差：
+
+- **查询子集**：原版 `hknpAllHitsCollector`（起点接触 + cast）改为——起点接触由逐 body 最近点查询重建（`keepDistance + keepContactTolerance` 内全部凸体 body），cast 用 `World::cast_shape` 单最近命中；网格/HeightField/复合体不进入流形（GJK 仅凸体）
+- **resolveContacts 子集**：仅线性冲量（跳过角惯性项），经 `set_body_linear_velocity` + `wake_body` 写回；phantom presence/trigger/listener/LOD/multi-thread task graph 未移植，proxy 为独立对象按调用传 `&World`
+- StateMachine：`Climbing`/`Flying` 类型保留但默认管理器不注册（原版 Flying 也从不进入；Climbing 依赖梯子查询）；user states/克隆/`CharacterType`/弃用滤波分支（`#if 0`）未移植；`m_atLadder` 随 Climbing 一并裁剪
+- **关键行为考证**：simplex 平面距离采用原版 `plane.dot4xyz1(pos)` 约定（点 w 分量为平面常数槽）；SLIDING 分类按原版 `cosSqr < maxSlopeCosine²`（大多数垂直输入方向场景被 max-slope 阻挡平面置零速度抢先判为 SUPPORTED，属原版行为）；`addMaxSlopePlane` 用原始 `maxSlopeCosine`（0.1 下限属未移植的旋转表面接触点投影修正）
+- **验证**：simplex（自由运动/地面截停/双墙走廊/三面夹角/静态摩擦吸附/传送带携带/重复平面/确定性）、proxy（落地静置 y≈1.0/撞墙停距/陡坡阻挡/推挤 dynamic box/Cinfo 默认值/确定性）、状态机（走速收敛/跳跃状态链 OnGround→Jumping→InAir→OnGround/单帧冲量/空中重力/离地过渡/predict 不改状态/滤波限加速度/未注册状态 panic）、集成（走墙停距/跳跃落回/推箱/逐位确定性/陡坡流形+分类）；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -566,13 +584,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 12 后续子集（wheel 约束，2026-11-17）：`WheelJoint`（悬挂平面锁定 + 行程限位 + 弹簧-阻尼 + axle 对齐/转向 + 速度驱动电机）与 `WheelCinfo`/`set_steering_angle`/`set_wheel_suspension`/`set_wheel_drive` 完成；`phys-solver` 56、`phys-world` 78 个单元测试，新增集成测试 `wheel_constraints.rs` 6 个
 - [x] Phase 13（vehicle 扩展层，2026-11-17）：`phys-extensions/vehicle`——raycast 悬挂（ray 距离 → 悬挂长度、SDK closing speed 约定）、默认 transmission/engine（扭矩曲线逐式直译 + 阈值换挡 + 倒挡）、悬挂弹簧-阻尼力（单位质量参数）、bullet 风格摩擦求解器（前向驱动/刹车冲量 + 侧向锁滑移 + 摩擦圆钳制）、冲量写回底盘/地面（含角响应）；`phys-extensions` 17 个单元测试，新增集成测试 `vehicle_extension.rs` 8 个（行驶/倒挡/转向/刹车/手刹/确定性）
 - [x] Phase 14（碰撞过滤系统，2026-11-17）：`phys-collide/filter.rs`——`CollisionFilter` trait（info/body-pair/query 三入口）、`GroupCollisionFilter`（5/5/5/16 位 filter info + 32 项 layer LUT，按原版 `.inl` 直译）、`PairCollisionFilter`（引用计数禁用表 + 子过滤器链）；`World::set_collision_filter` 接入候选对收集与全部查询（`QueryFilter::filter_info`）；新增集成测试 `collision_filters.rs` 8 个
-- [ ] 后续：CharacterControl（shape cast 已有/碰撞过滤已接入/contact listener）+ `hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）
+- [x] Phase 15（CharacterControl，2026-11-18）：`phys-extensions/character`——`hkSimplexSolver` 逐式直译（1d/2d/3d 平面约束 + 摩擦 + 罚距）、`hknpCharacterProxy` 子集（自维护流形 + shape cast 移动 + maxSlope 阻挡平面 + 贯穿恢复 + resolveContacts 线性冲量）、`hknpCharacterSurfaceInfo`、状态机（MovementUtil + OnGround/Jumping/InAir + Manager/Context 速度滤波）；`phys-extensions` 单元测试 17 → 46 个，新增集成测试 `character_control.rs` 5 个
+- [ ] 后续：`hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（hkx 加载后可补 Climbing/ladder、触发器与 contact listener）
 
-仓库现状（2026-11-17）：
+仓库现状（2026-11-18）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13 全部已提交（最新 `d4dfdd2 Vehicle`）；Phase 14（碰撞过滤系统）已实现并全绿，尚未提交
+- git：Phase 12/13 全部已提交（最新 `d4dfdd2 Vehicle`）；Phase 14（碰撞过滤系统）与 Phase 15（CharacterControl）已实现并全绿，尚未提交
 - 外部依赖：0
 
 ## 9. 文档

@@ -58,6 +58,7 @@ version = "0.1.0"
 dependencies = [
  "base-math",
  "phys-body",
+ "phys-collide",
  "phys-shape",
  "phys-types",
  "phys-world",
