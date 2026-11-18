@@ -13,6 +13,7 @@
 //! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`FixedCinfo`]/[`RagdollCinfo`]/[`PrismaticCinfo`]/[`SpringCinfo`]/[`PointToPlaneCinfo`] | `Dynamics/Constraint/Data` subset | local-space joint construction info |
 //! | [`WorldJoint`]/[`JointType`] | `hknpConstraintData::ConstraintType` subset | stored joint families and body↔constraint lookup |
 //! | [`QueryFilter`] | `hknpCollisionQuery` filter subset | body/motion-type filtering for world queries |
+//! | [`CollisionFilter`]/[`GroupCollisionFilter`]/[`PairCollisionFilter`] | `Collide/Filter` subset | info/body-pair/query collision decisions (`set_collision_filter`) |
 //! | [`RayCastHit`]/[`ShapeCastHitInfo`]/[`ClosestPointHit`]/[`ClosestPointsHit`] | `Collide/Query` subset | world ray cast, shape cast, closest point/shape and AABB queries |
 //!
 //! # Step pipeline
@@ -72,7 +73,7 @@
 //! # Not ported in this phase
 //!
 //! Body addition queues, command queue/determinism checking, deactivation
-//! manager, collision filters, events/modifiers, user body buffers,
+//! manager, events/modifiers, user body buffers,
 //! `hknpWorldReader`/`hknpWorldWriter` traits, body attachment and motion
 //! sharing, the SDK constraint-atom/constraint-group system, the vehicle
 //! extension layer (suspension raycast / engine / friction solver), and `hkx`
@@ -81,6 +82,8 @@
 use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
 use phys_types::BodyId;
+
+pub use phys_collide::{CollisionFilter, GroupCollisionFilter, PairCollisionFilter};
 
 mod cache;
 pub mod cinfo;

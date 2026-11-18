@@ -1,11 +1,14 @@
 //! `hknpWorld` — world assembly and single-threaded step pipeline.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use base_math::{Quaternion, Transform, Vector4};
 use phys_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
-use phys_collide::{BodyAabb, BroadPhase, BroadPhaseConfig, collide_with_tolerance};
+use phys_collide::{
+    BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, collide_with_tolerance,
+};
 use phys_shape::Shape;
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
@@ -50,7 +53,6 @@ struct ContactCandidate {
 /// contact solver. [`World::step`] runs collide → solve (contacts + joints) →
 /// integrate over convex shapes using a deterministic single-threaded
 /// pipeline.
-#[derive(Debug)]
 pub struct World {
     cinfo: WorldCinfo,
     gravity: Vector4,
@@ -63,10 +65,36 @@ pub struct World {
     contact_cache: ContactImpulseCache,
     sleep_states: HashMap<BodyId, SleepState>,
     last_islands: Vec<IslandInfo>,
+    /// `hknpWorld::m_collisionFilter` — optional collision filter consulted
+    /// during contact generation and queries.
+    collision_filter: Option<Arc<dyn CollisionFilter>>,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
     last_contact_count: usize,
+}
+
+impl fmt::Debug for World {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("World")
+            .field("cinfo", &self.cinfo)
+            .field("gravity", &self.gravity)
+            .field("bodies", &self.bodies)
+            .field("motions", &self.motions)
+            .field("broad_phase", &self.broad_phase)
+            .field("joints", &self.joints)
+            .field("joint_count", &self.joint_count)
+            .field("solver", &self.solver)
+            .field("contact_cache", &self.contact_cache)
+            .field("sleep_states", &self.sleep_states)
+            .field("last_islands", &self.last_islands)
+            .field("collision_filter", &self.collision_filter.is_some())
+            .field("step_count", &self.step_count)
+            .field("last_delta_time", &self.last_delta_time)
+            .field("last_manifold_count", &self.last_manifold_count)
+            .field("last_contact_count", &self.last_contact_count)
+            .finish()
+    }
 }
 
 impl World {
@@ -88,6 +116,7 @@ impl World {
             contact_cache: ContactImpulseCache::default(),
             sleep_states: HashMap::new(),
             last_islands: Vec::new(),
+            collision_filter: None,
             cinfo,
             gravity,
             step_count: 0,
@@ -110,6 +139,20 @@ impl World {
     /// Set gravity (`setGravity`).
     pub fn set_gravity(&mut self, gravity: Vector4) {
         self.gravity = gravity;
+    }
+
+    /// Set the collision filter (`setCollisionFilter`); `None` removes it.
+    ///
+    /// The filter is consulted for every broad-phase candidate pair during
+    /// contact generation and for world queries (through
+    /// [`crate::QueryFilter::filter_info`]).
+    pub fn set_collision_filter(&mut self, filter: Option<Arc<dyn CollisionFilter>>) {
+        self.collision_filter = filter;
+    }
+
+    /// The current collision filter, if any (`getCollisionFilter`).
+    pub fn collision_filter(&self) -> Option<&Arc<dyn CollisionFilter>> {
+        self.collision_filter.as_ref()
     }
 
     /// Number of live bodies.
@@ -1543,6 +1586,17 @@ impl World {
                 || body_b.flags.contains(CollisionFlags::DONT_COLLIDE)
             {
                 continue;
+            }
+            // `hknpCollisionFilter::isCollisionEnabled` body-pair overload.
+            if let Some(filter) = &self.collision_filter {
+                if !filter.is_body_pair_enabled(
+                    pair.a,
+                    body_a.collision_filter_info,
+                    pair.b,
+                    body_b.collision_filter_info,
+                ) {
+                    continue;
+                }
             }
             candidates.push(ContactCandidate {
                 body_a: pair.a,

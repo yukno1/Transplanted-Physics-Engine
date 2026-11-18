@@ -93,6 +93,11 @@ pub struct QueryFilter {
     pub include_dynamic: bool,
     /// Include keyframed bodies (default `true`).
     pub include_keyframed: bool,
+    /// Query-side collision filter info (`hknpQueryFilterData::
+    /// m_collisionFilterInfo`, default `0`). When the world has a
+    /// [`phys_collide::CollisionFilter`], each candidate body must pass
+    /// `is_query_enabled(filter_info, body.collision_filter_info)`.
+    pub filter_info: u32,
 }
 
 impl Default for QueryFilter {
@@ -102,6 +107,7 @@ impl Default for QueryFilter {
             include_static: true,
             include_dynamic: true,
             include_keyframed: true,
+            filter_info: 0,
         }
     }
 }
@@ -111,6 +117,13 @@ impl QueryFilter {
     #[must_use]
     pub fn with_ignore_body(mut self, body: BodyId) -> Self {
         self.ignore_body = Some(body);
+        self
+    }
+
+    /// Set the query-side collision filter info (`hknpQueryFilterData`).
+    #[must_use]
+    pub fn with_filter_info(mut self, filter_info: u32) -> Self {
+        self.filter_info = filter_info;
         self
     }
 
@@ -153,6 +166,20 @@ impl QueryFilter {
 }
 
 impl World {
+    /// Motion-type check plus the world's collision filter decision
+    /// (`hknpCollisionFilter::isCollisionEnabled(queryFilterData, body)`).
+    fn query_allows(&self, filter: &QueryFilter, body: &Body) -> bool {
+        if !filter.matches(body) {
+            return false;
+        }
+        if let Some(collision_filter) = self.collision_filter() {
+            if !collision_filter.is_query_enabled(filter.filter_info, body.collision_filter_info) {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Cast a ray through the world and return the closest hit
     /// (`castRay` closest-hit subset) with the default filter.
     ///
@@ -184,7 +211,7 @@ impl World {
 
         let mut best: Option<RayCastHit> = None;
         for body in self.bodies() {
-            if !filter.matches(body) {
+            if !self.query_allows(filter, body) {
                 continue;
             }
             // Coarse AABB clip against the ray interval.
@@ -249,7 +276,7 @@ impl World {
 
         let mut best: Option<ShapeCastHitInfo> = None;
         for body in self.bodies() {
-            if !filter.matches(body) {
+            if !self.query_allows(filter, body) {
                 continue;
             }
             if !body.aabb.overlaps(&swept) {
@@ -306,7 +333,7 @@ impl World {
     ) -> Option<ClosestPointHit> {
         let mut best: Option<ClosestPointHit> = None;
         for body in self.bodies() {
-            if !filter.matches(body) || !body.shape.is_convex() {
+            if !self.query_allows(filter, body) || !body.shape.is_convex() {
                 continue;
             }
             // Coarse rejection: distance to the cached AABB (clamped point).
@@ -369,7 +396,7 @@ impl World {
 
         let mut best: Option<ClosestPointsHit> = None;
         for body in self.bodies() {
-            if !filter.matches(body) || !body.shape.is_convex() {
+            if !self.query_allows(filter, body) || !body.shape.is_convex() {
                 continue;
             }
             if !body.aabb.overlaps(&expanded) {
@@ -457,7 +484,7 @@ impl World {
     /// (`hknpAabbQuery` subset), in body slot order.
     pub fn query_aabb(&self, aabb: &Aabb, filter: &QueryFilter) -> Vec<BodyId> {
         self.bodies()
-            .filter(|body| filter.matches(body) && body.aabb.overlaps(aabb))
+            .filter(|body| self.query_allows(filter, body) && body.aabb.overlaps(aabb))
             .map(|body| body.id)
             .collect()
     }

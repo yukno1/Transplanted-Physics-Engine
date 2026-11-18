@@ -12,6 +12,7 @@
 //! | [`collide`] / [`collide_with_tolerance`] | `hknpConvexConvexCollisionDetector` | analytic sphere-sphere + GJK/EPA for general convex pairs |
 //! | [`raycast`] / [`ray_aabb`] / [`point_distance`] | `hknpCollisionQuery` (ray/point subset) | conservative-advancement ray cast, AABB slab test and GJK point distance |
 //! | [`shape_cast()`] | `hknpShapeCastFuncs` / `hknpFullCast` | conservative-advancement shape cast with composite leaf traversal |
+//! | [`CollisionFilter`] / [`GroupCollisionFilter`] / [`PairCollisionFilter`] | `Collide/Filter` subset | info/body-pair/query collision decisions |
 //!
 //! # Supported pairs
 //!
@@ -31,12 +32,13 @@
 //! # Not ported in this phase
 //!
 //! SIMD-tree/CsGrid broad-phase layers and `hknpBroadPhaseConfig` layer
-//! semantics, collision filters, collision caches/welding, contact manifold
+//! semantics, collision caches/welding, contact manifold
 //! clipping (up to 4 points), composite/height-field/mesh narrow phase (only
 //! their queries are traversed), SDF and particle collision paths, rotating
 //! shape casts and continuous collision detection.
 
 pub mod broadphase;
+pub mod filter;
 pub mod gjk;
 pub mod manifold;
 pub mod narrowphase;
@@ -47,6 +49,7 @@ pub(crate) mod epa;
 pub(crate) mod support;
 
 pub use broadphase::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
+pub use filter::{CollisionFilter, GroupCollisionFilter, PairCollisionFilter};
 pub use gjk::{GjkResult, closest_points, intersects};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{collide, collide_with_tolerance};

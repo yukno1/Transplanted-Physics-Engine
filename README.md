@@ -155,7 +155,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `base-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
 | `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
-| `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历） | ✅ 已实现（Phase 7/11） |
+| `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
@@ -461,6 +461,21 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 未纳入：`LinearCastWheelCollide`、Aerodynamics/VelocityDamper/Tyremarks/Camera、DriverInput 过滤管线、`m_lin0Soft` 软约束因子、per-leaf shape key/material codec
 - **验证**：悬挂支撑沉降到位（y≈0.82，4 轮接触 + 非零弹簧力、怠速 RPM 来自 clutch slip）、油门沿 `suspension×axle` 方向加速、倒挡反向、转向改变航向、全刹/手刹（后轴载荷限制减速度）停车、转向角按 fraction 分配到轮、同场景两次运行 `WorldHash` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build / `cargo bench --quick` 全绿；顺手补了门面 `base-serialize` 重导出消除 unused dependency 警告
 
+### Phase 14：碰撞过滤系统（✅ 已完成，2026-11-17）
+交付（`phys-collide` 新增 8 个单元测试，共 55 个；`phys-world` 78 个单元测试；新增集成测试 `collision_filters.rs` 8 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-collide/filter.rs` | `CollisionFilter` trait（`hknpCollisionFilter` 子集：info 对 / body 对 / query 三个决策入口，默认全放行，要求 `Send + Sync`）；`GroupCollisionFilter`（`hknpGroupCollisionFilter` 默认 `Config<5,5,5,16>` 特化：`calc_filter_info` 打包 5 位 layer + 5 位 subsystem id + 5 位 subsystem don't-collide-with + 16 位 system group，32 项 layer LUT 初始全开，对称 `enable/disable_collisions_between`，layer 0 永不禁用）；`PairCollisionFilter`（`hknpPairCollisionFilter` 子集：引用计数 body 对禁用表 + 可选子过滤器链，`clear_all`/`is_disabled`） |
+| `phys-world` | `World::set_collision_filter` / `collision_filter`（`hknpWorld::setCollisionFilter`）；`contact_candidates` 在 `DONT_COLLIDE` 之后调用 `is_body_pair_enabled`（body 对重载）；`QueryFilter` 新增 `filter_info` 字段与 `with_filter_info`，全部查询（raycast/cast_shape/closest_point/closest_points_to_shape/query_aabb）经 `is_query_enabled` 过滤（对应 `isCollisionEnabled(queryFilterData, body)` 重载）；`World` 改手写 `Debug`（trait object 字段） |
+
+决策与偏差：
+
+- **`_isCollisionEnabled` 按原版 `.inl` 逐字直译**：同一非零 system group 的 body 对绕过 layer 表，由 subsystem 决定（`idA == dontCollideB` 或 `idB == dontCollideA` 即禁用）——注意 subsystem 全 0 的同组 body 对因此**不碰撞**（SDK 原版行为）；其余情况走 `LUT[layerA] & (1<<layerB)`（表保持对称，单次查询即可）
+- 未纳入：`hknpDisableCollisionFilter`（被 `PairCollisionFilter` 覆盖）、`hknpConstraintCollisionFilter`（世界侧 `DISABLE_COLLISIONS` 关节屏蔽已覆盖同一语义）、宽相 `filterBodyPairs` 流压缩（候选对在网格宽相之后统一过滤）、`getLodInfo`、过滤器序列化、`hknpFilterTranslator`
+- `CollisionQueryType` 参数未移植（内建过滤器从不分支查询类型）；`hknpQueryFilterData` 子集为 `QueryFilter.filter_info`（material id/user data 未进入过滤决策）
+- **验证**：layer 禁用/恢复、同组绕过 LUT、subsystem 排斥、pair 禁用/启用、查询 filter info 过滤、过滤场景两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -483,6 +498,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 约束岛 + warm starting | union-find 按接触/关节连通动态体（静态体不合并岛）；逐岛 solve(contacts→joints)，因岛间无共享动态体而与全局顺序等价；接触冲量按 body 对 + B 局部点匹配后跨步复用，切向基仅由法线决定以保证可复用 |
 | 岛级休眠 + 并行求解 | 休眠判定用速度阈值 + 低能量计时（`enable_sleeping` 默认关，不破坏既有确定性基线）；整岛同时入睡/唤醒（keyframed 成员或醒着的动态体阻止入睡），`wake_body` 沿关节图 BFS；休眠体跳过窄相/重力/积分，位姿冻结；并行求解按岛分块（worker 克隆缓冲后按岛回并），岛在动态体上不相交故与串行逐位一致 |
 | 约束/joint | 关节行在世界空间由 body pose 重建，按 constraint 槽序 + 固定行序顺序脉冲；limits 为单边行（越界才施加回复冲量，lambda 符号检查），motor 每次 solve 一次限幅冲量；pivot 用 3 线性行，hinge 用 2 轴对齐，fixed/prismatic 用四元数误差向量，ragdoll 用 `twist_a × twist_b` cone 轴 + twist 单边行；wheel 用悬挂平面锁定 + 行程单边限位 + axle 对齐（转向 = 底盘侧 axle 旋转由对齐行拉正），悬挂弹簧/驱动电机每 solve 一次限幅冲量；`DISABLE_COLLISIONS` 通过 body 对集合过滤接触 |
+| 碰撞过滤 | 32 位 `collision_filter_info` 按 group filter `Config<5,5,5,16>` 打包（layer/subsystem/dont-collide/system group）；同非零 system group 绕过 layer LUT 且 subsystem 全 0 的对不碰撞（原版 `.inl` 语义）；body 对决策在候选对收集末尾（`DONT_COLLIDE` 之后），查询决策经 `QueryFilter.filter_info`；pair 过滤器用引用计数禁用表 + 子过滤器链；所有决策确定性、无随机迭代序 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
@@ -549,13 +565,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 12 后续子集（岛级休眠/唤醒 + 按岛并行求解，2026-11-16）：`enable_sleeping` 速度阈值休眠（整岛入睡/唤醒传播、`wake_body` 关节图 BFS、休眠跳过窄相/重力/积分）与 `step_with_threads` 按岛并行求解（worker 分块克隆缓冲 + 按岛回并，与串行逐位一致）完成；`phys-world` 75 个单元测试，新增集成测试 `sleeping_and_parallel_solving.rs` 4 个
 - [x] Phase 12 后续子集（wheel 约束，2026-11-17）：`WheelJoint`（悬挂平面锁定 + 行程限位 + 弹簧-阻尼 + axle 对齐/转向 + 速度驱动电机）与 `WheelCinfo`/`set_steering_angle`/`set_wheel_suspension`/`set_wheel_drive` 完成；`phys-solver` 56、`phys-world` 78 个单元测试，新增集成测试 `wheel_constraints.rs` 6 个
 - [x] Phase 13（vehicle 扩展层，2026-11-17）：`phys-extensions/vehicle`——raycast 悬挂（ray 距离 → 悬挂长度、SDK closing speed 约定）、默认 transmission/engine（扭矩曲线逐式直译 + 阈值换挡 + 倒挡）、悬挂弹簧-阻尼力（单位质量参数）、bullet 风格摩擦求解器（前向驱动/刹车冲量 + 侧向锁滑移 + 摩擦圆钳制）、冲量写回底盘/地面（含角响应）；`phys-extensions` 17 个单元测试，新增集成测试 `vehicle_extension.rs` 8 个（行驶/倒挡/转向/刹车/手刹/确定性）
-- [ ] 后续：碰撞过滤 codec → CharacterControl（shape cast/碰撞过滤/contact listener）+ `hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）
+- [x] Phase 14（碰撞过滤系统，2026-11-17）：`phys-collide/filter.rs`——`CollisionFilter` trait（info/body-pair/query 三入口）、`GroupCollisionFilter`（5/5/5/16 位 filter info + 32 项 layer LUT，按原版 `.inl` 直译）、`PairCollisionFilter`（引用计数禁用表 + 子过滤器链）；`World::set_collision_filter` 接入候选对收集与全部查询（`QueryFilter::filter_info`）；新增集成测试 `collision_filters.rs` 8 个
+- [ ] 后续：CharacterControl（shape cast 已有/碰撞过滤已接入/contact listener）+ `hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）
 
 仓库现状（2026-11-17）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12 已提交（含 solver warm starting、world 冲量缓存/约束岛、tests/README）；岛级休眠/按岛并行求解、wheel 约束（Phase 12 后续子集）与 vehicle 扩展层（Phase 13）已实现，尚未提交
+- git：Phase 12/13 全部已提交（最新 `d4dfdd2 Vehicle`）；Phase 14（碰撞过滤系统）已实现并全绿，尚未提交
 - 外部依赖：0
 
 ## 9. 文档
