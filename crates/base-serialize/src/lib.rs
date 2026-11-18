@@ -7,28 +7,35 @@
 //! |---|---|---|
 //! | [`hff`] | `hkSerialize::HffReaderBase` / `HffWriter` | structured section tree parser (branch/leaf, sizes, FourCC) |
 //! | [`tagfile`] | `hkTagfileReadFormat` container layout | `TAG0`/`TCM0` root, `SDKV`/`DATA`/`TYPE`/`INDX` section access |
+//! | [`vle`] | `hkUintVle` | variable-length integer codec used by `TYPE` |
+//! | [`type_meta`] | `hkReflect::Type` / `TNA1`/`TBDY` | reflection metadata decoding |
+//! | [`object`] | `ReadFormat::read` subset | generic object rebuild, `ITEM`/`PTCH` fixups |
 //!
 //! # Scope
 //!
-//! This crate implements the **container layer**: HFF section parsing and
-//! tagfile section access. It does **not** rebuild objects from the `TYPE`/`DATA`
-//! sections; that requires the Havok reflection/type registry, in-place patch
-//! fixups and version-specific object layouts, which are not ported.
-//!
-//! It is therefore not yet a drop-in replacement for `hkx` asset loading. The
-//! parser is dependency-free and intended for diagnostics, container inspection
-//! and future object-loading work.
+//! [`object::Bundle::load`] decodes the current `TAG0` tagfile format into a
+//! generic [`object::Value`] tree: type identities and bodies, item index,
+//! internal/external fixups, scalars, strings, pointers, fixed/dynamic arrays
+//! and records are supported.  Object data is interpreted as little-endian,
+//! matching the SDK's x86 in-place layout; Havok physics objects are **not**
+//! constructed here.
 //!
 //! # Not ported
 //!
-//! * Reflection type registry / `hkClass`/`hkClassMember` metadata.
-//! * Object data rebuild (`ReadFormat::read`), patch/fixup application, bundle
-//!   and type-compendium semantics.
-//! * Binary packfile (`hkBinaryPackfile`) sections and native pointer patching.
-//! * Writers, XML formats, resource handles and 2014 compatibility variants.
+//! * Version patching, type compendium references and native pointer sections.
+//! * Binary packfile (`hkBinaryPackfile`) sections and XML/2014 variants.
+//! * Writers, resource handles, property decls and vtable initialisation.
+//! * Conversion of a generic bundle into `phys-world`/`phys-extensions` objects.
 
 pub mod hff;
+pub mod object;
 pub mod tagfile;
+pub mod type_meta;
+pub mod vle;
 
 pub use hff::{HffError, HffNode, HffScope, four_cc, ident_name, pack_scope};
+pub use object::{Bundle, Fixup, Item, ItemKind, LoadError, Record, Value};
 pub use tagfile::{COMPENDIUM, DATA, INDEX, SDK_VERSION, TAGFILE, TYPES, Tagfile, TagfileError};
+pub use type_meta::{
+    Field, Format, Kind, MetaError, TemplateParam, TypeId, TypeIdentity, TypeInfo, TypeMeta,
+};

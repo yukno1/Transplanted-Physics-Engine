@@ -152,7 +152,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `base-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
-| `base-serialize` | HFF 结构化流 + Tagfile 容器解析 | 🚧 部分实现（Phase 10） |
+| `base-serialize` | HFF 结构化流 + Tagfile 容器解析 + 类型元数据/对象重建子集 | ✅ 已实现（Phase 10/16 子集） |
 | `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
@@ -494,6 +494,24 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **关键行为考证**：simplex 平面距离采用原版 `plane.dot4xyz1(pos)` 约定（点 w 分量为平面常数槽）；SLIDING 分类按原版 `cosSqr < maxSlopeCosine²`（大多数垂直输入方向场景被 max-slope 阻挡平面置零速度抢先判为 SUPPORTED，属原版行为）；`addMaxSlopePlane` 用原始 `maxSlopeCosine`（0.1 下限属未移植的旋转表面接触点投影修正）
 - **验证**：simplex（自由运动/地面截停/双墙走廊/三面夹角/静态摩擦吸附/传送带携带/重复平面/确定性）、proxy（落地静置 y≈1.0/撞墙停距/陡坡阻挡/推挤 dynamic box/Cinfo 默认值/确定性）、状态机（走速收敛/跳跃状态链 OnGround→Jumping→InAir→OnGround/单帧冲量/空中重力/离地过渡/predict 不改状态/滤波限加速度/未注册状态 panic）、集成（走墙停距/跳跃落回/推箱/逐位确定性/陡坡流形+分类）；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
+### Phase 16：hkx 对象加载子集（✅ 已完成，2026-11-18）
+交付（`base-serialize` 单元测试 10 → 18 个；新增门面集成测试 `hkx_object_loading.rs` 2 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `base-serialize/vle.rs` | `hkUintVle` 逐式直译：1/2/3/4/5/6/8/9 字节编码、符号值 `encodeSigned`/`decodeSigned`、越界/非法前缀校验；`write`/`write_signed` 供合成测试与未来 writer 使用 |
+| `base-serialize/type_meta.rs` | `TST1`/`FST1` NUL 字符串表、`TNA1` 类型身份（name + template params，null type 位 0）、`TBDY` 类型体：`s_optMapping[9]` 压缩 optbits → `Opt::{FORMAT,SUBTYPE,VERSION,SIZE_ALIGN,FLAGS,DECLS,INTERFACES,ATTRIBUTE_STRING,MUTABLE}`，逐式读取 format/subtype/version/size/align/flags/data fields/interface；`Format` 解码 `Kind`/signed/bit 宽/固定数组长度；最多 3 字节全零 padding 校验 |
+| `base-serialize/object.rs` | `Bundle::load`：`TAG0` + `DATA`/`TYPE`/`INDX` 容器装配；`ITEM` 12 字节三元组（kind/flags/tid24、offset、count）→ `Item`；`PTCH` 内部/外部 fixup（按 type 分组、DATA 内 u32 LE 目标索引、null 目标）；generic `Value`/`Record`（`Void`/`Opaque`/`Bool`/`Int(i128)`/`Float(f64)`/`String`/`NullPointer`/`Ref(item)`/`Array`/`Record`）；按 parent 链收集字段，固定/动态数组（动态数组读 8 字节指针槽 + +8 处 size）、字符串 fixup 指向 char item；拒绝 `TCM0`、`TNAM`/`TBOD` V0 类型段 |
+
+决策与偏差：
+
+- **generic bundle 而非物理对象**：`base-serialize` 不反向依赖 `phys-*`，输出 `Value` 树供上层转换；`proton::serialize::{Bundle, Value, ...}` 已通过门面导出。
+- **fixup 不改原始 DATA**：外部 fixup 目标来自 `PTCH`，内部目标从 DATA 中读取 u32 LE；解析阶段只建立 `BTreeMap<offset, Fixup>`，对象重建时按偏移解析为 `Ref`/`String`/数组，天然避免 Rust 中的裸指针别名与环。
+- **数据布局假设**：对象字节按小端解释（Havok SDK x86 in-place 布局），动态数组指针槽固定 8 字节；大端/native-pointer 场景未移植。
+- **不支持**：版本 patching（SDKV 仅记录字符串）、compendium 引用、native pointer `TPTR`、属性 decl、vtable 初始化、binary packfile、XML/2014、writer；网格/HeightField 等物理形状到 `phys-shape` 的转换也未纳入。
+- **无真实资产**：`original/` 与仓库内均无 `.hkx` 样例，测试使用与 `hff.rs` 一致的合成二进制 writer；reader/writer 同时固化误解的风险由逐式直译 C++ 常量 optbits/VLE/字段布局降低，但仍不宣称与真实 Havok 资产逐位兼容。
+- **验证**：VLE 全宽度往返、类型身份/类型体解析、记录字段/字符串/指针/固定数组/动态数组/布尔、非法 item/patch 长度、legacy 段拒绝、门面 smoke test；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -585,13 +603,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 13（vehicle 扩展层，2026-11-17）：`phys-extensions/vehicle`——raycast 悬挂（ray 距离 → 悬挂长度、SDK closing speed 约定）、默认 transmission/engine（扭矩曲线逐式直译 + 阈值换挡 + 倒挡）、悬挂弹簧-阻尼力（单位质量参数）、bullet 风格摩擦求解器（前向驱动/刹车冲量 + 侧向锁滑移 + 摩擦圆钳制）、冲量写回底盘/地面（含角响应）；`phys-extensions` 17 个单元测试，新增集成测试 `vehicle_extension.rs` 8 个（行驶/倒挡/转向/刹车/手刹/确定性）
 - [x] Phase 14（碰撞过滤系统，2026-11-17）：`phys-collide/filter.rs`——`CollisionFilter` trait（info/body-pair/query 三入口）、`GroupCollisionFilter`（5/5/5/16 位 filter info + 32 项 layer LUT，按原版 `.inl` 直译）、`PairCollisionFilter`（引用计数禁用表 + 子过滤器链）；`World::set_collision_filter` 接入候选对收集与全部查询（`QueryFilter::filter_info`）；新增集成测试 `collision_filters.rs` 8 个
 - [x] Phase 15（CharacterControl，2026-11-18）：`phys-extensions/character`——`hkSimplexSolver` 逐式直译（1d/2d/3d 平面约束 + 摩擦 + 罚距）、`hknpCharacterProxy` 子集（自维护流形 + shape cast 移动 + maxSlope 阻挡平面 + 贯穿恢复 + resolveContacts 线性冲量）、`hknpCharacterSurfaceInfo`、状态机（MovementUtil + OnGround/Jumping/InAir + Manager/Context 速度滤波）；`phys-extensions` 单元测试 17 → 46 个，新增集成测试 `character_control.rs` 5 个
-- [ ] 后续：`hkx` 对象加载（packfile 反射/rebuild）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（hkx 加载后可补 Climbing/ladder、触发器与 contact listener）
+- [x] Phase 16（hkx 对象加载子集，2026-11-18）：`base-serialize` 新增 `hkUintVle`、`TNA1`/`TBDY` 反射元数据、`ITEM`/`PTCH` fixup 与 generic `Bundle`/`Value` 重建；`base-serialize` 单元测试 10 → 18 个，新增门面集成测试 `hkx_object_loading.rs` 2 个
+- [ ] 后续：`hkx` 版本 patching / compendium / binary packfile（Phase 16 仅覆盖当前 `TAG0` 子集）；generic bundle → `phys-world` 对象转换；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
 仓库现状（2026-11-18）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13 全部已提交（最新 `d4dfdd2 Vehicle`）；Phase 14（碰撞过滤系统）与 Phase 15（CharacterControl）已实现并全绿，尚未提交
+- git：Phase 12/13/14/15 均已提交（最新 `faf2ce5 CharacterControl`）；Phase 16（hkx 对象加载子集）已实现并全绿
 - 外部依赖：0
 
 ## 9. 文档
