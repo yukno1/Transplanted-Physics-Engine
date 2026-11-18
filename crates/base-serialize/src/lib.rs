@@ -7,6 +7,7 @@
 //! |---|---|---|
 //! | [`hff`] | `hkSerialize::HffReaderBase` / `HffWriter` | structured section tree parser (branch/leaf, sizes, FourCC) |
 //! | [`tagfile`] | `hkTagfileReadFormat` container layout | `TAG0`/`TCM0` root, `SDKV`/`DATA`/`TYPE`/`INDX` section access |
+//! | [`tagfile2014`] | `hkTagfileReadFormat2014` | legacy `CAB00D1E` binary tagfile: metadata, objects, references |
 //! | [`vle`] | `hkUintVle` | variable-length integer codec used by `TYPE` |
 //! | [`type_meta`] | `hkReflect::Type` / `TNA1`/`TBDY` | reflection metadata decoding |
 //! | [`compendium`] | `TagfileReadFormat::Impl::Compendium` | `TCM0` signatures and shared `TYPE` tables |
@@ -26,7 +27,7 @@
 //! # Not ported
 //!
 //! * Version patching and native pointer sections.
-//! * Binary packfile (`hkBinaryPackfile`) sections and XML/2014 variants.
+//! * Actual packfile containers (converted by an external SDK DLL), XML variants and writers.
 //! * Writers, resource handles, property decls and vtable initialisation.
 //! * Conversion of a generic bundle into `phys-world`/`phys-extensions` objects.
 
@@ -34,6 +35,7 @@ pub mod compendium;
 pub mod hff;
 pub mod object;
 pub mod tagfile;
+pub mod tagfile2014;
 pub mod type_meta;
 pub mod vle;
 
@@ -43,6 +45,10 @@ pub use object::{Bundle, Fixup, Item, ItemKind, LoadError, Record, Value};
 pub use tagfile::{
     COMPENDIUM, COMPENDIUM_ID, COMPENDIUM_REFERENCE, DATA, INDEX, SDK_VERSION, TAGFILE, TYPES,
     Tagfile, TagfileError,
+};
+pub use tagfile2014::{
+    BINARY_MAGIC_0, BINARY_MAGIC_1, Bundle2014, ClassDef, Error as Error2014, FieldDef,
+    Record as Record2014, Value as Value2014,
 };
 pub use type_meta::{
     Field, Format, Kind, MetaError, TemplateParam, TypeId, TypeIdentity, TypeInfo, TypeMeta,
