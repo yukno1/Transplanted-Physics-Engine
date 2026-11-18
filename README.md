@@ -152,7 +152,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `base-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
-| `base-serialize` | HFF 结构化流 + Tagfile 容器解析 + 类型元数据/对象重建子集 | ✅ 已实现（Phase 10/16 子集） |
+| `base-serialize` | HFF 结构化流 + Tagfile 容器解析 + 类型元数据/对象重建 + `TCM0` compendium 子集 | ✅ 已实现（Phase 10/16 + compendium 子集） |
 | `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
@@ -508,7 +508,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **generic bundle 而非物理对象**：`base-serialize` 不反向依赖 `phys-*`，输出 `Value` 树供上层转换；`proton::serialize::{Bundle, Value, ...}` 已通过门面导出。
 - **fixup 不改原始 DATA**：外部 fixup 目标来自 `PTCH`，内部目标从 DATA 中读取 u32 LE；解析阶段只建立 `BTreeMap<offset, Fixup>`，对象重建时按偏移解析为 `Ref`/`String`/数组，天然避免 Rust 中的裸指针别名与环。
 - **数据布局假设**：对象字节按小端解释（Havok SDK x86 in-place 布局），动态数组指针槽固定 8 字节；大端/native-pointer 场景未移植。
-- **不支持**：版本 patching（SDKV 仅记录字符串）、compendium 引用、native pointer `TPTR`、属性 decl、vtable 初始化、binary packfile、XML/2014、writer；网格/HeightField 等物理形状到 `phys-shape` 的转换也未纳入。
+- **不支持**：版本 patching（SDKV 仅记录字符串）、native pointer `TPTR`、属性 decl、vtable 初始化、binary packfile、XML/2014、writer；compendium 引用由后续子集补上（见下）；网格/HeightField 等物理形状到 `phys-shape` 的转换也未纳入。
 - **无真实资产**：`original/` 与仓库内均无 `.hkx` 样例，测试使用与 `hff.rs` 一致的合成二进制 writer；reader/writer 同时固化误解的风险由逐式直译 C++ 常量 optbits/VLE/字段布局降低，但仍不宣称与真实 Havok 资产逐位兼容。
 - **验证**：VLE 全宽度往返、类型身份/类型体解析、记录字段/字符串/指针/固定数组/动态数组/布尔、非法 item/patch 长度、legacy 段拒绝、门面 smoke test；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
@@ -527,6 +527,22 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **非资产级兼容**：不处理版本 patching / compendium / vtable / binary packfile；测试用合成 `TAG0`（`Bundle::load` → `scene_from_bundle` → `World::step` 240 步落地收敛，两次加载 `position.to_bits` 逐位一致），仍不宣称与真实 Havok 资产逐位兼容
 
 - **验证**：5 个集成测试覆盖形状转换（Box/Sphere 具体类型与半径/半长）、body 字段、错误输入、端到端仿真落球、跨加载确定性；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
+### Phase 16（后续子集）：hkx 类型 compendium（✅ 已完成，2026-11-18）
+交付（`base-serialize` 单元测试 18 → 27 个；门面集成测试 `hkx_object_loading.rs` 2 → 3 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `base-serialize/compendium.rs` | `Compendium::load`：`TCM0` 类型合订本解析——`TCID` 签名数组（`u64 LE`，8 字节对齐）+ `TYPE` 元数据；`contains_signature`；按调用顺序合并类型表（`None` 不覆盖已有定义），bundle 自身 `TYPE` 最后合并 |
+| `base-serialize/tagfile.rs` | 新增 `TCRF` / `TCID` 常量与 `Tagfile::compendium_reference()`：解码 8 字节小端签名，忽略 inplace 指针尾部，短段返回错误 |
+| `base-serialize/object.rs` | `Bundle::load_with_compendia`：校验 `TCRF` 与已加载 compendium 签名匹配（不匹配返回 `CompendiumNotFound`）；无 `TYPE` 的 bundle 可由 compendium 提供类型；`Bundle::load` 行为保持不变 |
+
+决策与偏差：
+
+- 签名语义按原版 `handleCompendiumId` / `handleCompendiumReference`：`TCID` 是合订本各中间状态的签名数组，`TCRF` 引用其中一个；8 字节之后的 inplace `hkArrayView` 尾部不加载（非 inplace 路线）。
+- 仅移植类型表合并；`TSHA` / `TSEQ` 滚动哈希、增量类型检查器、vtable 初始化与写格式未移植。
+- `Bundle::load`（无 compendium）遇到 `TCRF` 直接报 `CompendiumNotFound`，不静默忽略引用；合成测试覆盖共享类型加载、签名不匹配、本地 `TYPE` 覆盖与非法 `TCID` 长度。
+- 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
 ---
 
@@ -554,7 +570,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
-| 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
+| 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -621,13 +637,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 15（CharacterControl，2026-11-18）：`phys-extensions/character`——`hkSimplexSolver` 逐式直译（1d/2d/3d 平面约束 + 摩擦 + 罚距）、`hknpCharacterProxy` 子集（自维护流形 + shape cast 移动 + maxSlope 阻挡平面 + 贯穿恢复 + resolveContacts 线性冲量）、`hknpCharacterSurfaceInfo`、状态机（MovementUtil + OnGround/Jumping/InAir + Manager/Context 速度滤波）；`phys-extensions` 单元测试 17 → 46 个，新增集成测试 `character_control.rs` 5 个
 - [x] Phase 16（hkx 对象加载子集，2026-11-18）：`base-serialize` 新增 `hkUintVle`、`TNA1`/`TBDY` 反射元数据、`ITEM`/`PTCH` fixup 与 generic `Bundle`/`Value` 重建；`base-serialize` 单元测试 10 → 18 个，新增门面集成测试 `hkx_object_loading.rs` 2 个
 - [x] Phase 17（hkx → phys-world 对象转换，2026-11-18）：门面 `src/convert.rs` 把 generic `Value` 树转成 shape/body（支持 9 种形状族 + body 字段），放门面避免 `base-serialize` 反向依赖；新增集成测试 `hkx_scene_loading.rs` 5 个（类型名分发/字段转换/错误输入/端到端落球仿真/跨加载逐位一致）
-- [ ] 后续：`hkx` 版本 patching / compendium / binary packfile（Phase 16 仅覆盖当前 `TAG0` 子集）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
+- [x] Phase 16 后续子集（hkx 类型 compendium，2026-11-18）：`TCM0` / `TCID` 签名解析、`TCRF` 引用校验与类型表合并；`base-serialize` 18 → 27 个单元测试，门面集成测试 2 → 3 个
+- [ ] 后续：`hkx` 版本 patching / binary packfile（Phase 16/17 + compendium 子集仅覆盖当前 `TAG0` 格式）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
 仓库现状（2026-11-18）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（最新 `faf2ce5 CharacterControl`）；Phase 16（hkx 对象加载子集）与 Phase 17（hkx → phys-world 转换）已实现并全绿
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）；本次 compendium 后续子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

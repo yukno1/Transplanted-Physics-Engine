@@ -2,11 +2,13 @@
 //!
 //! This is the first object-loading subset: it parses type identities/bodies,
 //! the item index and in-place fixups, then materialises every object into a
-//! generic [`Value`] tree.  It does **not** construct Havok physics objects,
-//! apply version patches, load compendiums or support binary packfiles.
+//! generic [`Value`] tree.  Type compendiums can supply shared `TYPE` metadata
+//! through [`Bundle::load_with_compendia`].  It does **not** construct Havok
+//! physics objects, apply version patches or support binary packfiles.
 
 use std::collections::{BTreeMap, HashSet};
 
+use crate::compendium::{self, Compendium};
 use crate::hff::{HffNode, four_cc};
 use crate::tagfile::{Tagfile, TagfileError};
 use crate::type_meta::{self, Format, Kind, TypeId, TypeInfo, TypeMeta};
@@ -38,6 +40,10 @@ pub enum LoadError {
     InvalidItemSection,
     /// The `PTCH` section length was not a multiple of 4 bytes.
     InvalidPatchSection,
+    /// The `TCID` section length was not a multiple of 8 bytes.
+    InvalidSignatureSection,
+    /// No loaded compendium had the signature required by `TCRF`.
+    CompendiumNotFound(u64),
     /// A fixup source offset had no room for its target index.
     PatchOutOfBounds {
         /// Source byte offset.
@@ -99,6 +105,10 @@ impl core::fmt::Display for LoadError {
             Self::Unsupported(name) => write!(f, "unsupported tagfile feature {name}"),
             Self::InvalidItemSection => write!(f, "ITEM section is not a multiple of 12 bytes"),
             Self::InvalidPatchSection => write!(f, "PTCH section is not a multiple of 4 bytes"),
+            Self::InvalidSignatureSection => write!(f, "TCID section is not a multiple of 8 bytes"),
+            Self::CompendiumNotFound(signature) => {
+                write!(f, "no loaded compendium has signature {signature:016x}")
+            }
             Self::PatchOutOfBounds { offset, data_len } => {
                 write!(f, "fixup at {offset} outside DATA ({data_len} bytes)")
             }
@@ -226,22 +236,46 @@ pub struct Bundle {
 impl Bundle {
     /// Load a `TAG0` tagfile into a generic value bundle.
     pub fn load(bytes: &[u8]) -> Result<Self, LoadError> {
+        Self::load_inner(bytes, &[])
+    }
+
+    /// Load a bundle whose types may live in `TCM0` compendiums.
+    ///
+    /// A `TCRF` signature is checked against the supplied compendia; their
+    /// types are merged in caller order before the bundle's own `TYPE`
+    /// section, matching the SDK's shared-then-local registration.
+    pub fn load_with_compendia(bytes: &[u8], compendia: &[Compendium]) -> Result<Self, LoadError> {
+        Self::load_inner(bytes, compendia)
+    }
+
+    fn load_inner(bytes: &[u8], compendia: &[Compendium]) -> Result<Self, LoadError> {
         let tagfile = Tagfile::parse(bytes)?;
         if tagfile.is_compendium() {
             return Err(LoadError::Unsupported("TCM0 compendium"));
         }
 
-        let data = leaf_bytes(tagfile.data(), "DATA")?;
-        let types = tagfile.types().ok_or(LoadError::MissingSection("TYPE"))?;
-        if types.find(TNAM).is_some() || types.find(TBOD).is_some() {
-            return Err(LoadError::Unsupported("V0 TNAM/TBOD type sections"));
+        if let Some(signature) = tagfile.compendium_reference()? {
+            if !compendia
+                .iter()
+                .any(|compendium| compendium.contains_signature(signature))
+            {
+                return Err(LoadError::CompendiumNotFound(signature));
+            }
         }
-        let type_strings = leaf_bytes(types.find(TST1), "TST1")?;
-        let field_strings = leaf_bytes(types.find(FST1), "FST1")?;
-        let identities = leaf_bytes(types.find(TNA1), "TNA1")?;
-        let bodies = leaf_bytes(types.find(TBDY), "TBDY")?;
-        let type_info =
-            type_meta::parse_type_info(type_strings, field_strings, identities, bodies)?;
+
+        let data = leaf_bytes(tagfile.data(), "DATA")?;
+        let mut type_info = TypeInfo {
+            identities: vec![None],
+            types: vec![None],
+        };
+        for compendium in compendia {
+            compendium::merge_type_info(&mut type_info, &compendium.type_info);
+        }
+        if tagfile.types().is_some() {
+            compendium::merge_type_info(&mut type_info, &type_info_from_tagfile(&tagfile)?);
+        } else if compendia.is_empty() {
+            return Err(LoadError::MissingSection("TYPE"));
+        }
 
         let index = tagfile.index().ok_or(LoadError::MissingSection("INDX"))?;
         let item_bytes = leaf_bytes(index.find(ITEM), "ITEM")?;
@@ -289,6 +323,24 @@ fn leaf_bytes<'a>(node: Option<&'a HffNode>, name: &'static str) -> Result<&'a [
 fn leaf_bytes_optional(node: Option<&HffNode>) -> Option<&[u8]> {
     node.filter(|node| node.is_leaf())
         .map(|node| node.data.as_slice())
+}
+
+/// Decode the reflection metadata in a `TYPE` section.
+pub(crate) fn type_info_from_tagfile(tagfile: &Tagfile) -> Result<TypeInfo, LoadError> {
+    let types = tagfile.types().ok_or(LoadError::MissingSection("TYPE"))?;
+    if types.find(TNAM).is_some() || types.find(TBOD).is_some() {
+        return Err(LoadError::Unsupported("V0 TNAM/TBOD type sections"));
+    }
+    let type_strings = leaf_bytes(types.find(TST1), "TST1")?;
+    let field_strings = leaf_bytes(types.find(FST1), "FST1")?;
+    let identities = leaf_bytes(types.find(TNA1), "TNA1")?;
+    let bodies = leaf_bytes(types.find(TBDY), "TBDY")?;
+    Ok(type_meta::parse_type_info(
+        type_strings,
+        field_strings,
+        identities,
+        bodies,
+    )?)
 }
 
 fn parse_items(bytes: &[u8]) -> Result<Vec<Item>, LoadError> {
@@ -667,8 +719,11 @@ fn build_object(ctx: &ReadCtx<'_>, item: &Item) -> Result<Value, LoadError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compendium::Compendium;
     use crate::hff::{four_cc, pack_scope};
-    use crate::tagfile::{DATA, INDEX, SDK_VERSION, TAGFILE, TYPES};
+    use crate::tagfile::{
+        COMPENDIUM, COMPENDIUM_ID, COMPENDIUM_REFERENCE, DATA, INDEX, SDK_VERSION, TAGFILE, TYPES,
+    };
     use crate::vle;
 
     const T_DEMO: u32 = 1;
@@ -949,6 +1004,93 @@ mod tests {
         assert_eq!(
             parse_patch(&[0; 3], &[], 1),
             Err(LoadError::InvalidPatchSection)
+        );
+    }
+
+    const COMPENDIUM_SIG: u64 = 0x1122_3344_5566_7788;
+
+    fn compendium_bytes(signature: u64) -> Vec<u8> {
+        branch(
+            COMPENDIUM,
+            &[
+                leaf(COMPENDIUM_ID, &signature.to_le_bytes()),
+                type_section(),
+            ],
+        )
+    }
+
+    fn bundle_with_reference(with_types: bool) -> Vec<u8> {
+        let mut sections = vec![leaf(SDK_VERSION, b"20211202"), leaf(DATA, &data_section())];
+        if with_types {
+            sections.push(type_section());
+        }
+        sections.push(leaf(COMPENDIUM_REFERENCE, &COMPENDIUM_SIG.to_le_bytes()));
+        sections.push(index_section());
+        branch(TAGFILE, &sections)
+    }
+
+    #[test]
+    fn loads_bundle_using_compendium_types() {
+        let compendium = Compendium::load(&compendium_bytes(COMPENDIUM_SIG)).expect("compendium");
+        assert_eq!(compendium.signatures, vec![COMPENDIUM_SIG]);
+        assert!(compendium.contains_signature(COMPENDIUM_SIG));
+
+        let bundle = Bundle::load_with_compendia(&bundle_with_reference(false), &[compendium])
+            .expect("bundle using shared types");
+        let Value::Record(root) = bundle.object(1).expect("root object") else {
+            panic!("root is not a record");
+        };
+        let field = |name: &str| {
+            root.fields
+                .iter()
+                .find(|(field_name, _)| field_name == name)
+                .map(|(_, value)| value)
+                .expect("field")
+        };
+        assert_eq!(field("count"), &Value::Int(42));
+        assert_eq!(field("label"), &Value::String("hello".to_string()));
+        assert_eq!(field("child"), &Value::Ref(2));
+    }
+
+    #[test]
+    fn requires_matching_compendium_signature() {
+        let bytes = bundle_with_reference(false);
+        assert_eq!(
+            Bundle::load(&bytes),
+            Err(LoadError::CompendiumNotFound(COMPENDIUM_SIG))
+        );
+        assert_eq!(
+            Bundle::load_with_compendia(&bytes, &[]),
+            Err(LoadError::CompendiumNotFound(COMPENDIUM_SIG))
+        );
+
+        let wrong = Compendium::load(&compendium_bytes(0xdead_beef)).expect("compendium");
+        assert_eq!(
+            Bundle::load_with_compendia(&bundle_with_reference(true), &[wrong]),
+            Err(LoadError::CompendiumNotFound(COMPENDIUM_SIG))
+        );
+    }
+
+    #[test]
+    fn bundle_types_override_compendium_types() {
+        let compendium = Compendium::load(&compendium_bytes(COMPENDIUM_SIG)).expect("compendium");
+        // The bundle carries its own identical TYPE section; local definitions
+        // are merged last and must produce the same materialised record.
+        let from_compendium = Bundle::load_with_compendia(
+            &bundle_with_reference(false),
+            std::slice::from_ref(&compendium),
+        )
+        .expect("compendium bundle");
+        let from_bundle = Bundle::load_with_compendia(&bundle_with_reference(true), &[compendium])
+            .expect("local bundle");
+        assert_eq!(from_compendium.objects, from_bundle.objects);
+    }
+
+    #[test]
+    fn compendium_loader_rejects_data_bundles() {
+        assert_eq!(
+            Compendium::load(&sample_tagfile()),
+            Err(LoadError::Unsupported("TCM0 compendium required"))
         );
     }
 }

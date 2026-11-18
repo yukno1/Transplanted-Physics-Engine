@@ -5,9 +5,10 @@
 //!
 //! A tagfile is an HFF tree whose root is `TAG0` (normal bundle) or `TCM0`
 //! (type compendium). Children may include `SDKV` (SDK version string), `DATA`
-//! (object data), `TYPE` (type declarations) and `INDX` (object/fixup index).
-//! This module exposes that tree; reflection-driven object rebuilding, patch
-//! fixups and bundle/compendium semantics are not ported.
+//! (object data), `TYPE` (type declarations), `INDX` (object/fixup index),
+//! `TCRF` (compendium signature reference) and `TCID` (compendium signatures).
+//! This module exposes that tree and decodes the compendium reference; patch
+//! fixups and reflection-driven object rebuilding live in [`crate::object`].
 
 use crate::hff::{self, HffError, HffNode, four_cc};
 
@@ -23,6 +24,10 @@ pub const DATA: u32 = four_cc(b"DATA");
 pub const TYPES: u32 = four_cc(b"TYPE");
 /// Object/fixup index branch (`INDX`).
 pub const INDEX: u32 = four_cc(b"INDX");
+/// Compendium signature reference leaf (`TCRF`) in a normal bundle.
+pub const COMPENDIUM_REFERENCE: u32 = four_cc(b"TCRF");
+/// Array of compendium signatures leaf (`TCID`) in a `TCM0` bundle.
+pub const COMPENDIUM_ID: u32 = four_cc(b"TCID");
 
 /// Errors produced by [`Tagfile::parse`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +39,8 @@ pub enum TagfileError {
         /// Root identifier.
         ident: u32,
     },
+    /// A `TCRF` section was present but had no room for the 8-byte signature.
+    InvalidCompendiumReference,
 }
 
 impl From<HffError> for TagfileError {
@@ -48,6 +55,9 @@ impl core::fmt::Display for TagfileError {
             Self::Hff(error) => write!(f, "HFF error: {error}"),
             Self::NotATagfile { ident } => {
                 write!(f, "root section {:08x} is not a tagfile", ident)
+            }
+            Self::InvalidCompendiumReference => {
+                write!(f, "compendium reference is shorter than 8 bytes")
             }
         }
     }
@@ -102,6 +112,24 @@ impl Tagfile {
     /// Whether this is a compendium (`TCM0`) rather than a normal bundle.
     pub fn is_compendium(&self) -> bool {
         self.root.ident == COMPENDIUM
+    }
+
+    /// Signature of the required type compendium (`TCRF`), when present.
+    ///
+    /// The SDK writes the 8-byte little-endian signature first; any trailing
+    /// bytes are in-place pointer storage and are ignored here, matching a
+    /// non-inplace load.
+    pub fn compendium_reference(&self) -> Result<Option<u64>, TagfileError> {
+        let Some(node) = self.section(COMPENDIUM_REFERENCE) else {
+            return Ok(None);
+        };
+        let bytes: [u8; 8] = node
+            .data
+            .get(..8)
+            .ok_or(TagfileError::InvalidCompendiumReference)?
+            .try_into()
+            .expect("slice of exactly 8 bytes");
+        Ok(Some(u64::from_le_bytes(bytes)))
     }
 }
 
@@ -189,5 +217,29 @@ mod tests {
         let tagfile = Tagfile::parse(&bytes).expect("empty tagfile");
         assert_eq!(tagfile.version, None);
         assert!(tagfile.data().is_none());
+    }
+
+    #[test]
+    fn decodes_compendium_reference_and_ignores_inplace_tail() {
+        let signature = 0x1122_3344_5566_7788u64;
+        let mut payload = signature.to_le_bytes().to_vec();
+        payload.extend_from_slice(&[0xaa; 16]);
+        let bytes = branch(TAGFILE, &[leaf(COMPENDIUM_REFERENCE, &payload)]);
+        let tagfile = Tagfile::parse(&bytes).expect("tagfile with TCRF");
+        assert_eq!(tagfile.compendium_reference(), Ok(Some(signature)));
+    }
+
+    #[test]
+    fn compendium_reference_is_optional_and_checked() {
+        let bytes = branch(TAGFILE, &[leaf(four_cc(b"TEST"), b"x")]);
+        let tagfile = Tagfile::parse(&bytes).expect("tagfile without TCRF");
+        assert_eq!(tagfile.compendium_reference(), Ok(None));
+
+        let bytes = branch(TAGFILE, &[leaf(COMPENDIUM_REFERENCE, &[0; 7])]);
+        let tagfile = Tagfile::parse(&bytes).expect("short TCRF");
+        assert_eq!(
+            tagfile.compendium_reference(),
+            Err(TagfileError::InvalidCompendiumReference)
+        );
     }
 }
