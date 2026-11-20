@@ -159,7 +159,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层子集（raycast 悬挂 / 默认 engine / transmission / 简化 friction solver） | 🚧 部分实现（Phase 10/13；Ragdoll/CharacterControl 仍阻塞） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧） | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -560,6 +560,21 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **非资产级兼容**：测试用按原版线格式手写的合成 writer（含变长整数与字符串回引），仓库与原版目录均无真实 `.hkx`/tagfile 样例，不宣称与真实 Havok 资产逐位兼容。
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### 后续子集：Ragdoll 调度层（✅ 已完成，2026-11-20）
+交付（`phys-extensions` 单元测试 46 → 49 个；新增门面集成测试 `ragdoll_scheduling.rs` 4 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-extensions/ragdoll.rs` | `hknpRagdoll` / `hknpRagdollController::BodyController` / `hknpKeyFrameUtil` 子集：`RagdollData` 骨骼层级（name/parent/body/reference pose/twist+plane axis/limits）→ `Ragdoll::create` 从两体当前世界位姿推导局部 pivot/轴并建 `RagdollCinfo` 链（相邻体碰撞屏蔽）；`calc_desired_pose_world_space`（父子局部姿态合成）、`drive_to_pose`（速度驱动 + strength 插值）、`apply_hard_keyframe`（精确设姿 + KeyFrameUtil 所需速度）、`pose_world_space`、`set_enabled` |
+
+决策与偏差：
+
+- 原版 `hknpRagdollData` 直接携带 `hknpPhysicsSystemData` 的约束 cinfo；本子集改由骨骼参考姿态与建链时的 body pose 推导 pivot/轴，joint 类型固定为已有 `RagdollCinfo`（cone/twist），不移植 `hknpPhysicsSystemData` 与 `hkaSkeleton`。
+- **显式驱动代替 Action/StateMachine**：调用方在 `World::step` 前调用 `drive_to_pose` 或在需要同步时调用 `apply_hard_keyframe`；状态机（Keyframed/Dynamic/Powered）、电机 blender、penetration utility、`hknpEaseConstraintsAction` 与 motion sharing 未移植。
+- 角速度按 `hknpKeyFrameUtil::calcRequiredVelocity`：小角度用四元数虚部近似、大于 20° 用轴角精确式；`drive_to_pose` 按 `strength × bone_strength` 与当前速度插值，写回经 `set_body_*` 自动唤醒。
+- 无 body 的末端骨骼按父世界姿态 × 参考变换回退（对应原版 `getWorldFromBoneTransform` 的末端逻辑）；骨骼顺序要求父在子前，`create` 校验并在非法索引时返回 `InvalidBone`。
+- 验证：层级姿态合成、非法 dt/strength/pose 长度、硬关键帧轴角速度；集成覆盖三体链约束建立与碰撞屏蔽、90 步 drive 收敛、硬关键帧传送、两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -585,6 +600,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 碰撞过滤 | 32 位 `collision_filter_info` 按 group filter `Config<5,5,5,16>` 打包（layer/subsystem/dont-collide/system group）；同非零 system group 绕过 layer LUT 且 subsystem 全 0 的对不碰撞（原版 `.inl` 语义）；body 对决策在候选对收集末尾（`DONT_COLLIDE` 之后），查询决策经 `QueryFilter.filter_info`；pair 过滤器用引用计数禁用表 + 子过滤器链；所有决策确定性、无随机迭代序 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
+| Ragdoll 调度层 | 骨骼参考姿态（父在子前）在建链时推导 body 局部 pivot/轴，复用 `RagdollCinfo` cone/twist 关节并屏蔽相邻体碰撞；`calcDesiredPoseWorldSpace` 逐骨父子合成，`driveToPose` 用 KeyFrameUtil 风格速度按 strength 插值写回，`applyHardKeyframe` 精确设姿并写入所需线/角速度（>20° 用轴角、小角用虚部近似）；显式调用代替 action/state machine |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；2014 legacy tagfile 为独立变长 tag 流（符号-幅度整数 + 字符串表 + 元数据 + 对象位图 + 前向引用），不套 HFF 段树；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
@@ -655,13 +671,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 17（hkx → phys-world 对象转换，2026-11-18）：门面 `src/convert.rs` 把 generic `Value` 树转成 shape/body（支持 9 种形状族 + body 字段），放门面避免 `base-serialize` 反向依赖；新增集成测试 `hkx_scene_loading.rs` 5 个（类型名分发/字段转换/错误输入/端到端落球仿真/跨加载逐位一致）
 - [x] Phase 16 后续子集（hkx 类型 compendium，2026-11-18）：`TCM0` / `TCID` 签名解析、`TCRF` 引用校验与类型表合并；`base-serialize` 18 → 27 个单元测试，门面集成测试 2 → 3 个
 - [x] Phase 16 后续子集（2014 legacy binary tagfile，2026-11-18）：magic/变长整数/字符串表/元数据/对象树与前向引用解析；`base-serialize` 27 → 31 个单元测试，门面集成测试 3 → 4 个
-- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll 调度层（约束族已在 Phase 11 交付）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
+- [x] 后续子集（Ragdoll 调度层，2026-11-20）：骨骼层级绑定 + `RagdollCinfo` 链 + `drive_to_pose`/`apply_hard_keyframe`；`phys-extensions` 46 → 49 个单元测试，新增集成测试 `ragdoll_scheduling.rs` 4 个
+- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll 状态机/电机 blender/penetration utility；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
 仓库现状（2026-11-18）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 后续子集为 `f2ce9d8`；本次 2014 legacy tagfile 子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`；本次 Ragdoll 调度层子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档
