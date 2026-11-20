@@ -11,11 +11,12 @@
 //! blend. Body tags are represented by per-bone strengths (zero disables the
 //! bone); `keyframeRoot` locks the root body with an exact keyframe.
 
-use base_math::Transform;
+use base_math::{Transform, Vector4};
 use phys_types::MotionType;
 use phys_world::World;
 
 use crate::ragdoll::{Ragdoll, RagdollError};
+use crate::ragdoll_ease::{ConstraintEasingMode, DEFAULT_EASING_DURATION, EaseConstraintsAction};
 use crate::ragdoll_penetration::{
     BodyHierarchy, DetectionOutput, PenetrationInput, detect_and_resolve_penetration,
 };
@@ -150,6 +151,26 @@ struct TimedTransition {
     duration: f32,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct AtRestTransition {
+    final_state: RagdollState,
+    linear_tolerance: f32,
+    angular_tolerance: f32,
+}
+
+fn easing_for(state: RagdollState) -> (ConstraintEasingMode, f32) {
+    match state {
+        // Keyframed/Powered use the default hknpRagdollState::Cinfo mode.
+        RagdollState::Keyframed | RagdollState::Powered => {
+            (ConstraintEasingMode::Enforce, DEFAULT_EASING_DURATION)
+        }
+        RagdollState::Dynamic => (
+            ConstraintEasingMode::LoosenThenRestore,
+            DEFAULT_EASING_DURATION,
+        ),
+    }
+}
+
 /// Stateful driver for a [`Ragdoll`] (`hknpRagdollStateManager` subset).
 ///
 /// Call [`RagdollController::step`] before `World::step`, as with the vehicle
@@ -168,6 +189,8 @@ pub struct RagdollController {
     penetration: Option<PenetrationInput>,
     penetration_resolved: bool,
     last_penetration: DetectionOutput,
+    easing: Option<EaseConstraintsAction>,
+    at_rest: Option<AtRestTransition>,
 }
 
 impl RagdollController {
@@ -187,6 +210,8 @@ impl RagdollController {
             penetration: None,
             penetration_resolved: false,
             last_penetration: DetectionOutput::default(),
+            easing: None,
+            at_rest: None,
         };
         controller.set_state(world, initial_state);
         controller
@@ -215,6 +240,11 @@ impl RagdollController {
     /// Most recent penetration-detection result.
     pub fn last_penetration(&self) -> &DetectionOutput {
         &self.last_penetration
+    }
+
+    /// Active constraint-easing action, if the current state has one.
+    pub fn easing(&self) -> Option<&EaseConstraintsAction> {
+        self.easing.as_ref()
     }
 
     /// Enable or disable penetration resolution before each state step.
@@ -251,7 +281,16 @@ impl RagdollController {
     /// `Keyframed`, dynamic for `Dynamic` and `Powered` (except the powered
     /// root when `keyframe_root` is set).
     pub fn set_state(&mut self, world: &mut World, state: RagdollState) {
+        if let Some(mut action) = self.easing.take() {
+            // The SDK checks the *incoming* state's easing mode: entering an
+            // enforcing state restores immediately, entering another loosened
+            // state drops the old action without restoring.
+            if easing_for(state).0 == ConstraintEasingMode::Enforce {
+                action.restore_now(world);
+            }
+        }
         self.transition = None;
+        self.at_rest = None;
         self.state = state;
         self.penetration_resolved = false;
         let keyframe_root = self.keyframe_root;
@@ -269,6 +308,23 @@ impl RagdollController {
                 RagdollState::Powered => MotionType::Dynamic,
             };
             world.set_body_motion_type(body, motion_type);
+        }
+
+        let (mode, duration) = easing_for(state);
+        if mode != ConstraintEasingMode::Enforce {
+            let ids: Vec<_> = self
+                .ragdoll
+                .constraints()
+                .iter()
+                .flatten()
+                .copied()
+                .collect();
+            let mut action = EaseConstraintsAction::new(world, &ids);
+            action.loosen(world);
+            if mode == ConstraintEasingMode::LoosenThenRestore {
+                action.restore(world, duration);
+            }
+            self.easing = Some(action);
         }
     }
 
@@ -294,6 +350,35 @@ impl RagdollController {
             duration: blend_seconds,
         });
         self.strength = 1.0;
+        Ok(())
+    }
+
+    /// Queue an `hknpRagdollStateAutoTransitionAtRest`-style transition.
+    ///
+    /// The `via` state is entered immediately; after each step, the final
+    /// state is entered once every tagged body's linear/angular velocity is
+    /// within the given component tolerances (SDK defaults `1e-2` / `1e-1`).
+    pub fn begin_at_rest_transition(
+        &mut self,
+        world: &mut World,
+        via: RagdollState,
+        final_state: RagdollState,
+        linear_tolerance: f32,
+        angular_tolerance: f32,
+    ) -> Result<(), RagdollError> {
+        if linear_tolerance < 0.0
+            || angular_tolerance < 0.0
+            || !linear_tolerance.is_finite()
+            || !angular_tolerance.is_finite()
+        {
+            return Err(RagdollError::InvalidTolerance);
+        }
+        self.set_state(world, via);
+        self.at_rest = Some(AtRestTransition {
+            final_state,
+            linear_tolerance,
+            angular_tolerance,
+        });
         Ok(())
     }
 
@@ -342,10 +427,49 @@ impl RagdollController {
                     ..transition
                 });
             }
-            return Ok(());
+        } else {
+            self.step_state(world, desired_local, model_to_world, delta_time)?;
         }
 
-        self.step_state(world, desired_local, model_to_world, delta_time)
+        let easing_done = match self.easing.as_mut() {
+            Some(action) => action.step(world, delta_time),
+            None => false,
+        };
+        if easing_done {
+            self.easing = None;
+        }
+
+        if let Some(at_rest) = self.at_rest {
+            if self.all_bodies_at_rest(world, at_rest.linear_tolerance, at_rest.angular_tolerance) {
+                self.at_rest = None;
+                self.set_state(world, at_rest.final_state);
+            }
+        }
+        Ok(())
+    }
+
+    fn all_bodies_at_rest(
+        &self,
+        world: &World,
+        linear_tolerance: f32,
+        angular_tolerance: f32,
+    ) -> bool {
+        for (index, bone) in self.ragdoll.bones().iter().enumerate() {
+            let Some(body) = bone.body else {
+                continue;
+            };
+            if self.bone_strengths.get(index).copied().unwrap_or(1.0) <= 0.0 {
+                continue;
+            }
+            let linear = world.body_linear_velocity(body).unwrap_or(Vector4::ZERO);
+            let angular = world.body_angular_velocity(body).unwrap_or(Vector4::ZERO);
+            if !linear.all_equal3(Vector4::ZERO, linear_tolerance)
+                || !angular.all_equal3(Vector4::ZERO, angular_tolerance)
+            {
+                return false;
+            }
+        }
+        true
     }
 
     fn step_state(

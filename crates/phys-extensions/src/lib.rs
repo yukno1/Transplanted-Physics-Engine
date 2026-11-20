@@ -11,18 +11,20 @@
 //! | [`ragdoll`] | `Extensions/Ragdoll` + `KeyFrameUtil` | bone hierarchy binding, constraint creation, drive-to-pose and hard keyframes |
 //! | [`ragdoll_controller`] | `Extensions/Ragdoll/StateMachine` | Keyframed/Dynamic/Powered states, timed transition and powered motor blender |
 //! | [`ragdoll_penetration`] | `Extensions/Ragdoll/Utils/hknpRagdollPenetrationUtil` | root/bone penetration detection, status propagation and corrective impulses |
+//! | [`ragdoll_ease`] | `Extensions/Actions/EaseConstraints` + state easing modes | save/loosen/restore ragdoll cone/twist limits, at-rest transition helper |
 //!
 //! # Blocked extension systems
 //!
 //! The CharacterControl `RigidBody` / `RayCasting` routes are not ported; they
-//! need the post-step deactivation/contact framework.  The ragdoll
-//! ease-constraints action is likewise out of scope; the proxy/state subset
-//! lives in [`character`] and the explicit ragdoll driving subset lives in
-//! [`ragdoll`].
+//! need the post-step deactivation/contact framework.  Limited-hinge and 6DOF
+//! easing, motion sharing and the `ActionManager` integration are out of scope;
+//! the proxy/state subset lives in [`character`] and the explicit ragdoll
+//! driving subset lives in [`ragdoll`].
 
 pub mod character;
 pub mod ragdoll;
 pub mod ragdoll_controller;
+pub mod ragdoll_ease;
 pub mod ragdoll_penetration;
 pub mod vehicle;
 pub mod world_hash;
@@ -37,6 +39,10 @@ pub use ragdoll::{Ragdoll, RagdollBone, RagdollData, RagdollError, RagdollLimits
 pub use ragdoll_controller::{
     BlendedRagdollMotor, RagdollController, RagdollControllerCinfo, RagdollMotorParams,
     RagdollState,
+};
+pub use ragdoll_ease::{
+    ConstraintEasingMode, DEFAULT_EASING_DURATION, EaseConstraintsAction, RagdollLimitSnapshot,
+    SMALL_TOLERANCE, lerp,
 };
 pub use ragdoll_penetration::{
     BodyHierarchy, DetectionOutput, EXCLUDED, HierarchyNode, NO_PARENT, Penetration,

@@ -118,6 +118,8 @@ pub enum RagdollError {
     InvalidStrength,
     /// A timed state transition had a non-positive or non-finite duration.
     InvalidDuration,
+    /// An at-rest transition tolerance was negative or non-finite.
+    InvalidTolerance,
 }
 
 impl core::fmt::Display for RagdollError {
@@ -132,6 +134,12 @@ impl core::fmt::Display for RagdollError {
             Self::InvalidStrength => write!(f, "ragdoll strength must be within [0, 1]"),
             Self::InvalidDuration => {
                 write!(f, "ragdoll transition duration must be positive and finite")
+            }
+            Self::InvalidTolerance => {
+                write!(
+                    f,
+                    "ragdoll at-rest tolerance must be non-negative and finite"
+                )
             }
         }
     }
