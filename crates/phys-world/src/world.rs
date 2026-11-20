@@ -1018,6 +1018,45 @@ impl World {
             .is_some()
     }
 
+    /// Switch a non-static body between `Dynamic` and `Keyframed` motion.
+    ///
+    /// Mirrors the `setBodyMotionType` calls made by
+    /// `hknpRagdollStateManager::makeDynamic` / `makeKeyframed`. No motion slot
+    /// is reallocated: static transitions and unknown ids return `false`.
+    pub fn set_body_motion_type(&mut self, body_id: BodyId, motion_type: MotionType) -> bool {
+        let Some(body) = self.bodies.get(body_id) else {
+            return false;
+        };
+        if body.is_static() || motion_type.is_static() {
+            return false;
+        }
+        let motion_id = body.motion_id;
+        if motion_id == MotionId::PRESET_STATIC || self.motions.get(motion_id).is_none() {
+            return false;
+        }
+        if let Some(motion) = self.motions.get_mut(motion_id) {
+            if motion.motion_type == motion_type {
+                return true;
+            }
+            motion.motion_type = motion_type;
+        }
+        if let Some(body) = self.bodies.get_mut(body_id) {
+            body.flags
+                .set(CollisionFlags::IS_DYNAMIC, motion_type.is_dynamic());
+            body.flags
+                .set(CollisionFlags::IS_KEYFRAMED, !motion_type.is_dynamic());
+            body.flags
+                .set(CollisionFlags::IS_ACTIVE, motion_type.is_dynamic());
+        }
+        // A keyframed body has no sleep state; dropping it prevents a stale
+        // sleeping flag when the body is later made dynamic again.
+        self.sleep_states.remove(&body_id);
+        if motion_type.is_dynamic() {
+            self.wake_if_dynamic(body_id);
+        }
+        true
+    }
+
     /// A body's linear velocity.
     pub fn body_linear_velocity(&self, body_id: BodyId) -> Option<Vector4> {
         let body = self.bodies.get(body_id)?;
@@ -2053,6 +2092,28 @@ mod tests {
                 .unwrap()
                 .all_equal3(Vector4::from_xyz(3.0, 0.0, 0.0), 1e-6)
         );
+    }
+
+    #[test]
+    fn set_body_motion_type_switches_dynamic_and_keyframed() {
+        let mut world = World::new(WorldCinfo::new());
+        let body = world.create_body(&dynamic_cinfo(0.5));
+        let motion_id = world.body(body).unwrap().motion_id;
+        assert!(world.set_body_motion_type(body, MotionType::Keyframed));
+        assert!(world.body(body).unwrap().is_keyframed());
+        assert!(!world.body(body).unwrap().is_dynamic());
+        assert_eq!(
+            world.motion(motion_id).unwrap().motion_type,
+            MotionType::Keyframed
+        );
+        assert!(world.set_body_motion_type(body, MotionType::Dynamic));
+        assert!(world.body(body).unwrap().is_dynamic());
+        assert_eq!(world.body(body).unwrap().motion_id, motion_id);
+
+        let static_body = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
+        assert!(!world.set_body_motion_type(static_body, MotionType::Dynamic));
+        assert!(!world.set_body_motion_type(body, MotionType::Static));
+        assert!(!world.set_body_motion_type(BodyId::invalid(), MotionType::Keyframed));
     }
 
     #[test]

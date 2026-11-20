@@ -158,8 +158,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧） | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 | ✅ 已实现（Phase 8/11/12） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -575,6 +575,21 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 无 body 的末端骨骼按父世界姿态 × 参考变换回退（对应原版 `getWorldFromBoneTransform` 的末端逻辑）；骨骼顺序要求父在子前，`create` 校验并在非法索引时返回 `InvalidBone`。
 - 验证：层级姿态合成、非法 dt/strength/pose 长度、硬关键帧轴角速度；集成覆盖三体链约束建立与碰撞屏蔽、90 步 drive 收敛、硬关键帧传送、两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### 后续子集：Ragdoll 状态机 + powered 电机 blender（✅ 已完成，2026-11-20）
+交付（`phys-world` 新增 1 个单元测试，78 → 79 个；`phys-extensions` 新增 4 个单元测试，49 → 53 个；新增集成测试 `tests/ragdoll_state_machine.rs` 4 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-world` | `World::set_body_motion_type`（Dynamic ↔ Keyframed，`setBodyMotionType` 子集）：改 motion type 与 body flags、清理休眠状态并唤醒动态体；静态体/未知 ID 返回 false，不重分配 motion slot |
+| `phys-extensions/ragdoll_controller.rs` | `RagdollState::{Keyframed,Dynamic,Powered}` 状态机（tag mask 以 bone strength 表示，0 表示排除）、`set_state` 切换 tagged body 运动类型、`keyframeRoot` 精确锁根；`begin_timed_transition` 复刻 `AutoTransitionTimed` 的 `1 - elapsed/total` 淡出后进入终态；`RagdollMotorParams::blend` 按 SDK `lerp(lower, upper, sqrt(strength))` 混合 maxForce/tau/damping（recovery velocity 原样透传）；`Ragdoll::apply_hard_keyframe_bone` 支持单骨 keyframe |
+
+决策与偏差：
+
+- **powered 用速度驱动代替位置电机**：本仓库 `RagdollJoint` 是 limits-only 行集，未移植 constraint atom / 位置电机；blender 仍按原版公式计算 SDK 电机参数并暴露 `last_motor()` 供校验，实际位姿驱动走已移植的 `Ragdoll::drive_to_pose` 速度插值（根骨按 `keyframeRoot` 精确设姿）。
+- **状态切换仅 Dynamic ↔ Keyframed**：`setBodyMotionType(STATIC)` 需要重新分配 motion slot，本子集拒绝静态转换（状态机三种基本状态不依赖静态切换）；timed transition 采用"淡出后切换终态"，未移植 `AutoTransitionAtRest`、约束松弛 action、penetration utility 与 motion sharing。
+- **淡出时序照抄原版**：先按 `elapsed/duration` 计算强度并执行 via 状态，再累加 `elapsed`；`elapsed + dt >= duration` 时强度置 0、执行最后一次后切到终态。
+- **验证**：Keyframed 重力下 60 步保持精确位姿、Powered 逐步注入驱动速度并产出正确 `sqrt` 混合参数、timed transition 强度单调淡出并进入 Dynamic、混合场景两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -601,6 +616,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | Ragdoll 调度层 | 骨骼参考姿态（父在子前）在建链时推导 body 局部 pivot/轴，复用 `RagdollCinfo` cone/twist 关节并屏蔽相邻体碰撞；`calcDesiredPoseWorldSpace` 逐骨父子合成，`driveToPose` 用 KeyFrameUtil 风格速度按 strength 插值写回，`applyHardKeyframe` 精确设姿并写入所需线/角速度（>20° 用轴角、小角用虚部近似）；显式调用代替 action/state machine |
+| Ragdoll 状态机 + 电机 blender | Keyframed/Dynamic/Powered 按 bone strength（tag mask 子集）切换 body 运动类型，`keyframeRoot` 用单骨硬关键帧锁根；Powered 因 `RagdollJoint` 无位置电机而走 `drive_to_pose` 速度驱动，`maxForce`/`tau`/`damping` 仍按原版 `lerp(lower, upper, sqrt(strength))` 计算并暴露；timed transition 先按 `elapsed/duration` 淡出再累加时间，终态在 `elapsed+dt>=duration` 时切入 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；2014 legacy tagfile 为独立变长 tag 流（符号-幅度整数 + 字符串表 + 元数据 + 对象位图 + 前向引用），不套 HFF 段树；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
@@ -672,13 +688,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 16 后续子集（hkx 类型 compendium，2026-11-18）：`TCM0` / `TCID` 签名解析、`TCRF` 引用校验与类型表合并；`base-serialize` 18 → 27 个单元测试，门面集成测试 2 → 3 个
 - [x] Phase 16 后续子集（2014 legacy binary tagfile，2026-11-18）：magic/变长整数/字符串表/元数据/对象树与前向引用解析；`base-serialize` 27 → 31 个单元测试，门面集成测试 3 → 4 个
 - [x] 后续子集（Ragdoll 调度层，2026-11-20）：骨骼层级绑定 + `RagdollCinfo` 链 + `drive_to_pose`/`apply_hard_keyframe`；`phys-extensions` 46 → 49 个单元测试，新增集成测试 `ragdoll_scheduling.rs` 4 个
-- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll 状态机/电机 blender/penetration utility；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
+- [x] 后续子集（Ragdoll 状态机 + powered 电机 blender，2026-11-20）：Keyframed/Dynamic/Powered 状态与 tagged body 运动类型切换、`keyframeRoot` 单骨 keyframe、timed transition 淡出、sqrt 混合电机参数；`World::set_body_motion_type`；`phys-world` 78 → 79、`phys-extensions` 49 → 53 个单元测试，新增集成测试 `ragdoll_state_machine.rs` 4 个
+- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll penetration utility / ease-constraints action；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
-仓库现状（2026-11-18）：
+仓库现状（2026-11-20）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`；本次 Ragdoll 调度层子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`；本次 Ragdoll 状态机子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

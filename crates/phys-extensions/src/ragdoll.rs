@@ -7,8 +7,9 @@
 //! The SDK derives joint cinfos from an `hknpPhysicsSystemData`; this subset
 //! takes already-created bodies plus a bone hierarchy with reference poses and
 //! builds the `RagdollCinfo` chain on [`phys_world::World`].  The animation
-//! skeleton, action manager, ease-constraints action, penetration utility,
-//! motor blender and ragdoll state machine are not ported: the caller drives
+//! skeleton, action manager, ease-constraints action and penetration utility
+//! are not ported.  The motor blender and ragdoll state machine live in
+//! [`crate::ragdoll_controller`]; callers may also drive
 //! [`Ragdoll::drive_to_pose`] or [`Ragdoll::apply_hard_keyframe`] explicitly,
 //! before/after `World::step`, as the vehicle extension does.
 
@@ -115,6 +116,8 @@ pub enum RagdollError {
     InvalidDeltaTime,
     /// Drive strength was outside `[0, 1]` or non-finite.
     InvalidStrength,
+    /// A timed state transition had a non-positive or non-finite duration.
+    InvalidDuration,
 }
 
 impl core::fmt::Display for RagdollError {
@@ -127,6 +130,9 @@ impl core::fmt::Display for RagdollError {
             }
             Self::InvalidDeltaTime => write!(f, "ragdoll delta time must be positive and finite"),
             Self::InvalidStrength => write!(f, "ragdoll strength must be within [0, 1]"),
+            Self::InvalidDuration => {
+                write!(f, "ragdoll transition duration must be positive and finite")
+            }
         }
     }
 }
@@ -340,25 +346,54 @@ impl Ragdoll {
         let inv_dt = inverse_delta_time(delta_time)?;
         let desired = self.calc_desired_pose_world_space(pose_model_space, world_from_model)?;
         for (index, bone) in self.bones.iter().enumerate() {
-            let Some(body) = bone.body else {
-                continue;
-            };
-            let current = world
-                .body_transform(body)
-                .ok_or(RagdollError::MissingBody(index))?;
-            let target = desired[index];
-            let mut linear = (target.translation - current.translation) * inv_dt;
-            linear.w = 0.0;
-            let mut angular = required_angular_velocity(
-                current.rotation_quaternion(),
-                target.rotation_quaternion(),
-                inv_dt,
-            );
-            angular.w = 0.0;
-            world.set_body_transform(body, target);
-            world.set_body_linear_velocity(body, linear);
-            world.set_body_angular_velocity(body, angular);
+            if bone.body.is_some() {
+                self.hard_keyframe_bone(world, index, desired[index], inv_dt)?;
+            }
         }
+        Ok(())
+    }
+
+    /// Hard-keyframe a single bone to an already world-space transform.
+    ///
+    /// Used by the powered state's `keyframeRoot` path, where only the root
+    /// body is locked while the remaining bones are driven by motors.
+    pub fn apply_hard_keyframe_bone(
+        &self,
+        world: &mut World,
+        bone_index: usize,
+        pose_world: Transform,
+        delta_time: f32,
+    ) -> Result<(), RagdollError> {
+        let inv_dt = inverse_delta_time(delta_time)?;
+        self.hard_keyframe_bone(world, bone_index, pose_world, inv_dt)
+    }
+
+    fn hard_keyframe_bone(
+        &self,
+        world: &mut World,
+        bone_index: usize,
+        pose_world: Transform,
+        inv_dt: f32,
+    ) -> Result<(), RagdollError> {
+        let bone = self
+            .bones
+            .get(bone_index)
+            .ok_or(RagdollError::InvalidBone(bone_index))?;
+        let body = bone.body.ok_or(RagdollError::MissingBody(bone_index))?;
+        let current = world
+            .body_transform(body)
+            .ok_or(RagdollError::MissingBody(bone_index))?;
+        let mut linear = (pose_world.translation - current.translation) * inv_dt;
+        linear.w = 0.0;
+        let mut angular = required_angular_velocity(
+            current.rotation_quaternion(),
+            pose_world.rotation_quaternion(),
+            inv_dt,
+        );
+        angular.w = 0.0;
+        world.set_body_transform(body, pose_world);
+        world.set_body_linear_velocity(body, linear);
+        world.set_body_angular_velocity(body, angular);
         Ok(())
     }
 }

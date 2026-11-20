@@ -9,17 +9,19 @@
 //! | [`vehicle`] | `Extensions/Vehicle` | ray-cast suspension + default engine/transmission + simplified friction solver (Phase 13 subset) |
 //! | [`character`] | `Extensions/CharacterControl` | surface info + simplex solver + character proxy + state machine (OnGround/Jumping/InAir) (Phase 15 subset) |
 //! | [`ragdoll`] | `Extensions/Ragdoll` + `KeyFrameUtil` | bone hierarchy binding, constraint creation, drive-to-pose and hard keyframes |
+//! | [`ragdoll_controller`] | `Extensions/Ragdoll/StateMachine` | Keyframed/Dynamic/Powered states, timed transition and powered motor blender |
 //!
 //! # Blocked extension systems
 //!
 //! The CharacterControl `RigidBody` / `RayCasting` routes are not ported; they
-//! need the post-step deactivation/contact framework.  The ragdoll state
-//! machine, motor blender, penetration utility and ease-constraints action are
-//! likewise out of scope; the proxy/state subset lives in [`character`] and
-//! the explicit ragdoll driving subset lives in [`ragdoll`].
+//! need the post-step deactivation/contact framework.  The ragdoll penetration
+//! utility and ease-constraints action are likewise out of scope; the
+//! proxy/state subset lives in [`character`] and the explicit ragdoll driving
+//! subset lives in [`ragdoll`].
 
 pub mod character;
 pub mod ragdoll;
+pub mod ragdoll_controller;
 pub mod vehicle;
 pub mod world_hash;
 
@@ -30,6 +32,10 @@ pub use character::{
 };
 
 pub use ragdoll::{Ragdoll, RagdollBone, RagdollData, RagdollError, RagdollLimits};
+pub use ragdoll_controller::{
+    BlendedRagdollMotor, RagdollController, RagdollControllerCinfo, RagdollMotorParams,
+    RagdollState,
+};
 
 pub use vehicle::{
     DriverInput, EngineOutput, EngineSetup, TransmissionSetup, VehicleInstance, VehicleSetup,
