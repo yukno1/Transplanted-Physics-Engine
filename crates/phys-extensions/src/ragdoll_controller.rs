@@ -16,6 +16,9 @@ use phys_types::MotionType;
 use phys_world::World;
 
 use crate::ragdoll::{Ragdoll, RagdollError};
+use crate::ragdoll_penetration::{
+    BodyHierarchy, DetectionOutput, PenetrationInput, detect_and_resolve_penetration,
+};
 
 /// Ragdoll states mirroring the SDK's basic `hknpRagdollState::StateId`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,6 +165,9 @@ pub struct RagdollController {
     keyframe_root: bool,
     transition: Option<TimedTransition>,
     last_motor: Option<BlendedRagdollMotor>,
+    penetration: Option<PenetrationInput>,
+    penetration_resolved: bool,
+    last_penetration: DetectionOutput,
 }
 
 impl RagdollController {
@@ -178,6 +184,9 @@ impl RagdollController {
             keyframe_root: cinfo.keyframe_root,
             transition: None,
             last_motor: None,
+            penetration: None,
+            penetration_resolved: false,
+            last_penetration: DetectionOutput::default(),
         };
         controller.set_state(world, initial_state);
         controller
@@ -201,6 +210,20 @@ impl RagdollController {
     /// Bone strengths, in bone order (missing entries in driving default to `1`).
     pub fn bone_strengths(&self) -> &[f32] {
         &self.bone_strengths
+    }
+
+    /// Most recent penetration-detection result.
+    pub fn last_penetration(&self) -> &DetectionOutput {
+        &self.last_penetration
+    }
+
+    /// Enable or disable penetration resolution before each state step.
+    ///
+    /// Once a clean detection snapshot is obtained, resolution is skipped
+    /// until [`RagdollController::set_state`] or this method is called again.
+    pub fn set_penetration_input(&mut self, input: Option<PenetrationInput>) {
+        self.penetration = input;
+        self.penetration_resolved = false;
     }
 
     /// Clamp and set the drive strength (`hknpRagdollController::setStrength`).
@@ -230,6 +253,7 @@ impl RagdollController {
     pub fn set_state(&mut self, world: &mut World, state: RagdollState) {
         self.transition = None;
         self.state = state;
+        self.penetration_resolved = false;
         let keyframe_root = self.keyframe_root;
         for (index, bone) in self.ragdoll.bones().iter().enumerate() {
             let Some(body) = bone.body else {
@@ -286,6 +310,22 @@ impl RagdollController {
     ) -> Result<(), RagdollError> {
         if delta_time <= 0.0 || !delta_time.is_finite() {
             return Err(RagdollError::InvalidDeltaTime);
+        }
+
+        if !self.penetration_resolved {
+            if let Some(input) = self.penetration {
+                let hierarchy =
+                    BodyHierarchy::from_ragdoll(world, &self.ragdoll, Some(&self.bone_strengths));
+                if detect_and_resolve_penetration(
+                    world,
+                    &hierarchy,
+                    &input,
+                    delta_time,
+                    &mut self.last_penetration,
+                ) {
+                    self.penetration_resolved = true;
+                }
+            }
         }
 
         if let Some(transition) = self.transition {

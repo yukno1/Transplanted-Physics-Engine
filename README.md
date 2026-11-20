@@ -159,7 +159,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -586,9 +586,23 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 决策与偏差：
 
 - **powered 用速度驱动代替位置电机**：本仓库 `RagdollJoint` 是 limits-only 行集，未移植 constraint atom / 位置电机；blender 仍按原版公式计算 SDK 电机参数并暴露 `last_motor()` 供校验，实际位姿驱动走已移植的 `Ragdoll::drive_to_pose` 速度插值（根骨按 `keyframeRoot` 精确设姿）。
-- **状态切换仅 Dynamic ↔ Keyframed**：`setBodyMotionType(STATIC)` 需要重新分配 motion slot，本子集拒绝静态转换（状态机三种基本状态不依赖静态切换）；timed transition 采用"淡出后切换终态"，未移植 `AutoTransitionAtRest`、约束松弛 action、penetration utility 与 motion sharing。
+- **状态切换仅 Dynamic ↔ Keyframed**：`setBodyMotionType(STATIC)` 需要重新分配 motion slot，本子集拒绝静态转换（状态机三种基本状态不依赖静态切换）；timed transition 采用"淡出后切换终态"，未移植 `AutoTransitionAtRest`、约束松弛 action 与 motion sharing（penetration utility 见下一小节）。
 - **淡出时序照抄原版**：先按 `elapsed/duration` 计算强度并执行 via 状态，再累加 `elapsed`；`elapsed + dt >= duration` 时强度置 0、执行最后一次后切到终态。
 - **验证**：Keyframed 重力下 60 步保持精确位姿、Powered 逐步注入驱动速度并产出正确 `sqrt` 混合参数、timed transition 强度单调淡出并进入 Dynamic、混合场景两次运行 `hvk-trace v1` 逐位一致；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
+### 后续子集：Ragdoll penetration utility（✅ 已完成，2026-11-20）
+交付（`phys-extensions` 新增 3 个单元测试，53 → 56 个；新增集成测试 `tests/ragdoll_penetration.rs` 4 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-extensions/ragdoll_penetration.rs` | `hknpRagdollPenetrationUtil` 子集：`PenetrationStatus`（RAY=1/ANCESTOR=2/CLOSEST_POINT=4）、`ResolveMode`（RESOLVE/RESOLVE_HIERARCHICALLY/RESOLVE_TOWARD_POSITION）与 SDK 默认 `Input`；`BodyHierarchy::from_ragdoll`（bone strength 充当 tag mask）、根嵌入检测（closest-points 深度阈值 + 回退射线）、父子骨骼段射线、祖先状态级联、分层 `DONT_COLLIDE` 掩码、`corrective_impulse`（目标分离速度 `maxResolutionSpeed`）、重力抵消与线/角冲量回写；`RagdollController::set_penetration_input` 在状态步前调用，`last_penetration()` 暴露检测结果 |
+
+决策与偏差：
+
+- **查询能力差异**：`closest_points_to_shape` 需要正搜索半径，因此用 `radius = max(|rootPenetrationTolerance|, 0.1)` 查询后按 `distance <= tolerance` 判定穿透；射线查询不支持"仅背面三角形"与"忽略整个 ragdoll"，用 `QueryFilter::ignore_body` 忽略被查 body、其余靠 `filter_info`；`raycast` 返回最近命中而非 batch collector。
+- **冲量回写**：世界层无 `applyBodyImpulseAt`，按 `v(p)=v_linear+ω×(p−COM)` 计算两体点速度，修正量 `dir·velocityDiff·mass + additionalImpulse` 直接写入 motion 的线速度，并以 `orientation.rotate_inverse` → 对角 inverse inertia → `rotate` 的近似路径更新角速度（不做完整惯量张量）；检测快照判定"是否解决"，与原版一致不在施冲量后重查。
+- **掩码语义**：根嵌入时给所有"有子节点的父 body"置 `DONT_COLLIDE`（单骨 ragdoll 无父节点故不置位，与原版一致）；普通穿透时 RAY/ANCESTOR 节点置位、干净节点清除；`reenable_collisions` 清除全部标志。
+- **验证**：根嵌入球体被向上推离、无穿透场景返回 resolved、层级射线命中地面并记录父节点 RAY + 子节点 ANCESTOR、控制器在状态步前完成修正；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
 ---
 
@@ -617,6 +631,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | Ragdoll 调度层 | 骨骼参考姿态（父在子前）在建链时推导 body 局部 pivot/轴，复用 `RagdollCinfo` cone/twist 关节并屏蔽相邻体碰撞；`calcDesiredPoseWorldSpace` 逐骨父子合成，`driveToPose` 用 KeyFrameUtil 风格速度按 strength 插值写回，`applyHardKeyframe` 精确设姿并写入所需线/角速度（>20° 用轴角、小角用虚部近似）；显式调用代替 action/state machine |
 | Ragdoll 状态机 + 电机 blender | Keyframed/Dynamic/Powered 按 bone strength（tag mask 子集）切换 body 运动类型，`keyframeRoot` 用单骨硬关键帧锁根；Powered 因 `RagdollJoint` 无位置电机而走 `drive_to_pose` 速度驱动，`maxForce`/`tau`/`damping` 仍按原版 `lerp(lower, upper, sqrt(strength))` 计算并暴露；timed transition 先按 `elapsed/duration` 淡出再累加时间，终态在 `elapsed+dt>=duration` 时切入 |
+| Ragdoll penetration utility | 根用 closest-point 深度阈值（负 tolerance）判定嵌入、回退射线找背面；父→子骨骼段 ray 命中记在父节点并级联 ANCESTOR；只给 RAY 且非 ANCESTOR 的顶层节点施加 `maxResolutionSpeed - 相对点速度·法线` 修正冲量（含重力抵消），分层场景下对被穿透子树置 `DONT_COLLIDE`；状态步前检测，快照无穿透即视为已解决 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；2014 legacy tagfile 为独立变长 tag 流（符号-幅度整数 + 字符串表 + 元数据 + 对象位图 + 前向引用），不套 HFF 段树；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
@@ -689,13 +704,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] Phase 16 后续子集（2014 legacy binary tagfile，2026-11-18）：magic/变长整数/字符串表/元数据/对象树与前向引用解析；`base-serialize` 27 → 31 个单元测试，门面集成测试 3 → 4 个
 - [x] 后续子集（Ragdoll 调度层，2026-11-20）：骨骼层级绑定 + `RagdollCinfo` 链 + `drive_to_pose`/`apply_hard_keyframe`；`phys-extensions` 46 → 49 个单元测试，新增集成测试 `ragdoll_scheduling.rs` 4 个
 - [x] 后续子集（Ragdoll 状态机 + powered 电机 blender，2026-11-20）：Keyframed/Dynamic/Powered 状态与 tagged body 运动类型切换、`keyframeRoot` 单骨 keyframe、timed transition 淡出、sqrt 混合电机参数；`World::set_body_motion_type`；`phys-world` 78 → 79、`phys-extensions` 49 → 53 个单元测试，新增集成测试 `ragdoll_state_machine.rs` 4 个
-- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll penetration utility / ease-constraints action；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
+- [x] 后续子集（Ragdoll penetration utility，2026-11-20）：根嵌入检测/回退射线、父→子骨骼段射线与祖先状态级联、`DONT_COLLIDE` 掩码、目标分离速度冲量 + 重力抵消、控制器状态步前修正；`phys-extensions` 53 → 56 个单元测试，新增集成测试 `ragdoll_penetration.rs` 4 个
+- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；Ragdoll ease-constraints action / 状态机插值 action；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）
 
 仓库现状（2026-11-20）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`；本次 Ragdoll 状态机子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`；本次 Ragdoll penetration 子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档
