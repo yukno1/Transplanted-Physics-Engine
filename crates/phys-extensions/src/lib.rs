@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | [`world_hash`] | `Extensions/WorldHash` | deterministic FNV-1a hash of `WorldSnapshot` |
 //! | [`vehicle`] | `Extensions/Vehicle` | ray-cast suspension + default engine/transmission + simplified friction solver (Phase 13 subset) |
-//! | [`character`] | `Extensions/CharacterControl` | surface info + simplex solver + character proxy + state machine (OnGround/Jumping/InAir) (Phase 15 subset) |
+//! | [`character`] | `Extensions/CharacterControl` | surface info + simplex solver + character proxy + state machine (OnGround/Jumping/InAir/Climbing) + trigger enter/exit tracking (Phase 15 subset) |
 //! | [`ragdoll`] | `Extensions/Ragdoll` + `KeyFrameUtil` | bone hierarchy binding, constraint creation, drive-to-pose and hard keyframes |
 //! | [`ragdoll_controller`] | `Extensions/Ragdoll/StateMachine` | Keyframed/Dynamic/Powered states, timed transition and powered motor blender |
 //! | [`ragdoll_penetration`] | `Extensions/Ragdoll/Utils/hknpRagdollPenetrationUtil` | root/bone penetration detection, status propagation and corrective impulses |
@@ -32,7 +32,7 @@ pub mod world_hash;
 pub use character::{
     CharacterContext, CharacterInput, CharacterOutput, CharacterProxy, CharacterProxyCinfo,
     CharacterState, CharacterStateManager, CharacterStateType, Contact as CharacterContact,
-    SupportedState, SurfaceInfo,
+    SupportedState, SurfaceInfo, TriggerEvent, TriggerStatus, TriggerTracker,
 };
 
 pub use ragdoll::{Ragdoll, RagdollBone, RagdollData, RagdollError, RagdollLimits};

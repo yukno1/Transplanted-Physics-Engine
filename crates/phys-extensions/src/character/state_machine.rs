@@ -9,8 +9,9 @@
 //! * [`CharacterState`] trait — `hknpCharacterState` (update / get_next_state /
 //!   enter_state / leave_state).
 //! * Default states [`states::OnGround`], [`states::Jumping`],
-//!   [`states::InAir`] — direct ports of `States/hknpCharacterState{OnGround,
-//!   Jumping,InAir}.*` with the original default parameters.
+//!   [`states::InAir`], [`states::Climbing`] — direct ports of
+//!   `States/hknpCharacterState{OnGround,Jumping,InAir,Climbing}.*` with the
+//!   original default parameters.
 //! * [`CharacterStateManager`] — the state registry (`hknpCharacterStateManager`).
 //! * [`CharacterContext`] — `hknpCharacterContext` including the output
 //!   velocity filter (`updateInternal`, the active `#else` branch) and the
@@ -18,15 +19,15 @@
 //!
 //! # Subset decisions
 //!
-//! * `Climbing` / `Flying` state types exist for API parity but no default
-//!   implementation is registered (the original `Flying` state is never
-//!   entered either; `Climbing` requires ladder queries that are not ported).
+//! * `Flying` exists for API parity but no default implementation is
+//!   registered (the original state is never entered either).
 //! * User states (`HK_CHARACTER_USER_STATE_0..5`), cloning, the
 //!   `CharacterType` discriminator and the deprecated first filter branch
 //!   (`#if 0`) are not ported.
-//! * `hknpCharacterInput::m_atLadder` is dropped together with the Climbing
-//!   state; `m_surfaceDistanceExcess` stays implicit zero (the proxy always
-//!   reports zero, see `hknpCharacterProxy.cpp:202`).
+//! * As in the SDK, `at_ladder` is application-supplied: the SDK has no
+//!   ladder-query utility, so detecting a ladder remains the caller's job.
+//!   `m_surfaceDistanceExcess` stays implicit zero (the proxy always reports
+//!   zero, see `hknpCharacterProxy.cpp:202`).
 
 use std::sync::Arc;
 
@@ -45,7 +46,7 @@ pub enum CharacterStateType {
     Jumping,
     /// Airborne, integrating gravity.
     InAir,
-    /// Climbing a ladder (not registered by the default manager).
+    /// Climbing a ladder (registered by the default manager).
     Climbing,
     /// Free flying (not registered by the default manager).
     Flying,
@@ -60,6 +61,8 @@ pub struct CharacterInput {
     pub input_ud: f32,
     /// Set to try to jump.
     pub want_jump: bool,
+    /// Whether the character is at a ladder (`m_atLadder`, application supplied).
+    pub at_ladder: bool,
     /// Up vector in world space (opposite of gravity).
     pub up: Vector4,
     /// Forward vector in world space (facing direction).
@@ -86,6 +89,7 @@ impl Default for CharacterInput {
             input_lr: 0.0,
             input_ud: 0.0,
             want_jump: false,
+            at_ladder: false,
             up: Vector4::UNIT_Y,
             forward: Vector4::from_xyz(0.0, 0.0, 1.0),
             surface_info: SurfaceInfo::unsupported(),
@@ -285,6 +289,9 @@ pub mod states {
             if input.want_jump {
                 return Some(CharacterStateType::Jumping);
             }
+            if input.at_ladder {
+                return Some(CharacterStateType::Climbing);
+            }
             if input.surface_info.supported_state != SupportedState::Supported {
                 if self.kill_velocity_on_launch {
                     // Remove the velocity in the vertical component.
@@ -431,6 +438,9 @@ pub mod states {
             if input.surface_info.supported_state == SupportedState::Supported {
                 return Some(CharacterStateType::OnGround);
             }
+            if input.at_ladder {
+                return Some(CharacterStateType::Climbing);
+            }
             Some(CharacterStateType::InAir)
         }
 
@@ -466,6 +476,77 @@ pub mod states {
             output.velocity += input.character_gravity * input.delta_time;
         }
     }
+
+    /// Ladder climbing (`hknpCharacterStateClimbing`).
+    ///
+    /// The ladder surface normal doubles as the movement "up" direction.
+    /// Jumping pushes the character away along that normal.
+    pub struct Climbing {
+        /// Feedback gain; the SDK hard-codes `1.0`.
+        pub gain: f32,
+        /// Input scale on the ladder plane.
+        pub climb_speed: f32,
+        /// Constant velocity attracting the character toward the ladder.
+        pub ladder_attraction: f32,
+        /// Maximum velocity change per update.
+        pub max_velocity_delta: f32,
+    }
+
+    impl Default for Climbing {
+        fn default() -> Self {
+            Self {
+                gain: 1.0,
+                climb_speed: 10.0,
+                ladder_attraction: -0.1,
+                max_velocity_delta: 100.0,
+            }
+        }
+    }
+
+    impl CharacterState for Climbing {
+        fn get_next_state(
+            &self,
+            _context: &CharacterContext,
+            input: &CharacterInput,
+            output: &mut CharacterOutput,
+        ) -> Option<CharacterStateType> {
+            if !input.at_ladder {
+                return Some(CharacterStateType::InAir);
+            }
+            if input.want_jump {
+                output.velocity +=
+                    input.surface_info.surface_normal * input.character_gravity.length3();
+                return Some(CharacterStateType::InAir);
+            }
+            Some(CharacterStateType::Climbing)
+        }
+
+        fn update(
+            &self,
+            _context: &CharacterContext,
+            input: &CharacterInput,
+            output: &mut CharacterOutput,
+        ) {
+            let normal = input.surface_info.surface_normal;
+            let mu_input = MovementUtilInput {
+                gain: self.gain,
+                forward: input.forward,
+                up: normal,
+                surface_normal: normal,
+                current_velocity: input.velocity,
+                desired_velocity: Vector4::new(
+                    input.input_ud * self.climb_speed,
+                    input.input_lr * self.climb_speed,
+                    self.ladder_attraction,
+                    0.0,
+                ),
+                max_velocity_delta: self.max_velocity_delta,
+                surface_velocity: input.surface_info.surface_velocity,
+                desired_velocity_space: DesiredVelocitySpace::SurfaceSpace,
+            };
+            calculate_movement(&mu_input, &mut output.velocity);
+        }
+    }
 }
 
 /// State registry shared between contexts (`hknpCharacterStateManager`).
@@ -486,8 +567,8 @@ impl CharacterStateManager {
         }
     }
 
-    /// Registry with the three wired default states (OnGround, Jumping,
-    /// InAir) using the original default parameters.
+    /// Registry with the four wired default states (OnGround, Jumping,
+    /// InAir, Climbing) using the original default parameters.
     pub fn with_default_states() -> Self {
         let mut manager = Self::new();
         manager.register(
@@ -501,6 +582,10 @@ impl CharacterStateManager {
         manager.register(
             CharacterStateType::InAir,
             Box::new(states::InAir::default()),
+        );
+        manager.register(
+            CharacterStateType::Climbing,
+            Box::new(states::Climbing::default()),
         );
         manager
     }

@@ -10,7 +10,8 @@
 //! * [`proxy`] — `hknpCharacterProxy` (self-maintained contact manifold +
 //!   shape-cast driven movement).
 //! * [`state_machine`] — `hknpCharacterStateManager` / `hknpCharacterContext`
-//!   with the three wired default states (OnGround / Jumping / InAir).
+//!   with the four wired default states (OnGround / Jumping / InAir / Climbing).
+//! * [`triggers`] — per-frame trigger enter/exit events by AABB overlap diff.
 //!
 //! The `RigidBody` and `RayCasting` routes depend on the post-step
 //! deactivation/contact framework and are not ported (see README Phase 15).
@@ -29,6 +30,7 @@ pub mod proxy;
 pub mod simplex_solver;
 pub mod state_machine;
 pub mod surface;
+pub mod triggers;
 
 pub use proxy::{CharacterProxy, CharacterProxyCinfo, Contact};
 pub use simplex_solver::{
@@ -41,3 +43,4 @@ pub use state_machine::{
 };
 pub use state_machine::{movement_util, states};
 pub use surface::{SupportedState, SurfaceInfo};
+pub use triggers::{TriggerEvent, TriggerStatus, TriggerTracker};

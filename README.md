@@ -159,7 +159,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 | ✅ 已实现（Phase 10/13/15 + Ragdoll 子集） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -490,7 +490,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 
 - **查询子集**：原版 `hknpAllHitsCollector`（起点接触 + cast）改为——起点接触由逐 body 最近点查询重建（`keepDistance + keepContactTolerance` 内全部凸体 body），cast 用 `World::cast_shape` 单最近命中；网格/HeightField/复合体不进入流形（GJK 仅凸体）
 - **resolveContacts 子集**：仅线性冲量（跳过角惯性项），经 `set_body_linear_velocity` + `wake_body` 写回；phantom presence/trigger/listener/LOD/multi-thread task graph 未移植，proxy 为独立对象按调用传 `&World`
-- StateMachine：`Climbing`/`Flying` 类型保留但默认管理器不注册（原版 Flying 也从不进入；Climbing 依赖梯子查询）；user states/克隆/`CharacterType`/弃用滤波分支（`#if 0`）未移植；`m_atLadder` 随 Climbing 一并裁剪
+- StateMachine：`Climbing`/`Flying` 类型保留但本阶段默认管理器不注册（原版 Flying 也从不进入；Climbing 当时依赖梯子查询）；user states/克隆/`CharacterType`/弃用滤波分支（`#if 0`）未移植；`m_atLadder` 当时随 Climbing 一并裁剪（Climbing 与 trigger 追踪见后续子集）
 - **关键行为考证**：simplex 平面距离采用原版 `plane.dot4xyz1(pos)` 约定（点 w 分量为平面常数槽）；SLIDING 分类按原版 `cosSqr < maxSlopeCosine²`（大多数垂直输入方向场景被 max-slope 阻挡平面置零速度抢先判为 SUPPORTED，属原版行为）；`addMaxSlopePlane` 用原始 `maxSlopeCosine`（0.1 下限属未移植的旋转表面接触点投影修正）
 - **验证**：simplex（自由运动/地面截停/双墙走廊/三面夹角/静态摩擦吸附/传送带携带/重复平面/确定性）、proxy（落地静置 y≈1.0/撞墙停距/陡坡阻挡/推挤 dynamic box/Cinfo 默认值/确定性）、状态机（走速收敛/跳跃状态链 OnGround→Jumping→InAir→OnGround/单帧冲量/空中重力/离地过渡/predict 不改状态/滤波限加速度/未注册状态 panic）、集成（走墙停距/跳跃落回/推箱/逐位确定性/陡坡流形+分类）；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
@@ -634,6 +634,20 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **版本匹配按 `TypeMeta.version` + 类名**：`TBDY` 的 `OPT_VERSION`（bit 4）此前已解码但无 fixture 覆盖；本子集新增带 version 的合成 `TAG0`，以 `old_name`/`old_version` 精确选 patch，未按 SDK 的依赖图做链式解析（调用方可连续登记各版本 patch）。
 - **验证**：SDKV 与类型版本解码、rename/default-set/add 应用与 `PatchReport` 计数、packfile/tagfile/NT6/XML 头嗅探；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### 后续子集：CharacterControl Climbing + trigger 追踪（✅ 已完成，2026-11-20）
+交付（`phys-extensions` 新增 1 个单元测试，58 → 59 个；新增集成测试 `tests/character_climbing.rs` 4 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-extensions/character/state_machine.rs` | `CharacterInput::at_ladder`（原版 `m_atLadder`）、`states::Climbing`（gain=1、climb speed=10、ladder attraction=-0.1、max delta=100，使用已移植的 `calculate_movement` 在梯面坐标系求解），默认管理器注册 Climbing；OnGround/InAir 在 jump/supported 判断后按 `at_ladder` 转入 Climbing，Climbing 退出时无梯则 InAir、跳跃则沿梯面法线施加 `|gravity|` 速度后 InAir |
+| `phys-extensions/character/triggers.rs` | `TriggerTracker` 逐帧用扩展 AABB 取候选 body 并与上一帧集合做差，产出按 `BodyId` 排序的 `TriggerEvent::{Entered,Exited}`；`clear()` 发出全部退出事件 |
+
+决策与偏差：
+
+- **梯子是应用层概念**：2021.2 源码内没有 `hknpCharacterLadderUtils` 或 ladder volume 查询，原版仅由应用设置 `m_atLadder` 与 surface normal；本子集照此提供状态和输入字段，不内置梯子检测。
+- **trigger 用 AABB 近似**：原版通过 material `TRIGGER_TYPE` 在查询 collector 中分离 trigger hit、并维护 phantom body 与 `hknpProxyListener` 回调；本子集只用 `World::query_aabb` + body AABB 做重叠判定，按 `BodyId` 识别，未移植 shape key、`STATUS_UPDATED`、listener trait、phantom 与 one-frame pass-through 的同帧双事件。
+- **验证**：OnGround/InAir 进梯、Climbing 移动速度非零、沿法线跳跃速度精确、离梯回 InAir；trigger 进入/静止无事件/退出/清空；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -659,6 +673,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 碰撞过滤 | 32 位 `collision_filter_info` 按 group filter `Config<5,5,5,16>` 打包（layer/subsystem/dont-collide/system group）；同非零 system group 绕过 layer LUT 且 subsystem 全 0 的对不碰撞（原版 `.inl` 语义）；body 对决策在候选对收集末尾（`DONT_COLLIDE` 之后），查询决策经 `QueryFilter.filter_info`；pair 过滤器用引用计数禁用表 + 子过滤器链；所有决策确定性、无随机迭代序 |
 | 查询 | raycast 用 GJK 点-形状距离做 conservative advancement（复合体按 BVH/单元/子实例遍历，三角形解析求交）；shape cast 用凸-凸 GJK 距离按闭合速率推进到容差；世界查询按 `(distance, body id)` 决胜负，`QueryFilter` 只决定参与集合；重叠最近点用 EPA 深度返回负距离 |
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
+| CharacterControl Climbing/trigger | 原版无 ladder 查询工具，`m_atLadder` 与梯面 normal 由应用提供；Climbing 在梯面坐标系用 `calculate_movement`，desired=(inputUD·10, inputLR·10, −0.1)、gain=1、maxDelta=100，跳跃沿梯面法线加 `|gravity|` 速度；trigger 用 AABB 重叠差分按 `BodyId` 产出 Entered/Exited（按 id 排序），不模拟 material trigger、shape key 与 listener 回调 |
 | Ragdoll 调度层 | 骨骼参考姿态（父在子前）在建链时推导 body 局部 pivot/轴，复用 `RagdollCinfo` cone/twist 关节并屏蔽相邻体碰撞；`calcDesiredPoseWorldSpace` 逐骨父子合成，`driveToPose` 用 KeyFrameUtil 风格速度按 strength 插值写回，`applyHardKeyframe` 精确设姿并写入所需线/角速度（>20° 用轴角、小角用虚部近似）；显式调用代替 action/state machine |
 | Ragdoll 状态机 + 电机 blender | Keyframed/Dynamic/Powered 按 bone strength（tag mask 子集）切换 body 运动类型，`keyframeRoot` 用单骨硬关键帧锁根；Powered 因 `RagdollJoint` 无位置电机而走 `drive_to_pose` 速度驱动，`maxForce`/`tau`/`damping` 仍按原版 `lerp(lower, upper, sqrt(strength))` 计算并暴露；timed transition 先按 `elapsed/duration` 淡出再累加时间，终态在 `elapsed+dt>=duration` 时切入 |
 | Ragdoll penetration utility | 根用 closest-point 深度阈值（负 tolerance）判定嵌入、回退射线找背面；父→子骨骼段 ray 命中记在父节点并级联 ANCESTOR；只给 RAY 且非 ANCESTOR 的顶层节点施加 `maxResolutionSpeed - 相对点速度·法线` 修正冲量（含重力抵消），分层场景下对被穿透子树置 `DONT_COLLIDE`；状态步前检测，快照无穿透即视为已解决 |
@@ -739,13 +754,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（Ragdoll penetration utility，2026-11-20）：根嵌入检测/回退射线、父→子骨骼段射线与祖先状态级联、`DONT_COLLIDE` 掩码、目标分离速度冲量 + 重力抵消、控制器状态步前修正；`phys-extensions` 53 → 56 个单元测试，新增集成测试 `ragdoll_penetration.rs` 4 个
 - [x] 后续子集（Ragdoll 约束松弛 + at-rest 自动转换，2026-11-20）：`EaseConstraintsAction` 保存/放宽/线性回弹 cone/twist；Dynamic 状态 4s 回弹、进入 enforcing 态立即还原；`begin_at_rest_transition` 按速度阈值切换终态；`phys-extensions` 56 → 58 个单元测试，新增集成测试 `ragdoll_easing.rs` 3 个
 - [x] 后续子集（hkx 格式嗅探 + 版本 patching，2026-11-20）：`detect_format`（packfile/TAG0/TCM0/NT6/2014 tagfile/XML）、`PatchInfo`/`PatchSet` 结构型 patch（rename/remove/add/default-set）递归应用于 `Value` 树、`Bundle.sdk_version` 保留 SDKV；`base-serialize` 31 → 34 个单元测试，新增集成测试 `hkx_version_patching.rs` 3 个
-- [ ] 后续：真正的 packfile 容器（SDK 外部 `hkCompatFormats.dll` 转换路径，源码分发内无解析器）与函数型/type-change patching；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）；Ragdoll 扩展余项（motion sharing、用户自定义状态、limited-hinge/6DOF easing）
+- [x] 后续子集（CharacterControl Climbing + trigger 追踪，2026-11-20）：`at_ladder` 输入、默认注册 Climbing 状态与梯面移动/跳跃公式、AABB 差分 trigger 进入/退出事件；`phys-extensions` 58 → 59 个单元测试，新增集成测试 `character_climbing.rs` 4 个
+- [ ] 后续：真正的 packfile 容器（SDK 外部 `hkCompatFormats.dll` 转换路径，源码分发内无解析器）与函数型/type-change patching；CharacterControl 完整 listener/phantom/contact listener 与逐帧 shape-key 级 trigger；Ragdoll 扩展余项（motion sharing、用户自定义状态、limited-hinge/6DOF easing）
 
 仓库现状（2026-11-20）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`；本次 hkx 格式嗅探/版本 patching 子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`；本次 CharacterControl Climbing/trigger 子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档
