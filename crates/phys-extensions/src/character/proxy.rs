@@ -30,9 +30,9 @@
 //! * **Convex world only**: manifold collection ignores mesh/height-field/
 //!   compound bodies (the GJK closest-point query is convex-only), mirroring
 //!   the `World::closest_points_to_shape` limitation.
-//! * **No phantom presence, triggers, listeners, LOD shapes or the
-//!   multi-threaded task graph**; the proxy is a standalone object taking
-//!   `&World` / `&mut World` per call instead of holding world pointers.
+//! * **Listeners/phantom are local**: listeners are plain trait objects and
+//!   the keyframed phantom is created/synced through `&mut World`; there is no
+//!   signal manager, LOD shape selection or multi-threaded task graph.
 //! * **`resolveContacts`** pushes dynamic bodies with a linear-only impulse
 //!   (inverse mass only; the angular inertia term of the original is skipped)
 //!   applied through `World::set_body_linear_velocity`.
@@ -46,14 +46,16 @@
 use std::sync::Arc;
 
 use base_math::{Quaternion, Transform, Vector4};
-use phys_body::Body;
+use phys_body::{Body, BodyCinfo};
 use phys_collide::{closest_points as gjk_closest_points, collide as collide_manifold};
 use phys_shape::Shape;
-use phys_types::{BodyId, MotionType};
+use phys_types::{BodyId, CollisionFlags, MotionType};
 use phys_world::{QueryFilter, ShapeCastHitInfo, World};
 
+use super::listener::{CharacterProxyListener, CharacterProxyState};
 use super::simplex_solver::{SimplexSolverInput, SurfaceConstraint, solve};
 use super::surface::{SupportedState, SurfaceInfo};
+use super::triggers::TriggerEvent;
 
 /// `HK_REAL_EPSILON` step guard for the integration loop.
 const REAL_EPSILON: f32 = 1e-5;
@@ -291,12 +293,15 @@ pub struct CharacterProxy {
     last_displacement: Vector4,
     last_velocity: Vector4,
     last_inv_delta_time: f32,
+    listeners: Vec<(u64, Box<dyn CharacterProxyListener>)>,
+    next_listener_id: u64,
+    phantom: Option<BodyId>,
 }
 
 impl CharacterProxy {
     /// Construct the proxy from the cinfo
     /// (`hknpCharacterProxy::hknpCharacterProxy`, without the world
-    /// registration; register a phantom body yourself if needed).
+    /// registration; call [`Self::create_phantom`] to add the phantom body).
     ///
     /// # Panics
     /// Panics when `max_slope` is not in `(0, π/2]`.
@@ -327,6 +332,9 @@ impl CharacterProxy {
             last_displacement: Vector4::ZERO,
             last_velocity: Vector4::ZERO,
             last_inv_delta_time: 0.0,
+            listeners: Vec::new(),
+            next_listener_id: 0,
+            phantom: None,
         }
     }
 
@@ -375,6 +383,110 @@ impl CharacterProxy {
         &self.manifold
     }
 
+    /// Attach a listener and immediately notify it of the current shape.
+    ///
+    /// Returns an id for [`Self::remove_listener`]. Like the SDK's
+    /// `addListener`, notification and later dispatch run in reverse
+    /// registration order.
+    pub fn add_listener(&mut self, mut listener: Box<dyn CharacterProxyListener>) -> u64 {
+        let id = self.next_listener_id;
+        self.next_listener_id += 1;
+        listener.shape_changed();
+        self.listeners.push((id, listener));
+        id
+    }
+
+    /// Detach a listener by id; returns `false` when it was not registered.
+    pub fn remove_listener(&mut self, id: u64) -> bool {
+        let Some(index) = self.listeners.iter().position(|(other, _)| *other == id) else {
+            return false;
+        };
+        self.listeners.remove(index);
+        true
+    }
+
+    /// Forward trigger events from a `TriggerTracker` to all listeners.
+    pub fn dispatch_trigger_events(&mut self, events: &[TriggerEvent]) {
+        for event in events {
+            for (_, listener) in self.listeners.iter_mut().rev() {
+                listener.trigger_volume_interaction(*event);
+            }
+        }
+    }
+
+    /// Phantom body id, when presence in the world is enabled.
+    pub fn phantom(&self) -> Option<BodyId> {
+        self.phantom
+    }
+
+    /// Create the keyframed, non-colliding phantom body used for world presence.
+    ///
+    /// Queries exclude it via `QueryFilter::ignore_body`, matching the SDK's
+    /// use of the phantom as the query body.
+    pub fn create_phantom(&mut self, world: &mut World) -> Option<BodyId> {
+        if self.phantom.is_some() {
+            return self.phantom;
+        }
+        let info = BodyCinfo::new(self.shape.clone())
+            .with_motion_type(MotionType::Keyframed)
+            .with_transform(self.transform)
+            .with_flags(CollisionFlags::DONT_COLLIDE)
+            .with_collision_filter_info(self.collision_filter_info)
+            .with_name("hknpCharacterProxy");
+        let id = world.create_body(&info);
+        self.phantom = Some(id);
+        Some(id)
+    }
+
+    /// Destroy the phantom body, if present.
+    pub fn destroy_phantom(&mut self, world: &mut World) -> bool {
+        let Some(id) = self.phantom.take() else {
+            return false;
+        };
+        world.destroy_body(id)
+    }
+
+    /// Emit contact events by diffing the manifold around a proxy operation.
+    ///
+    /// The SDK fires callbacks immediately around each manifold mutation;
+    /// this subset emits one deterministic batch per public proxy call.
+    fn dispatch_manifold_events(&mut self, before: &[Contact]) {
+        let after = self.manifold.clone();
+        let mut removed: Vec<Contact> = before
+            .iter()
+            .copied()
+            .filter(|contact| !after.contains(contact))
+            .collect();
+        let mut added: Vec<Contact> = after
+            .iter()
+            .copied()
+            .filter(|contact| !before.contains(contact))
+            .collect();
+        removed.sort_by_key(|contact| contact.body.value());
+        added.sort_by_key(|contact| contact.body.value());
+        for contact in &removed {
+            for (_, listener) in self.listeners.iter_mut().rev() {
+                listener.contact_removed(contact);
+            }
+        }
+        for contact in &added {
+            for (_, listener) in self.listeners.iter_mut().rev() {
+                listener.contact_added(contact);
+            }
+        }
+    }
+
+    fn fire_character_callback(&mut self) {
+        let state = CharacterProxyState {
+            position: self.transform.translation,
+            velocity: self.velocity,
+            contact_count: self.manifold.len(),
+        };
+        for (_, listener) in self.listeners.iter_mut().rev() {
+            listener.character_callback(&state);
+        }
+    }
+
     /// Maximum walkable slope (radians).
     pub fn max_slope(&self) -> f32 {
         self.max_slope_cosine.acos()
@@ -398,6 +510,7 @@ impl CharacterProxy {
     fn filter(&self) -> QueryFilter {
         QueryFilter {
             filter_info: self.collision_filter_info,
+            ignore_body: self.phantom,
             ..Default::default()
         }
     }
@@ -742,9 +855,11 @@ impl CharacterProxy {
         } else {
             self.validate_manifold(world);
         }
+        let before = self.manifold.clone();
 
         // Empty manifold: definitely unsupported.
         if self.manifold.is_empty() {
+            self.dispatch_manifold_events(&before);
             return SurfaceInfo::unsupported();
         }
 
@@ -770,6 +885,7 @@ impl CharacterProxy {
         // If the constraints did not affect the movement => unsupported.
         let epsilon = 0.001;
         if output.velocity.all_equal3(direction, epsilon) {
+            self.dispatch_manifold_events(&before);
             return SurfaceInfo::unsupported();
         }
 
@@ -801,16 +917,19 @@ impl CharacterProxy {
             }
         }
         if num_touching == 0 {
+            self.dispatch_manifold_events(&before);
             return SurfaceInfo::unsupported();
         }
         ground.surface_normal.normalize3();
         ground.surface_velocity *= 1.0 / num_touching as f32;
         ground.surface_angular_velocity *= 1.0 / num_touching as f32;
+        self.dispatch_manifold_events(&before);
         ground
     }
 
     /// Rebuild the manifold from current closest points (`refreshManifold`).
     pub fn refresh_manifold(&mut self, world: &World) {
+        let before = self.manifold.clone();
         self.validate_manifold(world);
         let filter = self.filter();
         let mut new_contacts = self.collect_start_contacts(world, &filter);
@@ -842,12 +961,14 @@ impl CharacterProxy {
             }
         }
         self.remove_similar_contacts();
+        self.dispatch_manifold_events(&before);
     }
 
     /// Move the character for one time slice (`integrateWithCollectors`).
     ///
     /// `delta_time` must exceed `HK_REAL_EPSILON`.
     pub fn integrate(&mut self, world: &mut World, delta_time: f32, surface_info: &SurfaceInfo) {
+        let before = self.manifold.clone();
         let mut remaining_time = delta_time;
         debug_assert!(
             delta_time > REAL_EPSILON,
@@ -994,6 +1115,11 @@ impl CharacterProxy {
         }
 
         self.velocity = new_velocity;
+        if let Some(phantom) = self.phantom {
+            world.set_body_transform(phantom, self.transform);
+        }
+        self.dispatch_manifold_events(&before);
+        self.fire_character_callback();
     }
 
     /// Push dynamic bodies out of the character's way

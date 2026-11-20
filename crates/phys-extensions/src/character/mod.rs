@@ -8,7 +8,8 @@
 //! * [`simplex_solver`] — `hkSimplexSolver` (point motion under plane
 //!   constraints with static/dynamic friction).
 //! * [`proxy`] — `hknpCharacterProxy` (self-maintained contact manifold +
-//!   shape-cast driven movement).
+//!   shape-cast driven movement + listeners/phantom presence).
+//! * [`listener`] — local subset of `hknpCharacterProxyListener`.
 //! * [`state_machine`] — `hknpCharacterStateManager` / `hknpCharacterContext`
 //!   with the four wired default states (OnGround / Jumping / InAir / Climbing).
 //! * [`triggers`] — per-frame trigger enter/exit events by AABB overlap diff.
@@ -26,12 +27,14 @@
 //! proxy.integrate(&mut world, dt, &surface);
 //! ```
 
+pub mod listener;
 pub mod proxy;
 pub mod simplex_solver;
 pub mod state_machine;
 pub mod surface;
 pub mod triggers;
 
+pub use listener::{CharacterProxyListener, CharacterProxyState};
 pub use proxy::{CharacterProxy, CharacterProxyCinfo, Contact};
 pub use simplex_solver::{
     InteractionStatus, SimplexSolverInput, SimplexSolverOutput, SurfaceConstraint,
