@@ -221,6 +221,8 @@ pub struct Record {
 /// A fully loaded generic bundle.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Bundle {
+    /// SDK version string from the `SDKV` section, when present.
+    pub sdk_version: Option<String>,
     /// Decoded reflection metadata.
     pub type_info: TypeInfo,
     /// Item index from `INDX/ITEM`.
@@ -298,6 +300,7 @@ impl Bundle {
         }
 
         Ok(Self {
+            sdk_version: tagfile.version.clone(),
             type_info,
             items,
             data: data.to_vec(),

@@ -152,7 +152,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
 | `base-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
-| `base-serialize` | HFF 结构化流 + `TAG0` 容器 + `TCM0` compendium + 2014 legacy binary tagfile + 类型元数据/对象重建 | ✅ 已实现（Phase 10/16 + 后续子集） |
+| `base-serialize` | HFF 结构化流 + `TAG0` 容器 + `TCM0` compendium + 2014 legacy binary tagfile + 类型元数据/对象重建 + 格式嗅探/结构型版本 patching | ✅ 已实现（Phase 10/16 + 后续子集） |
 | `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 | ✅ 已实现（Phase 5） |
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
@@ -508,7 +508,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **generic bundle 而非物理对象**：`base-serialize` 不反向依赖 `phys-*`，输出 `Value` 树供上层转换；`proton::serialize::{Bundle, Value, ...}` 已通过门面导出。
 - **fixup 不改原始 DATA**：外部 fixup 目标来自 `PTCH`，内部目标从 DATA 中读取 u32 LE；解析阶段只建立 `BTreeMap<offset, Fixup>`，对象重建时按偏移解析为 `Ref`/`String`/数组，天然避免 Rust 中的裸指针别名与环。
 - **数据布局假设**：对象字节按小端解释（Havok SDK x86 in-place 布局），动态数组指针槽固定 8 字节；大端/native-pointer 场景未移植。
-- **不支持**：版本 patching（SDKV 仅记录字符串）、native pointer `TPTR`、属性 decl、vtable 初始化、binary packfile、XML/2014、writer；compendium 引用由后续子集补上（见下）；网格/HeightField 等物理形状到 `phys-shape` 的转换也未纳入。
+- **不支持**：函数型/type-change 版本 patching（结构型 rename/remove/add/default-set 见后续子集）、native pointer `TPTR`、属性 decl、vtable 初始化、binary packfile 容器（仅嗅探 header）、XML/2014 写入、writer；compendium 引用已由后续子集补上；网格/HeightField 等物理形状到 `phys-shape` 的转换也未纳入。
 - **无真实资产**：`original/` 与仓库内均无 `.hkx` 样例，测试使用与 `hff.rs` 一致的合成二进制 writer；reader/writer 同时固化误解的风险由逐式直译 C++ 常量 optbits/VLE/字段布局降低，但仍不宣称与真实 Havok 资产逐位兼容。
 - **验证**：VLE 全宽度往返、类型身份/类型体解析、记录字段/字符串/指针/固定数组/动态数组/布尔、非法 item/patch 长度、legacy 段拒绝、门面 smoke test；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
@@ -524,7 +524,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **转换层放门面 crate**：`base-serialize` 不反向依赖 `phys-*` 的约束不变（Phase 16 决策）；依赖方向 `serialize → convert → shape/body/world`，`convert` 通过门面别名引用各 crate
 - **type name 由 `bundle.type_info.types[type_id].name` 取**（源自 TNA1/TST1），`Record` 本身只含 `type_id` + `(字段名, Value)` 列表；形状族判断用 name 子串匹配，不做真实 Havok 类型继承图解析
 - `BodyId` 仍由 `World::create_body` 分配（`create_body_with_id` 未移植），`LoadedScene::populate` 按 item 顺序返回 ID；复合体子形状支持内联 record 与 `Ref`；高度场 scale 用 `m_scale`，Mesh/凸体顶点已是局部坐标
-- **非资产级兼容**：不处理版本 patching / compendium / vtable / binary packfile；测试用合成 `TAG0`（`Bundle::load` → `scene_from_bundle` → `World::step` 240 步落地收敛，两次加载 `position.to_bits` 逐位一致），仍不宣称与真实 Havok 资产逐位兼容
+- **非资产级兼容**：本阶段未处理版本 patching / compendium / vtable / binary packfile（后续子集补上结构型 patching 与 compendium）；测试用合成 `TAG0`（`Bundle::load` → `scene_from_bundle` → `World::step` 240 步落地收敛，两次加载 `position.to_bits` 逐位一致），仍不宣称与真实 Havok 资产逐位兼容
 
 - **验证**：5 个集成测试覆盖形状转换（Box/Sphere 具体类型与半径/半长）、body 字段、错误输入、端到端仿真落球、跨加载确定性；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
@@ -619,6 +619,21 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **at-rest 无计时器**：原版 `AutoTransitionAtRest` 的头部注释描述的是 timed 行为，实际实现仅做速度阈值判定；本子集照实际实现处理，tagged body 为空时视为已静止。
 - **验证**：保存/放宽/精确还原、4 步回弹收敛；控制器 Dynamic 进入后放宽、进入 Keyframed 立即还原、速度超阈值保持 via 状态且归零后切入终态；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### 后续子集：hkx 格式嗅探 + 版本 patching（✅ 已完成，2026-11-20）
+交付（`base-serialize` 新增 3 个单元测试，31 → 34 个；新增集成测试 `tests/hkx_version_patching.rs` 3 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `base-serialize/version.rs` | `detect_format` 复刻 `hkSerializeDetail` 嗅探（2014 packfile 16 字节头 `57E0E057/10C0C010`、TAG0/TCM0/TAGF/TCMP、NT6 `CAB00D1E/DEADC0DE`、2014 tagfile `CAB00D1E/D011FACE` 双端序、XML）；`LegacyType` / `PatchInfo` / `PatchComponent` / `PatchSet` 建模 `hkReflect::Version::PatchInfo`，支持 member rename/remove/add-with-default/default-set 四种结构操作，递归应用于 `Bundle.objects` 的 `Value::Record`/`Array` 并产出 `PatchReport` |
+| `base-serialize/object.rs` | `Bundle.sdk_version: Option<String>` 保留 `SDKV` 字符串作为版本键（此前被丢弃） |
+
+决策与偏差：
+
+- **patch 表由调用方提供**：2021.2 源码中旧的 `hkVersionRegistry`/`hkVersionPatch` 已移除，patch 是编译期 C++ 常量（含函数指针），hkx 文件内**不含** patch 定义；本子集用 Rust 值建模结构型 patch，未移植函数型/type-change/template 参数 patch 与 `PatchFunctionHelper`。
+- **真正的 packfile 容器仍阻塞**：仓库内只有 16 字节 header sniffer，容器解析由外部 `hkCompatFormats.dll` 完成并转换为 2014 tagfile，本子集只做格式识别，不宣称能加载二进制 packfile。
+- **版本匹配按 `TypeMeta.version` + 类名**：`TBDY` 的 `OPT_VERSION`（bit 4）此前已解码但无 fixture 覆盖；本子集新增带 version 的合成 `TAG0`，以 `old_name`/`old_version` 精确选 patch，未按 SDK 的依赖图做链式解析（调用方可连续登记各版本 patch）。
+- **验证**：SDKV 与类型版本解码、rename/default-set/add 应用与 `PatchReport` 计数、packfile/tagfile/NT6/XML 头嗅探；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -650,6 +665,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | Ragdoll 约束松弛 | 状态按 `Enforce` / `LoosenNoRestore` / `LoosenThenRestore` 管理 action（切换时按**目标态**决定是否立即还原）；放宽量 = 当前相对 twist/cone + 0.01，回弹权重 `dt/(duration−elapsed)` 保证任意 dt 序列下线性收敛；仅 ragdoll cone/twist，无 limited-hinge/6DOF 分支 |
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；2014 legacy tagfile 为独立变长 tag 流（符号-幅度整数 + 字符串表 + 元数据 + 对象位图 + 前向引用），不套 HFF 段树；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
+| hkx 格式/版本 patching | 格式嗅探覆盖 2014 packfile 16 字节头、TAG0/TCM0/TAGF/TCMP、NT6、2014 tagfile 双端序 magic 与 XML；2021.2 的 patch 是编译期 `PatchInfo` 常量而非文件数据，Rust 侧用 `PatchSet` 按 `TypeMeta.name`/`version` 选择并递归改写 `Value` 树（rename/remove/add/default-set），SDKV 字符串保留在 `Bundle.sdk_version`；真 packfile 转换仍需外部 DLL |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -722,13 +738,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（Ragdoll 状态机 + powered 电机 blender，2026-11-20）：Keyframed/Dynamic/Powered 状态与 tagged body 运动类型切换、`keyframeRoot` 单骨 keyframe、timed transition 淡出、sqrt 混合电机参数；`World::set_body_motion_type`；`phys-world` 78 → 79、`phys-extensions` 49 → 53 个单元测试，新增集成测试 `ragdoll_state_machine.rs` 4 个
 - [x] 后续子集（Ragdoll penetration utility，2026-11-20）：根嵌入检测/回退射线、父→子骨骼段射线与祖先状态级联、`DONT_COLLIDE` 掩码、目标分离速度冲量 + 重力抵消、控制器状态步前修正；`phys-extensions` 53 → 56 个单元测试，新增集成测试 `ragdoll_penetration.rs` 4 个
 - [x] 后续子集（Ragdoll 约束松弛 + at-rest 自动转换，2026-11-20）：`EaseConstraintsAction` 保存/放宽/线性回弹 cone/twist；Dynamic 状态 4s 回弹、进入 enforcing 态立即还原；`begin_at_rest_transition` 按速度阈值切换终态；`phys-extensions` 56 → 58 个单元测试，新增集成测试 `ragdoll_easing.rs` 3 个
-- [ ] 后续：`hkx` 版本 patching、真正的 packfile 容器（SDK 外部 DLL 转换路径）；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）；Ragdoll 扩展余项（motion sharing、`AutoTransitionAtRest` 以外的用户自定义状态、limited-hinge/6DOF easing）
+- [x] 后续子集（hkx 格式嗅探 + 版本 patching，2026-11-20）：`detect_format`（packfile/TAG0/TCM0/NT6/2014 tagfile/XML）、`PatchInfo`/`PatchSet` 结构型 patch（rename/remove/add/default-set）递归应用于 `Value` 树、`Bundle.sdk_version` 保留 SDKV；`base-serialize` 31 → 34 个单元测试，新增集成测试 `hkx_version_patching.rs` 3 个
+- [ ] 后续：真正的 packfile 容器（SDK 外部 `hkCompatFormats.dll` 转换路径，源码分发内无解析器）与函数型/type-change patching；CharacterControl 后续（Climbing/ladder、触发器与 contact listener）；Ragdoll 扩展余项（motion sharing、用户自定义状态、limited-hinge/6DOF easing）
 
 仓库现状（2026-11-20）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`；本次 Ragdoll 约束松弛/at-rest 子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`；本次 hkx 格式嗅探/版本 patching 子集在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

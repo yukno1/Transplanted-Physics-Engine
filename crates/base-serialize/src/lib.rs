@@ -12,6 +12,7 @@
 //! | [`type_meta`] | `hkReflect::Type` / `TNA1`/`TBDY` | reflection metadata decoding |
 //! | [`compendium`] | `TagfileReadFormat::Impl::Compendium` | `TCM0` signatures and shared `TYPE` tables |
 //! | [`object`] | `ReadFormat::read` subset | generic object rebuild, `ITEM`/`PTCH` fixups |
+//! | [`version`] | `hkSerializeDetail` sniffer + `hkReflect::Version::PatchInfo` subset | format detection, synthetic version patches on `Value` trees |
 //!
 //! # Scope
 //!
@@ -26,8 +27,8 @@
 //!
 //! # Not ported
 //!
-//! * Version patching and native pointer sections.
-//! * Actual packfile containers (converted by an external SDK DLL), XML variants and writers.
+//! * Compiled Havok patch lists, patch functions, type changes and native pointer sections.
+//! * Actual packfile containers (converted by an external SDK DLL); only their headers are sniffed.
 //! * Writers, resource handles, property decls and vtable initialisation.
 //! * Conversion of a generic bundle into `phys-world`/`phys-extensions` objects.
 
@@ -37,6 +38,7 @@ pub mod object;
 pub mod tagfile;
 pub mod tagfile2014;
 pub mod type_meta;
+pub mod version;
 pub mod vle;
 
 pub use compendium::Compendium;
@@ -52,4 +54,9 @@ pub use tagfile2014::{
 };
 pub use type_meta::{
     Field, Format, Kind, MetaError, TemplateParam, TypeId, TypeIdentity, TypeInfo, TypeMeta,
+};
+pub use version::{
+    BINARY_PACKFILE_MAGIC_0, BINARY_PACKFILE_MAGIC_1, CLASS_ADDED, CLASS_REMOVED,
+    LEGACY_TAGFILE_MAGIC_0, LEGACY_TAGFILE_MAGIC_1, LegacyType, NT6_MAGIC_1, PatchComponent,
+    PatchDefault, PatchInfo, PatchReport, PatchSet, SerializeFormat, detect_format,
 };
