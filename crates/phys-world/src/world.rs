@@ -13,16 +13,17 @@ use phys_shape::Shape;
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
-    RagdollJoint, Solver, SolverBody, SolverSettings, SpringJoint, WheelDrive, WheelJoint,
-    WheelSuspension,
+    RagdollJoint, SixDofJoint, Solver, SolverBody, SolverSettings, SpringJoint, WheelDrive,
+    WheelJoint, WheelSuspension,
 };
 use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
 
 use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
-    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo, SpringCinfo, WheelCinfo,
-    WheelDriveCinfo, WheelSuspensionCinfo, WorldJoint,
+    LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo,
+    SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo,
+    WorldJoint,
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
@@ -34,6 +35,15 @@ struct SleepState {
     timer: f32,
     /// Whether the body is currently asleep (velocity zero, no narrow phase).
     sleeping: bool,
+}
+
+/// A group of bodies sharing one non-static motion (`hknpMotion` attachment
+/// list subset). Members are stored in insertion order so all iteration that
+/// affects simulation state is deterministic.
+#[derive(Clone, Debug)]
+struct MotionGroup {
+    motion_id: MotionId,
+    members: Vec<BodyId>,
 }
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
@@ -68,6 +78,10 @@ pub struct World {
     /// `hknpWorld::m_collisionFilter` — optional collision filter consulted
     /// during contact generation and queries.
     collision_filter: Option<Arc<dyn CollisionFilter>>,
+    /// Shared-motion groups; indices are stable and never reused.
+    motion_groups: Vec<MotionGroup>,
+    /// Body → shared-motion group lookup (never iterated).
+    group_of_body: HashMap<BodyId, usize>,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -117,6 +131,8 @@ impl World {
             sleep_states: HashMap::new(),
             last_islands: Vec::new(),
             collision_filter: None,
+            motion_groups: Vec::new(),
+            group_of_body: HashMap::new(),
             cinfo,
             gravity,
             step_count: 0,
@@ -242,17 +258,181 @@ impl World {
         self.bodies.allocate(body)
     }
 
-    /// Destroy a body and its motion (`destroyBodies`).
+    /// Create a body that shares an existing body's motion
+    /// (`hknpWorld::allocateAttachedBody` subset).
     ///
-    /// Motion sharing (`allocateAttachedBody`) is not ported yet, so a non-static
-    /// body owns its motion and the motion slot is released here. Joint
-    /// constraints referencing the body are destroyed with it.
+    /// The target must be non-static. The created body gets the target's
+    /// motion type and motion slot; the temporarily allocated motion is
+    /// released. Cinfo mass/velocity settings are therefore ignored, matching
+    /// the SDK's attached-body rule.
+    pub fn create_attached_body(&mut self, target: BodyId, cinfo: &BodyCinfo) -> Option<BodyId> {
+        let target_motion = self.bodies.get(target)?.motion_id;
+        if target_motion == MotionId::PRESET_STATIC || self.motions.get(target_motion).is_none() {
+            return None;
+        }
+        let motion_type = self.motions.get(target_motion)?.motion_type;
+        let mut cinfo = cinfo.clone();
+        cinfo.motion_type = motion_type;
+        let body = self.create_body(&cinfo);
+        let created_motion = self.bodies.get(body)?.motion_id;
+        if created_motion != MotionId::PRESET_STATIC {
+            self.motions.destroy(created_motion);
+        }
+        self.bodies.get_mut(body)?.motion_id = target_motion;
+        let index = self.ensure_motion_group(target)?;
+        self.motion_groups[index].members.push(body);
+        self.group_of_body.insert(body, index);
+        Some(body)
+    }
+
+    /// Attach existing bodies to `target`'s shared motion (`attachBodies`
+    /// subset). Bodies already using the target's motion are skipped.
+    ///
+    /// The target motion's mass properties are retained; combining the mass of
+    /// several dynamic bodies into one attached motion is not ported.
+    pub fn attach_bodies(&mut self, target: BodyId, bodies: &[BodyId]) -> bool {
+        let Some(target_motion) = self.bodies.get(target).map(|body| body.motion_id) else {
+            return false;
+        };
+        if target_motion == MotionId::PRESET_STATIC || self.motions.get(target_motion).is_none() {
+            return false;
+        }
+        for &body in bodies {
+            let Some(entry) = self.bodies.get(body) else {
+                return false;
+            };
+            if entry.motion_id == MotionId::PRESET_STATIC {
+                return false;
+            }
+        }
+        let Some(group_index) = self.ensure_motion_group(target) else {
+            return false;
+        };
+        for &body in bodies {
+            let Some(entry) = self.bodies.get(body) else {
+                continue;
+            };
+            if entry.motion_id == target_motion {
+                continue;
+            }
+            self.detach_motion_membership(body);
+            let Some(motion_type) = self
+                .motions
+                .get(target_motion)
+                .map(|motion| motion.motion_type)
+            else {
+                continue;
+            };
+            if let Some(body) = self.bodies.get_mut(body) {
+                body.motion_id = target_motion;
+                body.flags
+                    .set(CollisionFlags::IS_DYNAMIC, motion_type.is_dynamic());
+                body.flags
+                    .set(CollisionFlags::IS_KEYFRAMED, !motion_type.is_dynamic());
+                body.flags
+                    .set(CollisionFlags::IS_ACTIVE, motion_type.is_dynamic());
+            }
+            self.sleep_states.remove(&body);
+            self.motion_groups[group_index].members.push(body);
+            self.group_of_body.insert(body, group_index);
+        }
+        true
+    }
+
+    /// Detach bodies from their shared motion, allocating a fresh motion for
+    /// each (`detachBodies` subset). The new motion keeps the group's motion
+    /// type, mass and inverse inertia, and translates the linear velocity to
+    /// the body's center (`v + ω × r`).
+    pub fn detach_bodies(&mut self, bodies: &[BodyId]) -> bool {
+        for &body in bodies {
+            let Some(group_index) = self.group_of_body.get(&body).copied() else {
+                continue;
+            };
+            let motion_id = self.motion_groups[group_index].motion_id;
+            let Some(motion) = self.motions.get(motion_id).copied() else {
+                continue;
+            };
+            let Some(transform) = self.bodies.get(body).map(|entry| entry.transform) else {
+                continue;
+            };
+            let new_position = transform.translation;
+            let mut detached = Motion::new(
+                motion.motion_type,
+                new_position,
+                transform.rotation_quaternion(),
+                motion.linear_velocity
+                    + motion
+                        .angular_velocity
+                        .cross(new_position - motion.position),
+                motion.angular_velocity,
+                motion.mass,
+            );
+            detached.inverse_inertia = motion.inverse_inertia;
+            let new_id = self.motions.allocate(detached);
+            self.detach_motion_membership(body);
+            if let Some(entry) = self.bodies.get_mut(body) {
+                entry.motion_id = new_id;
+            }
+        }
+        true
+    }
+
+    /// Bodies sharing `motion_id`, in attachment order. Empty for standalone
+    /// bodies (including the shared static motion).
+    pub fn bodies_sharing_motion(&self, motion_id: MotionId) -> &[BodyId] {
+        self.motion_groups
+            .iter()
+            .find(|group| group.motion_id == motion_id)
+            .map(|group| group.members.as_slice())
+            .unwrap_or_default()
+    }
+
+    /// The motion slot of a body.
+    pub fn body_motion_id(&self, body_id: BodyId) -> Option<MotionId> {
+        self.bodies.get(body_id).map(|body| body.motion_id)
+    }
+
+    /// Start (or reuse) the shared-motion group anchored at `target`.
+    fn ensure_motion_group(&mut self, target: BodyId) -> Option<usize> {
+        if let Some(index) = self.group_of_body.get(&target).copied() {
+            return Some(index);
+        }
+        let motion_id = self.bodies.get(target)?.motion_id;
+        if motion_id == MotionId::PRESET_STATIC || self.motions.get(motion_id).is_none() {
+            return None;
+        }
+        let index = self.motion_groups.len();
+        self.motion_groups.push(MotionGroup {
+            motion_id,
+            members: vec![target],
+        });
+        self.group_of_body.insert(target, index);
+        Some(index)
+    }
+
+    /// Remove a body from its motion group. Groups collapse at one member:
+    /// the remaining body keeps the motion slot, so no slot is freed here.
+    fn detach_motion_membership(&mut self, body: BodyId) -> Option<MotionId> {
+        let index = self.group_of_body.remove(&body)?;
+        let group = &mut self.motion_groups[index];
+        group.members.retain(|&member| member != body);
+        if group.members.len() < 2 {
+            group.members.clear();
+        }
+        Some(group.motion_id)
+    }
+
+    /// Destroy a body and its motion (`destroyBodies`).
     pub fn destroy_body(&mut self, body_id: BodyId) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
         let motion_id = body.motion_id;
-        if motion_id != MotionId::PRESET_STATIC {
+        if self.group_of_body.contains_key(&body_id) {
+            // Shared motion: remaining members keep the slot; the group
+            // collapses when only one member is left.
+            self.detach_motion_membership(body_id);
+        } else if motion_id != MotionId::PRESET_STATIC {
             self.motions.destroy(motion_id);
         }
         let destroyed = self.bodies.destroy(body_id);
@@ -353,6 +533,14 @@ impl World {
         self.push_joint(WorldJoint::Hinge(*info))
     }
 
+    /// Add a limited-hinge joint (`hknpLimitedHingeConstraintData` subset).
+    ///
+    /// Shares the hinge geometry and angular limits; the joint is solved with
+    /// the hinge rows and has no motor.
+    pub fn create_limited_hinge_constraint(&mut self, info: &LimitedHingeCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::LimitedHinge(*info))
+    }
+
     /// Add a fixed joint (`addConstraint`).
     ///
     /// Returns [`ConstraintId::INVALID`] when either body does not exist.
@@ -365,6 +553,11 @@ impl World {
     /// Returns [`ConstraintId::INVALID`] when either body does not exist.
     pub fn create_ragdoll_constraint(&mut self, info: &RagdollCinfo) -> ConstraintId {
         self.push_joint(WorldJoint::Ragdoll(*info))
+    }
+
+    /// Add a 6DOF joint (`hknp6DofConstraintData` limits subset).
+    pub fn create_6dof_constraint(&mut self, info: &SixDofCinfo) -> ConstraintId {
+        self.push_joint(WorldJoint::SixDof(*info))
     }
 
     /// Add a prismatic joint (`addConstraint`).
@@ -611,6 +804,44 @@ impl World {
         }
     }
 
+    /// Set or clear the angular limits of a limited-hinge joint.
+    pub fn set_limited_hinge_limits(
+        &mut self,
+        id: ConstraintId,
+        limits: Option<HingeLimitsCinfo>,
+    ) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::LimitedHinge(info) => {
+                    info.limits = limits;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Set the twist/swing/linear limits of a 6DOF joint.
+    pub fn set_6dof_limits(&mut self, id: ConstraintId, limits: SixDofLimitsCinfo) -> bool {
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::SixDof(info) => {
+                    info.limits = SixDofLimitsCinfo::new(
+                        limits.twist_min,
+                        limits.twist_max.max(limits.twist_min),
+                        limits.swing0_max.max(0.0),
+                        limits.swing1_max.max(0.0),
+                        limits.linear_limit.max(0.0),
+                    );
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
     /// Set or clear the velocity motor of a hinge joint (`None` clears it).
     ///
     /// Fails for IDs that do not resolve to a live hinge joint.
@@ -726,7 +957,7 @@ impl World {
                         }),
                     ));
                 }
-                WorldJoint::Hinge(info) => {
+                WorldJoint::Hinge(info) | WorldJoint::LimitedHinge(info) => {
                     let axis_a = transform_a.rotation.rotate(info.axis_a);
                     let axis_b = transform_b.rotation.rotate(info.axis_b);
                     // The hinge angle is measured against the reference axes
@@ -745,27 +976,35 @@ impl World {
                         min_angle: limits.min_angle,
                         max_angle: limits.max_angle,
                     });
-                    let motor = info.motor.map(|motor| match motor {
-                        crate::constraint::HingeMotorCinfo::Velocity(motor) => {
-                            HingeMotor::Velocity {
-                                target_velocity: motor.target_velocity,
-                                max_impulse: motor.max_impulse,
+                    // A limited hinge carries no motor even when the shared
+                    // construction-info type has one configured.
+                    let motor = if matches!(slot.joint, WorldJoint::LimitedHinge(_)) {
+                        None
+                    } else {
+                        info.motor.map(|motor| match motor {
+                            crate::constraint::HingeMotorCinfo::Velocity(motor) => {
+                                HingeMotor::Velocity {
+                                    target_velocity: motor.target_velocity,
+                                    max_impulse: motor.max_impulse,
+                                }
                             }
-                        }
-                        crate::constraint::HingeMotorCinfo::Position(motor) => {
-                            HingeMotor::Position {
-                                target_angle: motor.target_angle,
-                                tau: motor.tau,
-                                max_impulse: motor.max_impulse,
+                            crate::constraint::HingeMotorCinfo::Position(motor) => {
+                                HingeMotor::Position {
+                                    target_angle: motor.target_angle,
+                                    tau: motor.tau,
+                                    max_impulse: motor.max_impulse,
+                                }
                             }
-                        }
-                        crate::constraint::HingeMotorCinfo::Spring(motor) => HingeMotor::Spring {
-                            target_angle: motor.target_angle,
-                            stiffness: motor.stiffness,
-                            damping: motor.damping,
-                            max_impulse: motor.max_impulse,
-                        },
-                    });
+                            crate::constraint::HingeMotorCinfo::Spring(motor) => {
+                                HingeMotor::Spring {
+                                    target_angle: motor.target_angle,
+                                    stiffness: motor.stiffness,
+                                    damping: motor.damping,
+                                    max_impulse: motor.max_impulse,
+                                }
+                            }
+                        })
+                    };
                     result.push((
                         slot_index,
                         JointConstraint::Hinge(HingeJoint {
@@ -831,6 +1070,49 @@ impl World {
                             twist_angle,
                             twist_min: info.twist_min,
                             twist_max: info.twist_max,
+                        }),
+                    ));
+                }
+                WorldJoint::SixDof(info) => {
+                    let twist_a = unit_vector(transform_a.rotation.rotate(info.twist_axis_a));
+                    let twist_b = unit_vector(transform_b.rotation.rotate(info.twist_axis_b));
+                    let pivot_a = transform_a.transform_point(info.pivot_a);
+                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                    // Swing angles use the same deterministic perpendicular
+                    // basis as the solver rows (the cinfo reference axes are
+                    // reserved for measuring the twist angle).
+                    let u = deterministic_perpendicular(twist_a);
+                    let v = twist_a.cross(u);
+                    let error = twist_a.cross(twist_b);
+                    let plane_a = perpendicular_reference(
+                        twist_a,
+                        transform_a.rotation.rotate(info.plane_axis_a),
+                    );
+                    let plane_b = perpendicular_reference(
+                        twist_a,
+                        transform_b.rotation.rotate(info.plane_axis_b),
+                    );
+                    let twist_angle = twist_a
+                        .dot3(plane_a.cross(plane_b))
+                        .atan2(plane_a.dot3(plane_b));
+                    result.push((
+                        slot_index,
+                        JointConstraint::SixDof(SixDofJoint {
+                            body_a: index_a,
+                            body_b: index_b,
+                            pivot_a,
+                            pivot_b,
+                            twist_axis_a: twist_a,
+                            twist_axis_b: twist_b,
+                            twist_angle,
+                            twist_min: info.limits.twist_min,
+                            twist_max: info.limits.twist_max,
+                            swing0_angle: error.dot3(u),
+                            swing0_max: info.limits.swing0_max,
+                            swing1_angle: error.dot3(v),
+                            swing1_max: info.limits.swing1_max,
+                            distance: (pivot_a - pivot_b).length3(),
+                            max_distance: info.limits.linear_limit,
                         }),
                     ));
                 }
@@ -967,6 +1249,23 @@ impl World {
                 .map(|body| body.set_transform(transform))
                 .is_some();
         }
+        if let Some(index) = self.group_of_body.get(&body_id).copied() {
+            let members = self.motion_groups[index].members.clone();
+            if members.len() >= 2 {
+                if let Some(motion) = self.motions.get_mut(motion_id) {
+                    motion.set_transform(transform);
+                }
+                for member in &members {
+                    if let Some(entry) = self.bodies.get_mut(*member) {
+                        entry.set_transform(transform);
+                    }
+                }
+                for member in members {
+                    self.wake_if_dynamic(member);
+                }
+                return true;
+            }
+        }
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.set_transform(transform);
         }
@@ -1033,6 +1332,34 @@ impl World {
         let motion_id = body.motion_id;
         if motion_id == MotionId::PRESET_STATIC || self.motions.get(motion_id).is_none() {
             return false;
+        }
+        if let Some(index) = self.group_of_body.get(&body_id).copied() {
+            let members = self.motion_groups[index].members.clone();
+            if members.len() >= 2 {
+                // One motion is shared, so the type change applies to the
+                // whole group rather than mutating one body's flags.
+                if let Some(motion) = self.motions.get_mut(motion_id) {
+                    if motion.motion_type == motion_type {
+                        return true;
+                    }
+                    motion.motion_type = motion_type;
+                }
+                for member in members {
+                    if let Some(body) = self.bodies.get_mut(member) {
+                        body.flags
+                            .set(CollisionFlags::IS_DYNAMIC, motion_type.is_dynamic());
+                        body.flags
+                            .set(CollisionFlags::IS_KEYFRAMED, !motion_type.is_dynamic());
+                        body.flags
+                            .set(CollisionFlags::IS_ACTIVE, motion_type.is_dynamic());
+                    }
+                    self.sleep_states.remove(&member);
+                    if motion_type.is_dynamic() {
+                        self.wake_if_dynamic(member);
+                    }
+                }
+                return true;
+            }
         }
         if let Some(motion) = self.motions.get_mut(motion_id) {
             if motion.motion_type == motion_type {
@@ -1507,14 +1834,23 @@ impl World {
             .filter(|body| body.is_dynamic() && !self.is_sleeping(body.id))
             .map(|body| (body.id, body.motion_id))
             .collect();
-        for (body_id, motion_id) in dynamic_bodies {
-            let Some(motion) = self.motions.get_mut(motion_id) else {
+        // A shared motion must be integrated once even when several bodies
+        // reference it; all members then get the same refreshed transform.
+        let mut integrated: Vec<MotionId> = Vec::new();
+        for (_, motion_id) in &dynamic_bodies {
+            if integrated.contains(motion_id) {
+                continue;
+            }
+            integrated.push(*motion_id);
+            let Some(motion) = self.motions.get_mut(*motion_id) else {
                 continue;
             };
             motion.integrate(delta_time);
             let transform = motion.transform();
-            if let Some(body) = self.bodies.get_mut(body_id) {
-                body.set_transform(transform);
+            for body in self.bodies.iter_mut() {
+                if body.motion_id == *motion_id {
+                    body.set_transform(transform);
+                }
             }
         }
 
@@ -1828,6 +2164,17 @@ fn unit_vector(direction: Vector4) -> Vector4 {
     } else {
         Vector4::UNIT_X
     }
+}
+
+/// First axis of the deterministic perpendicular basis used by the solver's
+/// swing rows (`phys_solver::constraint::perpendicular_axes`).
+fn deterministic_perpendicular(axis: Vector4) -> Vector4 {
+    let helper = if axis.x.abs() < 0.9 {
+        Vector4::UNIT_X
+    } else {
+        Vector4::UNIT_Y
+    };
+    unit_vector(axis.cross(helper))
 }
 
 /// Project `reference` onto the plane perpendicular to `axis` and normalize;

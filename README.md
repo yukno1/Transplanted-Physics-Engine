@@ -158,8 +158,8 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager | ✅ 已实现（Phase 6） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 | ✅ 已实现（Phase 8/11/12） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
+| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动、limited-hinge/6DOF 限位关节）+ 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 + 共享运动（attached body/attach/detach） | ✅ 已实现（Phase 8/11/12 + 后续子集） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 + 用户自定义状态 + shared-motion 驱动 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -663,6 +663,25 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **未移植回调**：constraint 过滤、proxy↔proxy / object interaction、VDB monitor 及 rigid-body route listener；trigger 仍是 AABB 近似 + `BodyId` 标识，不提供 shape key 级事件。
 - **验证**：add 立即通知与逆序派发、remove 生效、refresh 时接触增加/破坏 body 后接触移除、integrate 一次 step 回调、phantom 创建/跟随/销毁；`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿。
 
+### 后续子集：Ragdoll 扩展余项（✅ 已完成，2026-11-21）
+交付（`phys-world` 新增 `LimitedHingeCinfo`/`SixDofCinfo`/`SixDofLimitsCinfo` 与 2 个关节族，`phys-solver` 新增 `SixDofJoint`，`phys-extensions` easing/控制器泛化；新增 4 个集成测试文件共 16 个测试）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-world/constraint.rs` + `world.rs` | `LimitedHingeCinfo`（复用 hinge 几何与角度限位、无电机）与 `SixDofCinfo`/`SixDofLimitsCinfo`（twist ±、swing0/1、线性距离上限）；`create_limited_hinge_constraint` / `create_6dof_constraint` / `set_limited_hinge_limits` / `set_6dof_limits`；`WorldJoint`/`JointType` 各新增两个变体，按槽序构建 solver 行 |
+| `phys-solver/constraint.rs` | `SixDofJoint` 四行（距离单边、twist、swing0、swing1），固定行序 warm-start 回放；limited-hinge 复用 `HingeJoint` 行且忽略电机；`MAX_JOINT_ROWS = 8` 不变 |
+| `phys-extensions/ragdoll_ease.rs` | `LimitSnapshot` 枚举（Ragdoll/LimitedHinge/SixDof）泛化 `EaseConstraintsAction`；`new` 保持 id 输入序并跳过不支持的族；`loosen` 按族放宽，回弹仍用 SDK 权重 `dt/(duration−elapsed)`；导出 `LimitedHingeLimitSnapshot` / `SixDofLimitSnapshot` |
+| `phys-extensions/ragdoll_controller.rs` | `RagdollState::Custom(u16)` + `USER_STATE_COUNT = 10`、`RagdollStateBehavior` trait（initialize/set_strength/enter/leave/step/easing/clone_state）与 `RagdollStateContext`；`register_state` / `unregister_state` / `has_custom_state` / `queue_state_change`；自定义状态可返回后继状态、声明 easing 模式；控制器 Clone 通过显式 `clone_state` 深拷贝 |
+| `phys-world/world.rs` | 共享运动：`create_attached_body` / `attach_bodies` / `detach_bodies` / `bodies_sharing_motion` / `body_motion_id`；`MotionGroup` 成员表按插入序、`BodyId` 索引（无 `MotionId` serial 风险）；`set_body_transform` 同步全体成员、`set_body_motion_type` 按组切换、`destroy_body` 最后一个成员保留 motion、step 对共享 motion 只积分一次 |
+
+决策与偏差：
+
+- SDK 2021.2 的 `hknpRagdollState` **没有**虚拟 `getNextState` / `createAction`；状态切换由 `queueStateChange` 完成，easing action 由状态管理器在 `setState` 中创建/销毁。Rust 侧照此设计：自定义状态只在 `step` 返回后继状态并声明 easing 模式，不提供 action 工厂钩子。
+- SDK `hknpEaseConstraintsAction` 构造只接受 ragdoll / limited-hinge，`hknpConstraintDataUtils::loosenConstraintLimits` 仅放宽 ragdoll / limited-hinge；6DOF 有 save/restore/partial-restore 代码但无放宽实现。Rust 侧 6DOF 采用显式保守放宽（按当前 twist/swing/距离扩大保存的限制），标记为子集而非逐式直译；plane-angle limits、per-axis 6DOF 平移限位未移植。
+- 共享运动以 keyframed 刚体组为主要用例，目标必须非静态；`attach_bodies` 保留目标 motion 的质量属性，不做多刚体质量合并；detach 用 `v + ω × r` 近似把速度平移到新质心；组缩减到 1 人即解散（剩余 body 持有原 motion slot）。
+- `LimitedHingeCinfo` 是 `HingeCinfo` 的类型别名，limited-hinge 关节在 solver 层复用 hinge 行集但忽略电机，以此保持确定性与最小改动。
+- 验证：新增 `ragdoll_joint_families.rs`（3）/`ragdoll_easing_extended.rs`（3）/`ragdoll_custom_states.rs`（5）/`ragdoll_motion_sharing.rs`（5）共 16 个集成测试，含四类场景 `hvk-trace v1` 逐位一致；全 workspace `cargo test` 通过。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -697,6 +716,10 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | 测试/黄金基准 | 41 个原版 UnitTest：6 Ported + 3 Partial + 32 Blocked（依赖未迁移系统）；新增 19 个集成测试；`World::snapshot` 输出 `hvk-trace v1` 位级文本；C++ 黄金基准因 SDK 无生成构建链暂阻塞，不宣称逐位对齐 |
 | 多线程/序列化 | 窄相按确定性 chunk 并行，结果按 pair 序回排，接触顺序与单线程一致；HFF/Tagfile 解析容器，Phase 16 重建 generic `Value` 树、Phase 17 由门面 `convert` 按 type name 分发为 shape/body（不做反向依赖）；`TCM0` compendium 用 `TCID` 签名校验 `TCRF` 引用后合并类型表，bundle 本地 `TYPE` 最后覆盖；2014 legacy tagfile 为独立变长 tag 流（符号-幅度整数 + 字符串表 + 元数据 + 对象位图 + 前向引用），不套 HFF 段树；WorldHash 按 snapshot 的 f32 位值做 FNV-1a |
 | hkx 格式/版本 patching | 格式嗅探覆盖 2014 packfile 16 字节头、TAG0/TCM0/TAGF/TCMP、NT6、2014 tagfile 双端序 magic 与 XML；2021.2 的 patch 是编译期 `PatchInfo` 常量而非文件数据，Rust 侧用 `PatchSet` 按 `TypeMeta.name`/`version` 选择并递归改写 `Value` 树（rename/remove/add/default-set），SDKV 字符串保留在 `Bundle.sdk_version`；真 packfile 转换仍需外部 DLL |
+| limited-hinge / 6DOF 关节 | limited-hinge 复用 hinge 行集、忽略电机；6DOF 为四行子集（距离单边 + twist + swing0/1），行序固定、warm-start 按行回放；不移植 constraint atom、per-axis 平移限位与 plane-angle limits |
+| hkx 之外的新 easing 族 | `LimitSnapshot` 按关节族分派，Ragdoll/LimitedHinge 按当前姿态放宽、6DOF 显式保守放宽（SDK 此版本无 6DOF loosen 实现）；回弹权重 `dt/(duration−elapsed)` 保持跨族一致 |
+| 用户自定义 ragdoll 状态 | 10 个固定 user-state 槽按注册序存储，trait 对象显式 `clone_state` 支持控制器 Clone；SDK 无虚拟 getNextState/createAction，后继状态通过 `queue_state_change` 在 step 末切换，easing 模式由状态自身声明 |
+| 共享运动 | 成员表按 `BodyId` 与插入序维护（规避 `MotionId` 无 serial 的陈旧风险）；`set_body_transform` 同步整组、共享 motion 每步只积分一次、组解散时最后一个成员保留 motion slot；质量属性不做多体合并 |
 | Signal 重入语义 | 触发中退订 / 嵌套 emit / 触发中新增订阅（延迟到下一轮）已由 `base-types` 测试锁定，后续改动不得破坏 |
 
 ---
@@ -772,13 +795,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（hkx 格式嗅探 + 版本 patching，2026-11-20）：`detect_format`（packfile/TAG0/TCM0/NT6/2014 tagfile/XML）、`PatchInfo`/`PatchSet` 结构型 patch（rename/remove/add/default-set）递归应用于 `Value` 树、`Bundle.sdk_version` 保留 SDKV；`base-serialize` 31 → 34 个单元测试，新增集成测试 `hkx_version_patching.rs` 3 个
 - [x] 后续子集（CharacterControl Climbing + trigger 追踪，2026-11-20）：`at_ladder` 输入、默认注册 Climbing 状态与梯面移动/跳跃公式、AABB 差分 trigger 进入/退出事件；`phys-extensions` 58 → 59 个单元测试，新增集成测试 `character_climbing.rs` 4 个
 - [x] 后续子集（CharacterControl 本地 listener + phantom presence，2026-11-20）：`CharacterProxyListener` 五类本地回调、按 id 注册/逆序派发、manifold 差分 contact 事件、`character_callback`、phantom body 创建/同步/销毁；新增集成测试 `character_listeners.rs` 4 个
-- [ ] 后续：真正的 packfile 容器（SDK 外部 `hkCompatFormats.dll` 转换路径，源码分发内无解析器）与函数型/type-change patching；CharacterControl 完整 signal 驱动的 post-solve/多线程回调、object/proxy interaction、shape-key 级 trigger 与 rigid-body listener；Ragdoll 扩展余项（motion sharing、用户自定义状态、limited-hinge/6DOF easing）
+- [x] 后续子集（Ragdoll 扩展余项，2026-11-21）：limited-hinge/6DOF 关节族（世界槽 API + solver 行 + warm start）、easing 泛化至三族、用户自定义状态（10 槽 trait 对象注册 + queued transition + easing 模式）、共享运动（attached body/attach/detach/transform 同步/生命周期）；新增集成测试 `ragdoll_joint_families.rs` 3 个、`ragdoll_easing_extended.rs` 3 个、`ragdoll_custom_states.rs` 5 个、`ragdoll_motion_sharing.rs` 5 个
+- [ ] 后续：真正的 packfile 容器（SDK 外部 `hkCompatFormats.dll` 转换路径，源码分发内无解析器）与函数型/type-change patching；CharacterControl 完整 signal 驱动的 post-solve/多线程回调、object/proxy interaction、shape-key 级 trigger 与 rigid-body listener；Ragdoll 的 plane-angle limits、per-axis 6DOF 平移限位与多体质量合并
 
-仓库现状（2026-11-20）：
+仓库现状（2026-11-21）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`；本次 CharacterControl listener/phantom 子集在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`；CharacterControl listener/phantom 为 `0cc9743`；本次 Ragdoll 扩展余项在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

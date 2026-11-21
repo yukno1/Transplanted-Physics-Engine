@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::{
-    DEFAULT_EASING_DURATION, Ragdoll, RagdollController, RagdollControllerCinfo, RagdollData,
-    RagdollError, RagdollState,
+    DEFAULT_EASING_DURATION, LimitSnapshot, Ragdoll, RagdollController, RagdollControllerCinfo,
+    RagdollData, RagdollError, RagdollState,
 };
 use proton::math::{Quaternion, Transform, Vector4};
 use proton::np_types::{ConstraintId, MotionType};
@@ -66,7 +66,10 @@ fn e1_dynamic_state_loosens_then_restores_over_four_seconds() {
     );
     let action = controller.easing().expect("loosen action");
     assert_eq!(action.duration(), DEFAULT_EASING_DURATION);
-    assert_eq!(action.saved()[0].cone_angle, original.0);
+    let LimitSnapshot::Ragdoll(saved) = action.saved()[0] else {
+        panic!("expected ragdoll limit snapshot");
+    };
+    assert_eq!(saved.cone_angle, original.0);
     let loose = limits(&world, id);
     assert!(loose.0 > original.0);
 

@@ -10,7 +10,7 @@
 //! | [`ContactManifold`] | manifold stream item | body pair plus [`phys_collide::Manifold`] |
 //! | [`WorldStats`] | counters | body/motion/step/contact counters |
 //! | [`BodySnapshot`]/[`WorldSnapshot`] | determinism trace | `hvk-trace v1` text |
-//! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`FixedCinfo`]/[`RagdollCinfo`]/[`PrismaticCinfo`]/[`SpringCinfo`]/[`PointToPlaneCinfo`] | `Dynamics/Constraint/Data` subset | local-space joint construction info |
+//! | [`BallAndSocketCinfo`]/[`HingeCinfo`]/[`LimitedHingeCinfo`]/[`FixedCinfo`]/[`RagdollCinfo`]/[`SixDofCinfo`]/[`PrismaticCinfo`]/[`SpringCinfo`]/[`PointToPlaneCinfo`] | `Dynamics/Constraint/Data` subset | local-space joint construction info |
 //! | [`WorldJoint`]/[`JointType`] | `hknpConstraintData::ConstraintType` subset | stored joint families and body↔constraint lookup |
 //! | [`QueryFilter`] | `hknpCollisionQuery` filter subset | body/motion-type filtering for world queries |
 //! | [`CollisionFilter`]/[`GroupCollisionFilter`]/[`PairCollisionFilter`] | `Collide/Filter` subset | info/body-pair/query collision decisions (`set_collision_filter`) |
@@ -74,10 +74,10 @@
 //!
 //! Body addition queues, command queue/determinism checking, deactivation
 //! manager, events/modifiers, user body buffers,
-//! `hknpWorldReader`/`hknpWorldWriter` traits, body attachment and motion
-//! sharing, the SDK constraint-atom/constraint-group system, the vehicle
-//! extension layer (suspension raycast / engine / friction solver), and `hkx`
-//! asset loading.
+//! `hknpWorldReader`/`hknpWorldWriter` traits, multi-body mass-property
+//! merging for shared motions, the SDK constraint-atom/constraint-group
+//! system, the vehicle extension layer (suspension raycast / engine /
+//! friction solver), and `hkx` asset loading.
 
 use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
@@ -96,9 +96,9 @@ pub use cinfo::WorldCinfo;
 pub use constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo,
     HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo, JointType,
-    PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, PrismaticPositionMotorCinfo,
-    PrismaticSpringMotorCinfo, RagdollCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo,
-    WheelSuspensionCinfo, WorldJoint,
+    LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo,
+    PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo, RagdollCinfo, SixDofCinfo,
+    SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo, WorldJoint,
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};

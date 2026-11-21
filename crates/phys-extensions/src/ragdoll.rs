@@ -120,6 +120,8 @@ pub enum RagdollError {
     InvalidDuration,
     /// An at-rest transition tolerance was negative or non-finite.
     InvalidTolerance,
+    /// A user ragdoll state id was outside `0..10` or already registered.
+    InvalidState(u16),
 }
 
 impl core::fmt::Display for RagdollError {
@@ -141,6 +143,7 @@ impl core::fmt::Display for RagdollError {
                     "ragdoll at-rest tolerance must be non-negative and finite"
                 )
             }
+            Self::InvalidState(id) => write!(f, "invalid or already registered ragdoll state {id}"),
         }
     }
 }

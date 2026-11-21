@@ -11,6 +11,8 @@
 //! blend. Body tags are represented by per-bone strengths (zero disables the
 //! bone); `keyframeRoot` locks the root body with an exact keyframe.
 
+use std::fmt;
+
 use base_math::{Transform, Vector4};
 use phys_types::MotionType;
 use phys_world::World;
@@ -30,6 +32,75 @@ pub enum RagdollState {
     Dynamic,
     /// Dynamic bodies driven toward the animation with blended motor strength.
     Powered,
+    /// A user-registered state (`hknpRagdollState::STATE_USER_0..9`).
+    Custom(u16),
+}
+
+/// Number of user state slots, mirroring the SDK's ten `STATE_USER_*` ids.
+pub const USER_STATE_COUNT: usize = 10;
+
+/// Per-step data handed to a user-defined ragdoll state.
+pub struct RagdollStateContext<'a> {
+    /// World to drive.
+    pub world: &'a mut World,
+    /// Ragdoll whose tagged bones the state may drive.
+    pub ragdoll: &'a Ragdoll,
+    /// Per-bone strengths (the SDK's tag mask subset).
+    pub bone_strengths: &'a [f32],
+    /// Current blend strength of the state manager.
+    pub strength: f32,
+    /// Parent-relative desired poses, in bone order.
+    pub desired_local: &'a [Transform],
+    /// Root's parent transform.
+    pub model_to_world: Transform,
+    /// Step size.
+    pub delta_time: f32,
+}
+
+impl RagdollStateContext<'_> {
+    /// Drive the tagged bones toward the desired pose with `strength`
+    /// (`Ragdoll::drive_to_pose`).
+    pub fn drive_pose(&mut self, strength: f32) -> Result<(), RagdollError> {
+        self.ragdoll.drive_to_pose(
+            self.world,
+            self.desired_local,
+            self.model_to_world,
+            self.delta_time,
+            strength,
+            self.bone_strengths,
+        )
+    }
+}
+
+/// Behavior hooks of a user-defined ragdoll state (`hknpRagdollState` subset).
+///
+/// The 2021.2 SDK has no virtual `getNextState` or `createAction`: transitions
+/// are queued via `queueStateChange` and the state manager owns the easing
+/// action. A custom state therefore only reports a requested successor from
+/// [`Self::step`] and declares its easing mode through [`Self::easing`].
+pub trait RagdollStateBehavior: fmt::Debug {
+    /// Called once when the state is registered.
+    fn initialize(&mut self, _world: &mut World) {}
+    /// Called whenever the state manager's strength changes.
+    fn set_strength(&mut self, _strength: f32) {}
+    /// Called when this state is entered.
+    fn enter(&mut self, _world: &mut World, _previous: RagdollState, _tag_mask: u32) {}
+    /// Called when this state is left.
+    fn leave(&mut self, _world: &mut World, _next: RagdollState) {}
+    /// Advance the state. Returning `Some(state)` queues a successor for the
+    /// end of this step.
+    fn step(
+        &mut self,
+        _context: &mut RagdollStateContext<'_>,
+    ) -> Result<Option<RagdollState>, RagdollError> {
+        Ok(None)
+    }
+    /// Constraint easing mode and duration (`hknpRagdollState::Cinfo` subset).
+    fn easing(&self) -> (ConstraintEasingMode, f32) {
+        (ConstraintEasingMode::Enforce, DEFAULT_EASING_DURATION)
+    }
+    /// Explicit clone used when a controller is cloned.
+    fn clone_state(&self) -> Box<dyn RagdollStateBehavior>;
 }
 
 /// `hknpRagdollStatePoweredDynamicAnimation::Cinfo` motor-parameter limits.
@@ -158,25 +229,12 @@ struct AtRestTransition {
     angular_tolerance: f32,
 }
 
-fn easing_for(state: RagdollState) -> (ConstraintEasingMode, f32) {
-    match state {
-        // Keyframed/Powered use the default hknpRagdollState::Cinfo mode.
-        RagdollState::Keyframed | RagdollState::Powered => {
-            (ConstraintEasingMode::Enforce, DEFAULT_EASING_DURATION)
-        }
-        RagdollState::Dynamic => (
-            ConstraintEasingMode::LoosenThenRestore,
-            DEFAULT_EASING_DURATION,
-        ),
-    }
-}
-
 /// Stateful driver for a [`Ragdoll`] (`hknpRagdollStateManager` subset).
 ///
 /// Call [`RagdollController::step`] before `World::step`, as with the vehicle
 /// extension. Bone strengths stand in for the SDK's body tag mask; a bone with
 /// strength `0` is excluded from state changes and pose driving.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct RagdollController {
     ragdoll: Ragdoll,
     state: RagdollState,
@@ -191,6 +249,36 @@ pub struct RagdollController {
     last_penetration: DetectionOutput,
     easing: Option<EaseConstraintsAction>,
     at_rest: Option<AtRestTransition>,
+    /// User states keyed by `STATE_USER_0..9`; slots are never reordered.
+    states: Vec<Option<Box<dyn RagdollStateBehavior>>>,
+    /// State requested by a custom state's `step`, applied at step end.
+    queued_state: Option<RagdollState>,
+}
+
+impl Clone for RagdollController {
+    fn clone(&self) -> Self {
+        Self {
+            ragdoll: self.ragdoll.clone(),
+            state: self.state,
+            strength: self.strength,
+            bone_strengths: self.bone_strengths.clone(),
+            motor: self.motor,
+            keyframe_root: self.keyframe_root,
+            transition: self.transition,
+            last_motor: self.last_motor,
+            penetration: self.penetration,
+            penetration_resolved: self.penetration_resolved,
+            last_penetration: self.last_penetration.clone(),
+            easing: self.easing.clone(),
+            at_rest: self.at_rest,
+            states: self
+                .states
+                .iter()
+                .map(|state| state.as_ref().map(|state| state.clone_state()))
+                .collect(),
+            queued_state: self.queued_state,
+        }
+    }
 }
 
 impl RagdollController {
@@ -212,6 +300,8 @@ impl RagdollController {
             last_penetration: DetectionOutput::default(),
             easing: None,
             at_rest: None,
+            states: (0..USER_STATE_COUNT).map(|_| None).collect(),
+            queued_state: None,
         };
         controller.set_state(world, initial_state);
         controller
@@ -220,6 +310,83 @@ impl RagdollController {
     /// Current state.
     pub fn state(&self) -> RagdollState {
         self.state
+    }
+
+    /// Register a user state in one of the ten SDK user-state slots.
+    pub fn register_state(
+        &mut self,
+        world: &mut World,
+        id: u16,
+        mut state: impl RagdollStateBehavior + 'static,
+    ) -> Result<(), RagdollError> {
+        let index = usize::from(id);
+        if index >= USER_STATE_COUNT || self.states[index].is_some() {
+            return Err(RagdollError::InvalidState(id));
+        }
+        state.initialize(world);
+        self.states[index] = Some(Box::new(state));
+        Ok(())
+    }
+
+    /// Remove a user state. If it is active, the controller falls back to
+    /// [`RagdollState::Dynamic`] on the next state step.
+    pub fn unregister_state(&mut self, id: u16) -> bool {
+        let index = usize::from(id);
+        if index >= USER_STATE_COUNT || self.states[index].is_none() {
+            return false;
+        }
+        self.states[index] = None;
+        true
+    }
+
+    /// Whether a user state is registered in this slot.
+    pub fn has_custom_state(&self, id: u16) -> bool {
+        usize::from(id) < USER_STATE_COUNT && self.states[usize::from(id)].is_some()
+    }
+
+    /// Queue a state change for the end of the next [`Self::step`], mirroring
+    /// `hknpRagdollStateManager::queueStateChange`.
+    pub fn queue_state_change(&mut self, state: RagdollState) {
+        self.queued_state = Some(state);
+    }
+
+    fn easing_for(&self, state: RagdollState) -> (ConstraintEasingMode, f32) {
+        match state {
+            RagdollState::Keyframed | RagdollState::Powered => {
+                (ConstraintEasingMode::Enforce, DEFAULT_EASING_DURATION)
+            }
+            RagdollState::Dynamic => (
+                ConstraintEasingMode::LoosenThenRestore,
+                DEFAULT_EASING_DURATION,
+            ),
+            RagdollState::Custom(id) => usize::from(id)
+                .lt(&USER_STATE_COUNT)
+                .then(|| self.states[usize::from(id)].as_ref())
+                .flatten()
+                .map(|state| state.easing())
+                .unwrap_or((ConstraintEasingMode::Enforce, DEFAULT_EASING_DURATION)),
+        }
+    }
+
+    fn custom_state_mut(&mut self, id: u16) -> Option<&mut Box<dyn RagdollStateBehavior>> {
+        let index = usize::from(id);
+        if index >= USER_STATE_COUNT {
+            return None;
+        }
+        self.states[index].as_mut()
+    }
+
+    fn tag_mask(&self) -> u32 {
+        self.bone_strengths
+            .iter()
+            .enumerate()
+            .fold(0u32, |mask, (index, &strength)| {
+                if strength > 0.0 && index < 32 {
+                    mask | (1u32 << index)
+                } else {
+                    mask
+                }
+            })
     }
 
     /// Current drive strength in `[0, 1]`.
@@ -258,11 +425,17 @@ impl RagdollController {
 
     /// Clamp and set the drive strength (`hknpRagdollController::setStrength`).
     pub fn set_strength(&mut self, strength: f32) {
-        self.strength = if strength.is_finite() {
+        let strength = if strength.is_finite() {
             strength.clamp(0.0, 1.0)
         } else {
             0.0
         };
+        self.strength = strength;
+        if let RagdollState::Custom(id) = self.state {
+            if let Some(state) = self.custom_state_mut(id) {
+                state.set_strength(strength);
+            }
+        }
     }
 
     /// Set one bone's strength. Like the SDK's `setBoneStrength`, the value is
@@ -281,16 +454,29 @@ impl RagdollController {
     /// `Keyframed`, dynamic for `Dynamic` and `Powered` (except the powered
     /// root when `keyframe_root` is set).
     pub fn set_state(&mut self, world: &mut World, state: RagdollState) {
+        let tag_mask = self.tag_mask();
+        let previous = self.state;
+        if let RagdollState::Custom(id) = previous {
+            if let Some(behavior) = self.custom_state_mut(id) {
+                behavior.leave(world, state);
+            }
+        }
+        if let RagdollState::Custom(id) = state {
+            if !self.has_custom_state(id) {
+                return;
+            }
+        }
         if let Some(mut action) = self.easing.take() {
             // The SDK checks the *incoming* state's easing mode: entering an
             // enforcing state restores immediately, entering another loosened
             // state drops the old action without restoring.
-            if easing_for(state).0 == ConstraintEasingMode::Enforce {
+            if self.easing_for(state).0 == ConstraintEasingMode::Enforce {
                 action.restore_now(world);
             }
         }
         self.transition = None;
         self.at_rest = None;
+        self.queued_state = None;
         self.state = state;
         self.penetration_resolved = false;
         let keyframe_root = self.keyframe_root;
@@ -305,12 +491,18 @@ impl RagdollController {
                 RagdollState::Keyframed => MotionType::Keyframed,
                 RagdollState::Dynamic => MotionType::Dynamic,
                 RagdollState::Powered if keyframe_root && index == 0 => MotionType::Keyframed,
-                RagdollState::Powered => MotionType::Dynamic,
+                RagdollState::Powered | RagdollState::Custom(_) => MotionType::Dynamic,
             };
             world.set_body_motion_type(body, motion_type);
         }
 
-        let (mode, duration) = easing_for(state);
+        if let RagdollState::Custom(id) = state {
+            if let Some(behavior) = self.custom_state_mut(id) {
+                behavior.enter(world, previous, tag_mask);
+            }
+        }
+
+        let (mode, duration) = self.easing_for(state);
         if mode != ConstraintEasingMode::Enforce {
             let ids: Vec<_> = self
                 .ragdoll
@@ -431,6 +623,10 @@ impl RagdollController {
             self.step_state(world, desired_local, model_to_world, delta_time)?;
         }
 
+        if let Some(next) = self.queued_state.take() {
+            self.set_state(world, next);
+        }
+
         let easing_done = match self.easing.as_mut() {
             Some(action) => action.step(world, delta_time),
             None => false,
@@ -531,6 +727,32 @@ impl RagdollController {
                         .calc_desired_pose_world_space(desired_local, model_to_world)?;
                     self.ragdoll
                         .apply_hard_keyframe_bone(world, 0, desired[0], delta_time)?;
+                }
+                Ok(())
+            }
+            RagdollState::Custom(id) => {
+                let index = usize::from(id);
+                if index >= USER_STATE_COUNT || self.states[index].is_none() {
+                    return Ok(());
+                }
+                let Some(mut behavior) = self.states[index].take() else {
+                    return Ok(());
+                };
+                let result = {
+                    let mut context = RagdollStateContext {
+                        world,
+                        ragdoll: &self.ragdoll,
+                        bone_strengths: &self.bone_strengths,
+                        strength: self.strength,
+                        desired_local,
+                        model_to_world,
+                        delta_time,
+                    };
+                    behavior.step(&mut context)
+                };
+                self.states[index] = Some(behavior);
+                if let Some(next) = result? {
+                    self.queued_state = Some(next);
                 }
                 Ok(())
             }

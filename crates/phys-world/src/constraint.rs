@@ -157,6 +157,12 @@ impl HingeLimitsCinfo {
     }
 }
 
+/// Limited-hinge construction info (`hknpLimitedHingeConstraintData`).
+///
+/// The limited-hinge family shares the hinge construction data (pivots, axes,
+/// reference axes and angular limits); unlike a plain hinge it has no motor.
+pub type LimitedHingeCinfo = HingeCinfo;
+
 /// Motor about the hinge axis (`hknpAngularConstraintMotor` subset).
 ///
 /// Every variant is applied once per solve as a single impulse clamped to
@@ -376,6 +382,118 @@ impl RagdollCinfo {
         self.cone_angle = cone_angle;
         self.twist_min = twist_min;
         self.twist_max = twist_max;
+        self
+    }
+}
+
+/// Limits of a 6DOF joint (`hknp6DofConstraintData` limits subset).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SixDofLimitsCinfo {
+    /// Lower twist bound in radians.
+    pub twist_min: f32,
+    /// Upper twist bound in radians.
+    pub twist_max: f32,
+    /// Maximum absolute swing about the first perpendicular axis.
+    pub swing0_max: f32,
+    /// Maximum absolute swing about the second perpendicular axis.
+    pub swing1_max: f32,
+    /// Maximum distance between the two pivots.
+    pub linear_limit: f32,
+}
+
+impl SixDofLimitsCinfo {
+    /// Construct limits from twist, swing and linear bounds.
+    pub fn new(
+        twist_min: f32,
+        twist_max: f32,
+        swing0_max: f32,
+        swing1_max: f32,
+        linear_limit: f32,
+    ) -> Self {
+        debug_assert!(
+            twist_min <= twist_max && swing0_max >= 0.0 && swing1_max >= 0.0 && linear_limit >= 0.0,
+            "invalid 6DOF limits"
+        );
+        Self {
+            twist_min,
+            twist_max,
+            swing0_max,
+            swing1_max,
+            linear_limit,
+        }
+    }
+}
+
+impl Default for SixDofLimitsCinfo {
+    fn default() -> Self {
+        Self {
+            twist_min: -core::f32::consts::FRAC_PI_4,
+            twist_max: core::f32::consts::FRAC_PI_4,
+            swing0_max: core::f32::consts::FRAC_PI_4,
+            swing1_max: core::f32::consts::FRAC_PI_4,
+            linear_limit: 0.25,
+        }
+    }
+}
+
+/// 6DOF joint construction info (`hknp6DofConstraintData` subset).
+///
+/// The two pivots are kept within [`SixDofLimitsCinfo::linear_limit`] and the
+/// relative orientation is bounded by twist and two swing limits. The SDK's
+/// three per-axis translation limits and plane-angle limits are not ported.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SixDofCinfo {
+    /// First body.
+    pub body_a: BodyId,
+    /// Second body.
+    pub body_b: BodyId,
+    /// Pivot in body A's local space.
+    pub pivot_a: Vector4,
+    /// Pivot in body B's local space.
+    pub pivot_b: Vector4,
+    /// Twist axis in body A's local space (unit).
+    pub twist_axis_a: Vector4,
+    /// Twist axis in body B's local space (unit).
+    pub twist_axis_b: Vector4,
+    /// Reference (plane) axis in body A's local space.
+    pub plane_axis_a: Vector4,
+    /// Reference (plane) axis in body B's local space.
+    pub plane_axis_b: Vector4,
+    /// Twist, swing and linear limits.
+    pub limits: SixDofLimitsCinfo,
+}
+
+impl SixDofCinfo {
+    /// Construct with explicit local pivots, axes and limits.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        body_a: BodyId,
+        body_b: BodyId,
+        pivot_a: Vector4,
+        pivot_b: Vector4,
+        twist_axis_a: Vector4,
+        twist_axis_b: Vector4,
+        plane_axis_a: Vector4,
+        plane_axis_b: Vector4,
+        limits: SixDofLimitsCinfo,
+    ) -> Self {
+        Self {
+            body_a,
+            body_b,
+            pivot_a,
+            pivot_b,
+            twist_axis_a,
+            twist_axis_b,
+            plane_axis_a,
+            plane_axis_b,
+            limits,
+        }
+    }
+
+    /// Replace the joint limits (`setLimits`).
+    #[must_use]
+    pub fn with_limits(mut self, limits: SixDofLimitsCinfo) -> Self {
+        self.limits = limits;
         self
     }
 }
@@ -809,10 +927,14 @@ pub enum WorldJoint {
     BallAndSocket(BallAndSocketCinfo),
     /// Point-to-point plus hinge-axis alignment.
     Hinge(HingeCinfo),
+    /// Limited hinge: hinge geometry with angular limits and no motor.
+    LimitedHinge(LimitedHingeCinfo),
     /// Point-to-point plus locked relative orientation (velocity level).
     Fixed(FixedCinfo),
     /// Cone/twist limited ragdoll joint.
     Ragdoll(RagdollCinfo),
+    /// 6DOF limits subset (linear distance, twist and two swings).
+    SixDof(SixDofCinfo),
     /// Limited slider.
     Prismatic(PrismaticCinfo),
     /// Distance-maintaining spring.
@@ -830,8 +952,10 @@ impl WorldJoint {
         match self {
             Self::BallAndSocket(info) => (info.body_a, info.body_b),
             Self::Hinge(info) => (info.body_a, info.body_b),
+            Self::LimitedHinge(info) => (info.body_a, info.body_b),
             Self::Fixed(info) => (info.body_a, info.body_b),
             Self::Ragdoll(info) => (info.body_a, info.body_b),
+            Self::SixDof(info) => (info.body_a, info.body_b),
             Self::Prismatic(info) => (info.body_a, info.body_b),
             Self::Spring(info) => (info.body_a, info.body_b),
             Self::PointToPlane(info) => (info.body_a, info.body_b),
@@ -844,8 +968,10 @@ impl WorldJoint {
         match self {
             Self::BallAndSocket(_) => JointType::BallAndSocket,
             Self::Hinge(_) => JointType::Hinge,
+            Self::LimitedHinge(_) => JointType::LimitedHinge,
             Self::Fixed(_) => JointType::Fixed,
             Self::Ragdoll(_) => JointType::Ragdoll,
+            Self::SixDof(_) => JointType::SixDof,
             Self::Prismatic(_) => JointType::Prismatic,
             Self::Spring(_) => JointType::Spring,
             Self::PointToPlane(_) => JointType::PointToPlane,
@@ -861,10 +987,14 @@ pub enum JointType {
     BallAndSocket,
     /// Hinge.
     Hinge,
+    /// Limited hinge (angular limits, no motor).
+    LimitedHinge,
     /// Fixed.
     Fixed,
     /// Ragdoll cone/twist.
     Ragdoll,
+    /// 6DOF limits subset.
+    SixDof,
     /// Prismatic slider.
     Prismatic,
     /// Stiff spring.
