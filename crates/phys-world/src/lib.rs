@@ -97,12 +97,13 @@ pub use constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo,
     HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo, JointType,
     LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo,
-    PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo, RagdollCinfo, SixDofCinfo,
-    SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo, WorldJoint,
+    PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo, RagdollCinfo, SixDofAxisMode,
+    SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo,
+    WorldJoint,
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
-pub use world::World;
+pub use world::{MotionMassUpdateMode, World};
 
 /// Deterministic per-body state captured by [`World::snapshot`].
 ///

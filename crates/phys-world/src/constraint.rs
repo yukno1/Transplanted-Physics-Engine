@@ -314,8 +314,9 @@ impl FixedCinfo {
 /// The twist axis defines the primary axis of the joint; `plane_axis_a`/
 /// `plane_axis_b` are perpendicular reference axes used to measure the twist
 /// angle. `cone_angle` caps the swing angle between the twist axes and
-/// `twist_min`/`twist_max` bound the twist angle. The SDK's plane-angle limits
-/// are not ported.
+/// `twist_min`/`twist_max` bound the twist angle. `plane_limits`, when set,
+/// bounds the signed deviation of the angle between A's twist axis and B's
+/// plane axis from 90° (the SDK's `setPlaneMin/MaxAngularLimit` convention).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RagdollCinfo {
     /// First body (the "child" body).
@@ -341,6 +342,9 @@ pub struct RagdollCinfo {
     pub twist_min: f32,
     /// Upper twist bound in radians.
     pub twist_max: f32,
+    /// Signed plane-angle bounds relative to 90°; `None` disables the two
+    /// plane rows and keeps the historical behavior.
+    pub plane_limits: Option<(f32, f32)>,
 }
 
 impl RagdollCinfo {
@@ -369,7 +373,20 @@ impl RagdollCinfo {
             cone_angle: core::f32::consts::FRAC_PI_4,
             twist_min: -core::f32::consts::FRAC_PI_4,
             twist_max: core::f32::consts::FRAC_PI_4,
+            plane_limits: None,
         }
+    }
+
+    /// Enable the SDK-style plane-angle limits (deviation from 90° in
+    /// radians). The SDK defaults to `-0.025..=0.025`.
+    #[must_use]
+    pub fn with_plane_limits(mut self, min: f32, max: f32) -> Self {
+        debug_assert!(
+            min.is_finite() && max.is_finite() && min <= max,
+            "invalid ragdoll plane limits"
+        );
+        self.plane_limits = Some((min, max));
+        self
     }
 
     /// Set the cone and twist limits (`setConeAngle` + `setTwistLimits`).
@@ -386,6 +403,17 @@ impl RagdollCinfo {
     }
 }
 
+/// Per-axis translation mode (`hknp6DofConstraintData::AxisMode` subset).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SixDofAxisMode {
+    /// No row for this axis.
+    Unlimited,
+    /// Clamp the axis translation to `[min, max]`.
+    Limited,
+    /// Lock the axis by using a zero-width `[0, 0]` interval.
+    Fixed,
+}
+
 /// Limits of a 6DOF joint (`hknp6DofConstraintData` limits subset).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SixDofLimitsCinfo {
@@ -397,12 +425,19 @@ pub struct SixDofLimitsCinfo {
     pub swing0_max: f32,
     /// Maximum absolute swing about the second perpendicular axis.
     pub swing1_max: f32,
-    /// Maximum distance between the two pivots.
+    /// Maximum distance between the two pivots (stiff-spring row).
     pub linear_limit: f32,
+    /// Per-axis modes in world X/Y/Z order (twist axis and its perpendiculars).
+    pub linear_axes: [SixDofAxisMode; 3],
+    /// Per-axis lower translations, used when the mode is `Limited`.
+    pub linear_min: [f32; 3],
+    /// Per-axis upper translations, used when the mode is `Limited`.
+    pub linear_max: [f32; 3],
 }
 
 impl SixDofLimitsCinfo {
-    /// Construct limits from twist, swing and linear bounds.
+    /// Construct limits from twist, swing and linear bounds. Per-axis
+    /// translations default to `Unlimited` so existing scenes are unchanged.
     pub fn new(
         twist_min: f32,
         twist_max: f32,
@@ -420,7 +455,29 @@ impl SixDofLimitsCinfo {
             swing0_max,
             swing1_max,
             linear_limit,
+            linear_axes: [SixDofAxisMode::Unlimited; 3],
+            linear_min: [f32::NEG_INFINITY; 3],
+            linear_max: [f32::INFINITY; 3],
         }
+    }
+
+    /// Set one axis mode and its interval (`setAxisMode` + `setAxisLimits`).
+    #[must_use]
+    pub fn with_linear_axis(
+        mut self,
+        axis: usize,
+        mode: SixDofAxisMode,
+        min: f32,
+        max: f32,
+    ) -> Self {
+        debug_assert!(axis < 3, "6DOF axis must be 0, 1 or 2");
+        if axis >= 3 {
+            return self;
+        }
+        self.linear_axes[axis] = mode;
+        self.linear_min[axis] = min;
+        self.linear_max[axis] = max.max(min);
+        self
     }
 }
 
@@ -432,6 +489,9 @@ impl Default for SixDofLimitsCinfo {
             swing0_max: core::f32::consts::FRAC_PI_4,
             swing1_max: core::f32::consts::FRAC_PI_4,
             linear_limit: 0.25,
+            linear_axes: [SixDofAxisMode::Unlimited; 3],
+            linear_min: [f32::NEG_INFINITY; 3],
+            linear_max: [f32::INFINITY; 3],
         }
     }
 }
@@ -439,8 +499,10 @@ impl Default for SixDofLimitsCinfo {
 /// 6DOF joint construction info (`hknp6DofConstraintData` subset).
 ///
 /// The two pivots are kept within [`SixDofLimitsCinfo::linear_limit`] and the
-/// relative orientation is bounded by twist and two swing limits. The SDK's
-/// three per-axis translation limits and plane-angle limits are not ported.
+/// relative orientation is bounded by twist and two swing limits. Optional
+/// per-axis translation limits are configured through
+/// [`SixDofLimitsCinfo::with_linear_axis`]. Angular plane limits are not
+/// part of this joint family.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SixDofCinfo {
     /// First body.

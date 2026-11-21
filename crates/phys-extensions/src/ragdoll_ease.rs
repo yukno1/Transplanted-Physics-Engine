@@ -1,8 +1,8 @@
 //! Constraint-easing subset (`hknpEaseConstraintsAction`).
 //!
-//! Supports the three families the SDK action handles: ragdoll cone/twist,
-//! limited-hinge angular bounds and 6DOF twist/swing/linear bounds. Plane-angle
-//! limits and the SDK's per-axis 6DOF limits are not ported.
+//! Supports the three families the SDK action handles: ragdoll cone/twist
+//! (plus optional plane limits), limited-hinge angular bounds and 6DOF
+//! twist/swing/linear bounds (plus optional per-axis translation limits).
 //!
 //! Loosening widens each joint's limits just enough to contain the current
 //! relative pose plus `SMALL_TOLERANCE` (0.01 rad). Restoration then eases the
@@ -18,7 +18,8 @@
 use base_math::{Quaternion, Vector4};
 use phys_types::{BodyId, ConstraintId};
 use phys_world::{
-    HingeCinfo, HingeLimitsCinfo, RagdollCinfo, SixDofCinfo, SixDofLimitsCinfo, World, WorldJoint,
+    HingeCinfo, HingeLimitsCinfo, RagdollCinfo, SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo,
+    World, WorldJoint,
 };
 
 /// SDK `smallTolerance` used when widening limits.
@@ -48,6 +49,8 @@ pub struct RagdollLimitSnapshot {
     pub twist_min: f32,
     /// Original upper twist bound.
     pub twist_max: f32,
+    /// Optional plane-angle bounds (SDK deviation from 90°).
+    pub plane_limits: Option<(f32, f32)>,
 }
 
 /// Saved angular bounds of one limited-hinge constraint.
@@ -76,6 +79,12 @@ pub struct SixDofLimitSnapshot {
     pub swing1_max: f32,
     /// Original maximum pivot distance.
     pub linear_limit: f32,
+    /// Original per-axis translation modes.
+    pub linear_axes: [SixDofAxisMode; 3],
+    /// Original per-axis lower bounds.
+    pub linear_min: [f32; 3],
+    /// Original per-axis upper bounds.
+    pub linear_max: [f32; 3],
 }
 
 /// One saved limit set, dispatched by joint family.
@@ -121,6 +130,7 @@ impl EaseConstraintsAction {
                         cone_angle: info.cone_angle,
                         twist_min: info.twist_min,
                         twist_max: info.twist_max,
+                        plane_limits: info.plane_limits,
                     }))
                 }
                 Some(WorldJoint::LimitedHinge(info)) => info.limits.map(|limits| {
@@ -138,6 +148,9 @@ impl EaseConstraintsAction {
                         swing0_max: info.limits.swing0_max,
                         swing1_max: info.limits.swing1_max,
                         linear_limit: info.limits.linear_limit,
+                        linear_axes: info.limits.linear_axes,
+                        linear_min: info.limits.linear_min,
+                        linear_max: info.limits.linear_max,
                     }))
                 }
                 _ => None,
@@ -183,6 +196,16 @@ impl EaseConstraintsAction {
                     let loose_min = info.twist_min.min(twist - SMALL_TOLERANCE);
                     let loose_max = info.twist_max.max(twist + SMALL_TOLERANCE);
                     world.set_ragdoll_limits(saved.id, loose_cone, loose_min, loose_max);
+                    if let Some((plane_min, plane_max)) = saved.plane_limits {
+                        let angle = ragdoll_plane_angle(world, &info);
+                        world.set_ragdoll_plane_limits(
+                            saved.id,
+                            Some((
+                                plane_min.min(angle - SMALL_TOLERANCE),
+                                plane_max.max(angle + SMALL_TOLERANCE),
+                            )),
+                        );
+                    }
                 }
                 LimitSnapshot::LimitedHinge(saved) => {
                     let Some(info) = hinge_info(world, saved.id) else {
@@ -201,16 +224,34 @@ impl EaseConstraintsAction {
                         continue;
                     };
                     let (twist, swing0, swing1, distance) = six_dof_state(world, &info);
-                    world.set_6dof_limits(
-                        saved.id,
-                        SixDofLimitsCinfo::new(
-                            saved.twist_min.min(twist - SMALL_TOLERANCE),
-                            saved.twist_max.max(twist + SMALL_TOLERANCE),
-                            saved.swing0_max.max(swing0.abs() + SMALL_TOLERANCE),
-                            saved.swing1_max.max(swing1.abs() + SMALL_TOLERANCE),
-                            saved.linear_limit.max(distance + SMALL_TOLERANCE),
-                        ),
+                    let translations = six_dof_axis_state(world, &info);
+                    let mut limits = SixDofLimitsCinfo::new(
+                        saved.twist_min.min(twist - SMALL_TOLERANCE),
+                        saved.twist_max.max(twist + SMALL_TOLERANCE),
+                        saved.swing0_max.max(swing0.abs() + SMALL_TOLERANCE),
+                        saved.swing1_max.max(swing1.abs() + SMALL_TOLERANCE),
+                        saved.linear_limit.max(distance + SMALL_TOLERANCE),
                     );
+                    limits.linear_axes = saved.linear_axes;
+                    limits.linear_min = saved.linear_min;
+                    limits.linear_max = saved.linear_max;
+                    for axis in 0..3 {
+                        match saved.linear_axes[axis] {
+                            SixDofAxisMode::Unlimited => {}
+                            SixDofAxisMode::Limited => {
+                                limits.linear_min[axis] = saved.linear_min[axis]
+                                    .min(translations[axis] - SMALL_TOLERANCE);
+                                limits.linear_max[axis] = saved.linear_max[axis]
+                                    .max(translations[axis] + SMALL_TOLERANCE);
+                            }
+                            SixDofAxisMode::Fixed => {
+                                limits.linear_axes[axis] = SixDofAxisMode::Limited;
+                                limits.linear_min[axis] = translations[axis] - SMALL_TOLERANCE;
+                                limits.linear_max[axis] = translations[axis] + SMALL_TOLERANCE;
+                            }
+                        }
+                    }
+                    world.set_6dof_limits(saved.id, limits);
                 }
             }
         }
@@ -227,6 +268,9 @@ impl EaseConstraintsAction {
                         saved.twist_min,
                         saved.twist_max,
                     );
+                    if saved.plane_limits.is_some() {
+                        world.set_ragdoll_plane_limits(saved.id, saved.plane_limits);
+                    }
                 }
                 LimitSnapshot::LimitedHinge(saved) => {
                     world.set_limited_hinge_limits(
@@ -235,16 +279,17 @@ impl EaseConstraintsAction {
                     );
                 }
                 LimitSnapshot::SixDof(saved) => {
-                    world.set_6dof_limits(
-                        saved.id,
-                        SixDofLimitsCinfo::new(
-                            saved.twist_min,
-                            saved.twist_max,
-                            saved.swing0_max,
-                            saved.swing1_max,
-                            saved.linear_limit,
-                        ),
+                    let mut limits = SixDofLimitsCinfo::new(
+                        saved.twist_min,
+                        saved.twist_max,
+                        saved.swing0_max,
+                        saved.swing1_max,
+                        saved.linear_limit,
                     );
+                    limits.linear_axes = saved.linear_axes;
+                    limits.linear_min = saved.linear_min;
+                    limits.linear_max = saved.linear_max;
+                    world.set_6dof_limits(saved.id, limits);
                 }
             }
         }
@@ -283,6 +328,14 @@ impl EaseConstraintsAction {
                         lerp(info.twist_min, saved.twist_min),
                         lerp(info.twist_max, saved.twist_max),
                     );
+                    if let (Some((current_min, current_max)), Some((saved_min, saved_max))) =
+                        (info.plane_limits, saved.plane_limits)
+                    {
+                        world.set_ragdoll_plane_limits(
+                            saved.id,
+                            Some((lerp(current_min, saved_min), lerp(current_max, saved_max))),
+                        );
+                    }
                 }
                 (LimitSnapshot::LimitedHinge(saved), Some(WorldJoint::LimitedHinge(info))) => {
                     let Some(limits) = info.limits else {
@@ -298,16 +351,21 @@ impl EaseConstraintsAction {
                 }
                 (LimitSnapshot::SixDof(saved), Some(WorldJoint::SixDof(info))) => {
                     let limits = info.limits;
-                    world.set_6dof_limits(
-                        saved.id,
-                        SixDofLimitsCinfo::new(
-                            lerp(limits.twist_min, saved.twist_min),
-                            lerp(limits.twist_max, saved.twist_max),
-                            lerp(limits.swing0_max, saved.swing0_max),
-                            lerp(limits.swing1_max, saved.swing1_max),
-                            lerp(limits.linear_limit, saved.linear_limit),
-                        ),
+                    let mut restored = SixDofLimitsCinfo::new(
+                        lerp(limits.twist_min, saved.twist_min),
+                        lerp(limits.twist_max, saved.twist_max),
+                        lerp(limits.swing0_max, saved.swing0_max),
+                        lerp(limits.swing1_max, saved.swing1_max),
+                        lerp(limits.linear_limit, saved.linear_limit),
                     );
+                    restored.linear_axes = saved.linear_axes;
+                    for axis in 0..3 {
+                        restored.linear_min[axis] =
+                            lerp(limits.linear_min[axis], saved.linear_min[axis]);
+                        restored.linear_max[axis] =
+                            lerp(limits.linear_max[axis], saved.linear_max[axis]);
+                    }
+                    world.set_6dof_limits(saved.id, restored);
                 }
                 _ => {}
             }
@@ -424,6 +482,33 @@ fn six_dof_state(world: &World, info: &SixDofCinfo) -> (f32, f32, f32, f32) {
         error.dot3(v),
         (pivot_a - pivot_b).length3(),
     )
+}
+
+/// Current per-axis translations of a 6DOF joint in the solver's
+/// `[twist, u, v]` basis.
+fn six_dof_axis_state(world: &World, info: &SixDofCinfo) -> [f32; 3] {
+    let (Some(body_a), Some(body_b)) = (world.body(info.body_a), world.body(info.body_b)) else {
+        return [0.0; 3];
+    };
+    let transform_a = body_a.transform;
+    let transform_b = body_b.transform;
+    let twist = unit(transform_a.rotation.rotate(info.twist_axis_a));
+    let u = deterministic_perpendicular(twist);
+    let v = twist.cross(u);
+    let delta =
+        transform_a.transform_point(info.pivot_a) - transform_b.transform_point(info.pivot_b);
+    [delta.dot3(twist), delta.dot3(u), delta.dot3(v)]
+}
+
+/// Current SDK-style plane angle (deviation of the A-twist/B-plane angle
+/// from 90°), matching `RagdollCinfo::plane_limits`.
+fn ragdoll_plane_angle(world: &World, info: &RagdollCinfo) -> f32 {
+    let (Some(body_a), Some(body_b)) = (world.body(info.body_a), world.body(info.body_b)) else {
+        return 0.0;
+    };
+    let twist_a = unit(body_a.transform.rotation.rotate(info.twist_axis_a));
+    let plane_b = unit(body_b.transform.rotation.rotate(info.plane_axis_b));
+    core::f32::consts::FRAC_PI_2 - twist_a.dot3(plane_b).clamp(-1.0, 1.0).acos()
 }
 
 fn rotation(world: &World, body: BodyId) -> Quaternion {

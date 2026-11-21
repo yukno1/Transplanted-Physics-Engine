@@ -213,6 +213,11 @@ pub struct Body {
     pub shape: Arc<dyn Shape>,
     /// Motion identifier (`PRESET_STATIC` for static bodies).
     pub motion_id: MotionId,
+    /// Mass used when this body's properties are merged into a shared motion.
+    /// `0` means infinite mass; it is copied from `BodyCinfo` at creation.
+    pub mass: f32,
+    /// Diagonal inverse inertia in body-local space, used only by mass merges.
+    pub inverse_inertia: Vector4,
     /// Body state flags (including `IS_STATIC`/`IS_DYNAMIC`/`IS_KEYFRAMED`/`IS_ACTIVE`).
     pub flags: CollisionFlags,
     /// Root material id.
@@ -243,6 +248,8 @@ impl Body {
             transform,
             shape,
             motion_id,
+            mass: 0.0,
+            inverse_inertia: Vector4::ZERO,
             flags: CollisionFlags::NONE,
             material_id: MaterialId::PRESET_DEFAULT,
             quality_id: BodyQualityId::INVALID,

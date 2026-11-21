@@ -2,8 +2,9 @@
 //!
 //! Subset of `original/Physics/Source/Physics/Physics/Dynamics/Constraint/Data/`
 //! as solver-level constraints (migration follow-up to Phase 8, README §4):
-//! ball-and-socket, hinge, fixed, ragdoll, 6DOF limits, prismatic, spring,
-//! point-to-plane and wheel.
+//! ball-and-socket, hinge, fixed, ragdoll (cone/twist + optional plane),
+//! 6DOF limits (distance/twist/swing + optional per-axis translations),
+//! prismatic, spring, point-to-plane and wheel.
 //!
 //! Unlike the SDK's constraint-atom system, these joints are solved directly
 //! from world-space data computed by the world each step: pivots and axes are
@@ -209,8 +210,8 @@ pub struct FixedJoint {
 ///
 /// The pivots must coincide; the swing angle between the two twist axes is
 /// capped at `cone_angle` and the twist angle about the twist axis is limited
-/// to `[twist_min, twist_max]`. The SDK's separate plane-angle limits are not
-/// ported (the cone is the dominant ragdoll limit).
+/// to `[twist_min, twist_max]`. Optional plane-angle rows constrain A's twist
+/// axis against B's plane axis; they are inactive unless configured.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RagdollJoint {
     /// Solver index of body A.
@@ -225,6 +226,8 @@ pub struct RagdollJoint {
     pub twist_axis_a: Vector4,
     /// Twist axis of body B in world space (unit).
     pub twist_axis_b: Vector4,
+    /// Plane axis of body B in world space (unit), used by the plane rows.
+    pub plane_axis_b: Vector4,
     /// Current swing angle between the twist axes, in radians.
     pub swing_angle: f32,
     /// Maximum swing angle (cone half-angle), in radians.
@@ -235,18 +238,27 @@ pub struct RagdollJoint {
     pub twist_min: f32,
     /// Upper twist bound in radians.
     pub twist_max: f32,
+    /// Whether the two plane rows are active.
+    pub plane_enabled: bool,
+    /// Current plane angle `φ - π/2` where `φ` is the angle between A's
+    /// twist axis and B's plane axis.
+    pub plane_angle: f32,
+    /// Lower bound of `plane_angle` (negated SDK plane maximum).
+    pub plane_min: f32,
+    /// Upper bound of `plane_angle` (negated SDK plane minimum).
+    pub plane_max: f32,
 }
 
 /// Solver-level 6DOF joint (`hknp6DofConstraintData` limits subset).
 ///
 /// Body pivots are linked by a single maximum-distance row and the relative
-/// orientation is limited by twist and two swing bounds. The SDK's per-axis
-/// linear translations, plane-angle limits and constraint atoms are not
-/// ported; the row set below is the deterministic subset used by the ragdoll
-/// easing action.
+/// orientation is limited by twist and two swing bounds. Three optional
+/// per-axis translation rows mirror the SDK's `UNLIMITED`/`LIMITED`/`FIXED`
+/// axis modes; constraint atoms are not ported.
 ///
-/// Row order: row 0 the linear distance limit, row 1 the twist limit,
-/// rows 2/3 the swing0/swing1 limits (all unilateral).
+/// Row order: row 0 distance, row 1 twist, rows 2/3 swing0/swing1,
+/// rows 4/5/6 translations along the twist axis and its two perpendiculars
+/// (all unilateral).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SixDofJoint {
     /// Solver index of body A.
@@ -279,6 +291,14 @@ pub struct SixDofJoint {
     pub distance: f32,
     /// Maximum allowed pivot distance.
     pub max_distance: f32,
+    /// Whether each per-axis translation row is active.
+    pub linear_axis_enabled: [bool; 3],
+    /// Current translation along the twist and its two perpendicular axes.
+    pub linear_axis_translation: [f32; 3],
+    /// Lower per-axis translations.
+    pub linear_axis_min: [f32; 3],
+    /// Upper per-axis translations.
+    pub linear_axis_max: [f32; 3],
 }
 
 /// Solver-level prismatic joint (`hknpPrismaticConstraintData` subset).
@@ -489,10 +509,10 @@ pub enum JointConstraint {
     /// `[X, Y, Z]` linear, `[X, Y, Z]` angular lock.
     Fixed(FixedJoint),
     /// Cone and twist limited ragdoll joint. Rows: `[X, Y, Z]` linear,
-    /// row 3 the cone limit, row 4 the twist limit.
+    /// row 3 cone, row 4 twist, rows 5/6 the optional plane upper/lower bounds.
     Ragdoll(RagdollJoint),
-    /// Limited 6DOF joint. Rows: linear distance limit, twist limit and two
-    /// swing limits.
+    /// Limited 6DOF joint. Rows: distance, twist, two swing limits and up to
+    /// three optional per-axis translation limits.
     SixDof(SixDofJoint),
     /// Slider with limited travel. Rows: `[u, v]` linear lock, `[X, Y, Z]`
     /// angular lock, row 5 the travel limit.
@@ -1600,6 +1620,38 @@ fn solve_ragdoll_rows(
         bias_scale,
         max_bias,
     );
+    if joint.plane_enabled {
+        // `plane_angle = φ - π/2` grows with B's angular velocity along
+        // `twist_a × plane_b`, matching solve_unilateral_angular_row.
+        let axis = normalized(normalized(joint.twist_axis_a).cross(normalized(joint.plane_axis_b)));
+        solve_unilateral_angular_row(
+            bodies,
+            joint.body_a,
+            joint.body_b,
+            axis,
+            joint.plane_angle,
+            f32::NEG_INFINITY,
+            joint.plane_max,
+            &mut rows[5],
+            bias_scale,
+            max_bias,
+        );
+        solve_unilateral_angular_row(
+            bodies,
+            joint.body_a,
+            joint.body_b,
+            axis,
+            joint.plane_angle,
+            joint.plane_min,
+            f32::INFINITY,
+            &mut rows[6],
+            bias_scale,
+            max_bias,
+        );
+    } else {
+        rows[5] = 0.0;
+        rows[6] = 0.0;
+    }
 }
 
 /// Ragdoll cone limit: keep the swing angle between the twist axes at or below
@@ -1712,6 +1764,29 @@ fn solve_six_dof_rows(
         bias_scale,
         max_bias,
     );
+    // Per-axis translations reuse the same deterministic basis as the world
+    // builder: twist, then the two perpendiculars derived from it.
+    let axes = [normalized(joint.twist_axis_a), u, v];
+    for index in 0..3 {
+        if !joint.linear_axis_enabled[index] {
+            rows[4 + index] = 0.0;
+            continue;
+        }
+        solve_unilateral_linear_row(
+            bodies,
+            joint.body_a,
+            joint.body_b,
+            joint.pivot_a,
+            joint.pivot_b,
+            axes[index],
+            joint.linear_axis_translation[index],
+            joint.linear_axis_min[index],
+            joint.linear_axis_max[index],
+            &mut rows[4 + index],
+            bias_scale,
+            max_bias,
+        );
+    }
 }
 
 /// Fixed joint: three linear rows plus the angular lock rows.
@@ -1839,6 +1914,29 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
                     rows[4],
                 );
             }
+            if joint.plane_enabled {
+                let axis = normalized(
+                    normalized(joint.twist_axis_a).cross(normalized(joint.plane_axis_b)),
+                );
+                if joint.plane_angle > joint.plane_max {
+                    warm_start_unilateral_angular_row(
+                        bodies,
+                        joint.body_a,
+                        joint.body_b,
+                        axis,
+                        rows[5],
+                    );
+                }
+                if joint.plane_angle < joint.plane_min {
+                    warm_start_unilateral_angular_row(
+                        bodies,
+                        joint.body_a,
+                        joint.body_b,
+                        axis,
+                        rows[6],
+                    );
+                }
+            }
         }
         JointConstraint::SixDof(joint) => {
             let axis = normalized(joint.pivot_a - joint.pivot_b);
@@ -1869,6 +1967,26 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
             }
             if joint.swing1_angle.abs() > joint.swing1_max {
                 warm_start_unilateral_angular_row(bodies, joint.body_a, joint.body_b, v, rows[3]);
+            }
+            let axes = [twist, u, v];
+            for index in 0..3 {
+                if !joint.linear_axis_enabled[index] {
+                    continue;
+                }
+                let translation = joint.linear_axis_translation[index];
+                if translation > joint.linear_axis_max[index]
+                    || translation < joint.linear_axis_min[index]
+                {
+                    warm_start_unilateral_linear_row(
+                        bodies,
+                        joint.body_a,
+                        joint.body_b,
+                        joint.pivot_a,
+                        joint.pivot_b,
+                        axes[index],
+                        rows[4 + index],
+                    );
+                }
             }
         }
         JointConstraint::Prismatic(joint) => {
@@ -2512,11 +2630,16 @@ mod tests {
             pivot_b: Vector4::ZERO,
             twist_axis_a: Vector4::UNIT_X,
             twist_axis_b: Vector4::UNIT_X,
+            plane_axis_b: Vector4::UNIT_Y,
             swing_angle: 0.0,
             cone_angle: core::f32::consts::FRAC_PI_4,
             twist_angle: 0.0,
             twist_min: -0.2,
             twist_max: 0.2,
+            plane_enabled: false,
+            plane_angle: 0.0,
+            plane_min: -0.025,
+            plane_max: 0.025,
         }
     }
 

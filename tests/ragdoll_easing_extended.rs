@@ -3,14 +3,12 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::extensions::{
-    EaseConstraintsAction, LimitSnapshot, Ragdoll, RagdollData, SixDofLimitSnapshot,
-};
+use proton::extensions::{EaseConstraintsAction, LimitSnapshot, Ragdoll, RagdollData};
 use proton::math::{Quaternion, Transform, Vector4};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
-    HingeCinfo, HingeLimitsCinfo, SixDofCinfo, SixDofLimitsCinfo, World, WorldCinfo,
+    HingeCinfo, HingeLimitsCinfo, SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo, World, WorldCinfo,
 };
 
 fn body(world: &mut World, position: Vector4) -> BodyId {
@@ -108,16 +106,17 @@ fn e5_six_dof_saves_loosens_and_eases_back() {
     let LimitSnapshot::SixDof(saved) = action.saved()[0] else {
         panic!("expected 6DOF snapshot");
     };
-    assert_eq!(
-        saved,
-        SixDofLimitSnapshot {
-            id,
-            twist_min: original.twist_min,
-            twist_max: original.twist_max,
-            swing0_max: original.swing0_max,
-            swing1_max: original.swing1_max,
-            linear_limit: original.linear_limit,
-        }
+    assert_eq!(saved.id, id);
+    assert_eq!(saved.twist_min, original.twist_min);
+    assert_eq!(saved.twist_max, original.twist_max);
+    assert_eq!(saved.swing0_max, original.swing0_max);
+    assert_eq!(saved.swing1_max, original.swing1_max);
+    assert_eq!(saved.linear_limit, original.linear_limit);
+    assert!(
+        saved
+            .linear_axes
+            .iter()
+            .all(|mode| *mode == SixDofAxisMode::Unlimited)
     );
     action.loosen(&mut world);
     let loose = six_dof_limits(&world, id);

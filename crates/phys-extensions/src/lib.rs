@@ -18,9 +18,11 @@
 //! The CharacterControl `RigidBody` / `RayCasting` routes are not ported; they
 //! need the post-step deactivation/contact framework. Ragdoll easing now covers
 //! the limited-hinge and 6DOF limit sets and the state manager accepts ten
-//! user-defined states; the `ActionManager` integration, plane-angle limits,
-//! per-axis 6DOF translation limits and multi-body mass-property merging remain
-//! out of scope. The explicit ragdoll driving subset lives in [`ragdoll`].
+//! user-defined states, optional ragdoll plane-angle and 6DOF per-axis
+//! translation limits, and shared-motion mass merges. The `ActionManager`
+//! integration, full inertia-tensor mass properties and non-diagonal 6DOF
+//! translations remain out of scope. The explicit ragdoll driving subset
+//! lives in [`ragdoll`].
 
 pub mod character;
 pub mod ragdoll;

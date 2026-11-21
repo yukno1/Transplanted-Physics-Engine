@@ -22,8 +22,8 @@ use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
     LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo,
-    SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo,
-    WorldJoint,
+    SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo,
+    WheelSuspensionCinfo, WorldJoint,
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
@@ -35,6 +35,19 @@ struct SleepState {
     timer: f32,
     /// Whether the body is currently asleep (velocity zero, no narrow phase).
     sleeping: bool,
+}
+
+/// How `attachBodies`/`detachBodies` update the shared motion's mass
+/// properties (`hknpWorld::UpdateMotionMode` subset).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MotionMassUpdateMode {
+    /// Leave the motion's mass properties untouched (SDK default).
+    Keep,
+    /// Incrementally update the compound mass properties. This subset uses
+    /// the same deterministic rebuild as [`Self::Rebuild`].
+    Update,
+    /// Recompute mass, center of mass and diagonal inertia from all members.
+    Rebuild,
 }
 
 /// A group of bodies sharing one non-static motion (`hknpMotion` attachment
@@ -246,6 +259,10 @@ impl World {
         };
 
         let mut body = Body::new(cinfo.shape.clone(), cinfo.transform(), motion_id);
+        if let Some(motion) = self.motions.get(motion_id) {
+            body.mass = motion.mass;
+            body.inverse_inertia = motion.inverse_inertia;
+        }
         body.flags = cinfo.flags | motion_flags;
         body.material_id = cinfo.material_id;
         body.quality_id = cinfo.quality_id;
@@ -288,9 +305,19 @@ impl World {
     /// Attach existing bodies to `target`'s shared motion (`attachBodies`
     /// subset). Bodies already using the target's motion are skipped.
     ///
-    /// The target motion's mass properties are retained; combining the mass of
-    /// several dynamic bodies into one attached motion is not ported.
+    /// Mass properties are retained by default (`KEEP_MASS_PROPERTIES`);
+    /// [`Self::attach_bodies_with_mode`] can rebuild them from all members.
     pub fn attach_bodies(&mut self, target: BodyId, bodies: &[BodyId]) -> bool {
+        self.attach_bodies_with_mode(target, bodies, MotionMassUpdateMode::Keep)
+    }
+
+    /// [`Self::attach_bodies`] with an explicit mass-property update mode.
+    pub fn attach_bodies_with_mode(
+        &mut self,
+        target: BodyId,
+        bodies: &[BodyId],
+        mode: MotionMassUpdateMode,
+    ) -> bool {
         let Some(target_motion) = self.bodies.get(target).map(|body| body.motion_id) else {
             return false;
         };
@@ -336,6 +363,10 @@ impl World {
             self.motion_groups[group_index].members.push(body);
             self.group_of_body.insert(body, group_index);
         }
+        if mode != MotionMassUpdateMode::Keep {
+            let members = self.motion_groups[group_index].members.clone();
+            self.recompute_motion_properties(target_motion, &members);
+        }
         true
     }
 
@@ -344,6 +375,31 @@ impl World {
     /// type, mass and inverse inertia, and translates the linear velocity to
     /// the body's center (`v + ω × r`).
     pub fn detach_bodies(&mut self, bodies: &[BodyId]) -> bool {
+        self.detach_bodies_with_mode(bodies, MotionMassUpdateMode::Keep)
+    }
+
+    /// [`Self::detach_bodies`] with an explicit mass-property update mode.
+    pub fn detach_bodies_with_mode(
+        &mut self,
+        bodies: &[BodyId],
+        mode: MotionMassUpdateMode,
+    ) -> bool {
+        let mut affected: Vec<(MotionId, Vec<BodyId>)> = Vec::new();
+        for &body in bodies {
+            let Some(group_index) = self.group_of_body.get(&body).copied() else {
+                continue;
+            };
+            let group = &self.motion_groups[group_index];
+            if !affected.iter().any(|(id, _)| *id == group.motion_id) {
+                let remaining: Vec<_> = group
+                    .members
+                    .iter()
+                    .copied()
+                    .filter(|member| !bodies.contains(member))
+                    .collect();
+                affected.push((group.motion_id, remaining));
+            }
+        }
         for &body in bodies {
             let Some(group_index) = self.group_of_body.get(&body).copied() else {
                 continue;
@@ -352,9 +408,14 @@ impl World {
             let Some(motion) = self.motions.get(motion_id).copied() else {
                 continue;
             };
-            let Some(transform) = self.bodies.get(body).map(|entry| entry.transform) else {
+            let Some(body_properties) = self
+                .bodies
+                .get(body)
+                .map(|entry| (entry.transform, entry.mass, entry.inverse_inertia))
+            else {
                 continue;
             };
+            let transform = body_properties.0;
             let new_position = transform.translation;
             let mut detached = Motion::new(
                 motion.motion_type,
@@ -365,13 +426,22 @@ impl World {
                         .angular_velocity
                         .cross(new_position - motion.position),
                 motion.angular_velocity,
-                motion.mass,
+                if body_properties.1 > 0.0 {
+                    body_properties.1
+                } else {
+                    motion.mass
+                },
             );
-            detached.inverse_inertia = motion.inverse_inertia;
+            detached.inverse_inertia = body_properties.2;
             let new_id = self.motions.allocate(detached);
             self.detach_motion_membership(body);
             if let Some(entry) = self.bodies.get_mut(body) {
                 entry.motion_id = new_id;
+            }
+        }
+        if mode != MotionMassUpdateMode::Keep {
+            for (motion_id, members) in affected {
+                self.recompute_motion_properties(motion_id, &members);
             }
         }
         true
@@ -420,6 +490,115 @@ impl World {
             group.members.clear();
         }
         Some(group.motion_id)
+    }
+
+    /// Recompute a shared dynamic motion's mass, center of mass and diagonal
+    /// inverse inertia from the given members (`rebuildMotionMassProperties`
+    /// subset). The full inertia tensor is projected onto the world diagonal
+    /// with the parallel-axis theorem; non-diagonal terms are discarded.
+    fn recompute_motion_properties(&mut self, motion_id: MotionId, members: &[BodyId]) {
+        let Some(motion) = self.motions.get(motion_id).copied() else {
+            return;
+        };
+        if !motion.motion_type.is_dynamic() {
+            return;
+        }
+        let mut samples = Vec::with_capacity(members.len());
+        let mut total_mass = 0.0f32;
+        let mut center = Vector4::ZERO;
+        for &member in members {
+            let Some(body) = self.bodies.get(member) else {
+                continue;
+            };
+            if body.mass <= 0.0 || !body.mass.is_finite() {
+                continue;
+            }
+            samples.push((
+                body.transform.translation,
+                body.transform.rotation_quaternion(),
+                body.mass,
+                body.inverse_inertia,
+            ));
+            total_mass += body.mass;
+            center += body.transform.translation * body.mass;
+        }
+        if total_mass <= 0.0 || !total_mass.is_finite() {
+            return;
+        }
+        center *= 1.0 / total_mass;
+        let mut inertia = [0.0f32; 3];
+        let basis = [Vector4::UNIT_X, Vector4::UNIT_Y, Vector4::UNIT_Z];
+        for (position, rotation, mass, inverse_inertia) in samples {
+            let arm = position - center;
+            let arm_sq = arm.x * arm.x + arm.y * arm.y + arm.z * arm.z;
+            let rotated = [
+                rotation.rotate(basis[0]),
+                rotation.rotate(basis[1]),
+                rotation.rotate(basis[2]),
+            ];
+            let local_inertia = [
+                if inverse_inertia.x > 0.0 {
+                    1.0 / inverse_inertia.x
+                } else {
+                    0.0
+                },
+                if inverse_inertia.y > 0.0 {
+                    1.0 / inverse_inertia.y
+                } else {
+                    0.0
+                },
+                if inverse_inertia.z > 0.0 {
+                    1.0 / inverse_inertia.z
+                } else {
+                    0.0
+                },
+            ];
+            for axis in 0..3 {
+                let component = rotated[axis][axis];
+                inertia[axis] += local_inertia[axis] * component * component;
+                inertia[axis] += mass * (arm_sq - arm[axis] * arm[axis]);
+            }
+        }
+        let old_position = motion.position;
+        let inverse = Vector4::from_xyz(
+            if inertia[0] > 0.0 {
+                1.0 / inertia[0]
+            } else {
+                0.0
+            },
+            if inertia[1] > 0.0 {
+                1.0 / inertia[1]
+            } else {
+                0.0
+            },
+            if inertia[2] > 0.0 {
+                1.0 / inertia[2]
+            } else {
+                0.0
+            },
+        );
+        if let Some(motion) = self.motions.get_mut(motion_id) {
+            motion.mass = total_mass;
+            motion.position = center;
+            motion.inverse_inertia = inverse;
+            motion.linear_velocity += motion.angular_velocity.cross(center - old_position);
+        }
+    }
+
+    /// Set a body's local inverse inertia, keeping the stored mass-merge
+    /// source in sync with its motion.
+    pub fn set_body_inverse_inertia(&mut self, body_id: BodyId, inverse: Vector4) -> bool {
+        let Some(body) = self.bodies.get(body_id) else {
+            return false;
+        };
+        let motion_id = body.motion_id;
+        if let Some(motion) = self.motions.get_mut(motion_id) {
+            motion.inverse_inertia = inverse;
+        }
+        if let Some(body) = self.bodies.get_mut(body_id) {
+            body.inverse_inertia = inverse;
+        }
+        true
     }
 
     /// Destroy a body and its motion (`destroyBodies`).
@@ -823,17 +1002,48 @@ impl World {
     }
 
     /// Set the twist/swing/linear limits of a 6DOF joint.
+    /// Enable, update or disable a ragdoll's plane-angle limits (deviation
+    /// from 90°, in radians).
+    pub fn set_ragdoll_plane_limits(
+        &mut self,
+        id: ConstraintId,
+        plane_limits: Option<(f32, f32)>,
+    ) -> bool {
+        if let Some((min, max)) = plane_limits {
+            if !min.is_finite() || !max.is_finite() || min > max {
+                return false;
+            }
+        }
+        match self.joint_slot_mut(id) {
+            Some(slot) => match &mut slot.joint {
+                WorldJoint::Ragdoll(info) => {
+                    info.plane_limits = plane_limits;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        }
+    }
+
     pub fn set_6dof_limits(&mut self, id: ConstraintId, limits: SixDofLimitsCinfo) -> bool {
         match self.joint_slot_mut(id) {
             Some(slot) => match &mut slot.joint {
                 WorldJoint::SixDof(info) => {
-                    info.limits = SixDofLimitsCinfo::new(
-                        limits.twist_min,
-                        limits.twist_max.max(limits.twist_min),
-                        limits.swing0_max.max(0.0),
-                        limits.swing1_max.max(0.0),
-                        limits.linear_limit.max(0.0),
-                    );
+                    info.limits = SixDofLimitsCinfo {
+                        twist_min: limits.twist_min,
+                        twist_max: limits.twist_max.max(limits.twist_min),
+                        swing0_max: limits.swing0_max.max(0.0),
+                        swing1_max: limits.swing1_max.max(0.0),
+                        linear_limit: limits.linear_limit.max(0.0),
+                        linear_axes: limits.linear_axes,
+                        linear_min: limits.linear_min,
+                        linear_max: [
+                            limits.linear_max[0].max(limits.linear_min[0]),
+                            limits.linear_max[1].max(limits.linear_min[1]),
+                            limits.linear_max[2].max(limits.linear_min[2]),
+                        ],
+                    };
                     true
                 }
                 _ => false,
@@ -1056,6 +1266,18 @@ impl World {
                     let twist_angle = twist_a
                         .dot3(plane_a.cross(plane_b))
                         .atan2(plane_a.dot3(plane_b));
+                    let plane_axis_b = unit_vector(transform_b.rotation.rotate(info.plane_axis_b));
+                    let (plane_enabled, plane_angle, plane_min, plane_max) = match info.plane_limits
+                    {
+                        Some((sdk_min, sdk_max)) => (
+                            true,
+                            twist_a.dot3(plane_axis_b).clamp(-1.0, 1.0).acos()
+                                - core::f32::consts::FRAC_PI_2,
+                            -sdk_max,
+                            -sdk_min,
+                        ),
+                        None => (false, 0.0, f32::NEG_INFINITY, f32::INFINITY),
+                    };
                     result.push((
                         slot_index,
                         JointConstraint::Ragdoll(RagdollJoint {
@@ -1065,11 +1287,16 @@ impl World {
                             pivot_b: transform_b.transform_point(info.pivot_b),
                             twist_axis_a: twist_a,
                             twist_axis_b: twist_b,
+                            plane_axis_b,
                             swing_angle,
                             cone_angle: info.cone_angle,
                             twist_angle,
                             twist_min: info.twist_min,
                             twist_max: info.twist_max,
+                            plane_enabled,
+                            plane_angle,
+                            plane_min,
+                            plane_max,
                         }),
                     ));
                 }
@@ -1095,6 +1322,30 @@ impl World {
                     let twist_angle = twist_a
                         .dot3(plane_a.cross(plane_b))
                         .atan2(plane_a.dot3(plane_b));
+                    let axis_vectors = [twist_a, u, v];
+                    let mut linear_axis_enabled = [false; 3];
+                    let mut linear_axis_translation = [0.0; 3];
+                    let mut linear_axis_min = [f32::NEG_INFINITY; 3];
+                    let mut linear_axis_max = [f32::INFINITY; 3];
+                    for index in 0..3 {
+                        match info.limits.linear_axes[index] {
+                            SixDofAxisMode::Unlimited => {}
+                            SixDofAxisMode::Limited => {
+                                linear_axis_enabled[index] = true;
+                                linear_axis_translation[index] =
+                                    (pivot_a - pivot_b).dot3(axis_vectors[index]);
+                                linear_axis_min[index] = info.limits.linear_min[index];
+                                linear_axis_max[index] = info.limits.linear_max[index];
+                            }
+                            SixDofAxisMode::Fixed => {
+                                linear_axis_enabled[index] = true;
+                                linear_axis_translation[index] =
+                                    (pivot_a - pivot_b).dot3(axis_vectors[index]);
+                                linear_axis_min[index] = 0.0;
+                                linear_axis_max[index] = 0.0;
+                            }
+                        }
+                    }
                     result.push((
                         slot_index,
                         JointConstraint::SixDof(SixDofJoint {
@@ -1113,6 +1364,10 @@ impl World {
                             swing1_max: info.limits.swing1_max,
                             distance: (pivot_a - pivot_b).length3(),
                             max_distance: info.limits.linear_limit,
+                            linear_axis_enabled,
+                            linear_axis_translation,
+                            linear_axis_min,
+                            linear_axis_max,
                         }),
                     ));
                 }

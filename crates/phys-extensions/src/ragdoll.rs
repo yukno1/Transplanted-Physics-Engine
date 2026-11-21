@@ -26,6 +26,9 @@ pub struct RagdollLimits {
     pub twist_min: f32,
     /// Upper twist bound in radians.
     pub twist_max: f32,
+    /// Optional plane-angle bounds as a deviation from 90°; `None` disables
+    /// the two plane rows (default, preserving the historical baseline).
+    pub plane_limits: Option<(f32, f32)>,
 }
 
 impl Default for RagdollLimits {
@@ -35,7 +38,17 @@ impl Default for RagdollLimits {
             cone_angle: quarter,
             twist_min: -quarter,
             twist_max: quarter,
+            plane_limits: None,
         }
+    }
+}
+
+impl RagdollLimits {
+    /// Enable the SDK-style plane-angle limits (`-0.025..=0.025` by default).
+    #[must_use]
+    pub fn with_plane_limits(mut self, min: f32, max: f32) -> Self {
+        self.plane_limits = Some((min, max));
+        self
     }
 }
 
@@ -216,6 +229,10 @@ impl Ragdoll {
                 bone.limits.twist_min,
                 bone.limits.twist_max,
             );
+            let info = match bone.limits.plane_limits {
+                Some((min, max)) => info.with_plane_limits(min, max),
+                None => info,
+            };
             let id = world.create_ragdoll_constraint(&info);
             world.set_constraint_collisions_enabled(id, false);
             constraints[index] = Some(id);
