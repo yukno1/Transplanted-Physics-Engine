@@ -12,7 +12,9 @@
 //! | [`type_meta`] | `hkReflect::Type` / `TNA1`/`TBDY` | reflection metadata decoding |
 //! | [`compendium`] | `TagfileReadFormat::Impl::Compendium` | `TCM0` signatures and shared `TYPE` tables |
 //! | [`object`] | `ReadFormat::read` subset | generic object rebuild, `ITEM`/`PTCH` fixups |
-//! | [`version`] | `hkSerializeDetail` sniffer + `hkReflect::Version::PatchInfo` subset | format detection, synthetic version patches on `Value` trees |
+//! | [`version`] | `hkSerializeDetail` sniffer + `hkReflect::Version::PatchInfo` subset | format detection, structural/function/type-change patches on `Value` trees |
+//! | [`packfile`] | `BinaryPackfile2014` header + `hkCompatFormats` hook | header validation and external conversion boundary |
+//! | [`loader`] | `hkSerializeUtil` format routing subset | unified hkx load entry with optional patching |
 //!
 //! # Scope
 //!
@@ -27,14 +29,19 @@
 //!
 //! # Not ported
 //!
-//! * Compiled Havok patch lists, patch functions, type changes and native pointer sections.
-//! * Actual packfile containers (converted by an external SDK DLL); only their headers are sniffed.
+//! * Compiled Havok patch lists and native pointer sections; callers register
+//!   patch tables explicitly, including deterministic function pointers.
+//! * The 2014 binary packfile container parser (converted by an external SDK
+//!   DLL). Headers are parsed and validated; a caller-supplied converter must
+//!   produce bytes for an existing tagfile reader.
 //! * Writers, resource handles, property decls and vtable initialisation.
 //! * Conversion of a generic bundle into `phys-world`/`phys-extensions` objects.
 
 pub mod compendium;
 pub mod hff;
+pub mod loader;
 pub mod object;
+pub mod packfile;
 pub mod tagfile;
 pub mod tagfile2014;
 pub mod type_meta;
@@ -43,7 +50,12 @@ pub mod vle;
 
 pub use compendium::Compendium;
 pub use hff::{HffError, HffNode, HffScope, four_cc, ident_name, pack_scope};
+pub use loader::{LoadHkxError, LoadOptions, LoadedHkx, load_hkx};
 pub use object::{Bundle, Fixup, Item, ItemKind, LoadError, Record, Value};
+pub use packfile::{
+    CURRENT_FILE_VERSION, HEADER_LEN as PACKFILE_HEADER_LEN, PackfileConverter, PackfileError,
+    PackfileHeader, PackfilePolicy, convert_packfile,
+};
 pub use tagfile::{
     COMPENDIUM, COMPENDIUM_ID, COMPENDIUM_REFERENCE, DATA, INDEX, SDK_VERSION, TAGFILE, TYPES,
     Tagfile, TagfileError,
@@ -57,6 +69,8 @@ pub use type_meta::{
 };
 pub use version::{
     BINARY_PACKFILE_MAGIC_0, BINARY_PACKFILE_MAGIC_1, CLASS_ADDED, CLASS_REMOVED,
-    LEGACY_TAGFILE_MAGIC_0, LEGACY_TAGFILE_MAGIC_1, LegacyType, NT6_MAGIC_1, PatchComponent,
-    PatchDefault, PatchInfo, PatchReport, PatchSet, SerializeFormat, detect_format,
+    DataObjectPatchFn, LEGACY_TAGFILE_MAGIC_0, LEGACY_TAGFILE_MAGIC_1, LegacyType,
+    MAX_PATCH_CHAIN_STEPS, NT6_MAGIC_1, PatchComponent, PatchDefault, PatchError,
+    PatchFunctionHelper, PatchInfo, PatchReport, PatchSet, SerializeFormat, TypeChangePatchFn,
+    VarPatchFn, VarTypeChangePatchFn, detect_format,
 };

@@ -1,19 +1,25 @@
-//! Serialization format detection and a synthetic version-patching subset.
+//! Serialization format detection and a generic version-patching subset.
 //!
 //! The 2021.2 SDK has no in-tree `hkVersionRegistry`: patch records are
 //! compiled C++ `hkReflect::Version::PatchInfo` constants registered with a
 //! `PatchRegistry` and applied to a loaded `hkSerialize::Bundle`. This module
-//! models the structural operations (member rename/remove/add/default-set)
-//! as Rust values and applies them to the generic `Value` trees produced by
+//! models structural, function and type-change operations as Rust values and
+//! applies them to the generic `Value` trees produced by
 //! [`crate::object::Bundle`]. There is no patch encoding inside hkx files, so
 //! callers supply the table, just as the SDK links in compiled patch lists.
+//!
+//! Function patches use plain function pointers instead of closures or C++
+//! `hkDataObject` pointers: state must be explicit in the patched value tree so
+//! application stays deterministic and portable.
 //!
 //! The 2014 binary packfile container parser itself lives in
 //! `hkCompatFormats.dll` and is not available here; only its 16-byte header
 //! sniffer is reproduced by [`detect_format`].
 
+use std::collections::{BTreeMap, HashMap, HashSet};
+
 use crate::object::{Bundle, Record, Value};
-use crate::type_meta::TypeInfo;
+use crate::type_meta::{TypeId, TypeInfo};
 
 /// `BinaryPackfile2014::MAGIC_0`.
 pub const BINARY_PACKFILE_MAGIC_0: u32 = 0x57e0_e057;
@@ -122,8 +128,12 @@ pub enum LegacyType {
     Struct = 9,
     /// C string.
     CString = 10,
+    /// Type described by a string rather than a fixed enum value.
+    FromName = 11,
     /// Dynamic array flag (`TYPE_ARRAY`).
     Array = 0x10,
+    /// Fixed tuple flag (`TYPE_TUPLE`).
+    Tuple = 0x20,
 }
 
 /// Default value written by `MEMBER_ADDED` / `MEMBER_DEFAULT_SET`.
@@ -162,8 +172,46 @@ impl PatchDefault {
     }
 }
 
-/// One structural patch component (`hkReflect::Version::Component` subset).
-#[derive(Clone, Debug, PartialEq)]
+/// Callback for `PATCH_DATAOBJECT_FUNCTION`.
+///
+/// The callback receives the record being upgraded; use [`PatchFunctionHelper`]
+/// for values that would require allocation in the C++ implementation.
+pub type DataObjectPatchFn = fn(&mut Record, &PatchFunctionHelper);
+/// Callback for `PATCH_VAR_FUNCTION`.
+pub type VarPatchFn = fn(&mut Value, &PatchFunctionHelper);
+/// Callback for `PATCH_TYPE_CHANGED`.
+pub type TypeChangePatchFn = fn(&mut Value, &str, &str, &PatchFunctionHelper);
+/// Callback for `PATCH_VAR_TYPE_CHANGED`.
+pub type VarTypeChangePatchFn = fn(&mut Value, &str, &str, &PatchFunctionHelper);
+
+/// Stateless helpers mirroring the allocation surface of `PatchFunctionHelper`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PatchFunctionHelper;
+
+impl PatchFunctionHelper {
+    /// Build a generic record value.
+    pub fn new_record(&self, type_id: TypeId, fields: Vec<(String, Value)>) -> Value {
+        Value::Record(Record { type_id, fields })
+    }
+
+    /// Build a dynamic array value.
+    pub fn new_array(&self, values: Vec<Value>) -> Value {
+        Value::Array(values)
+    }
+
+    /// Build a NUL-terminated string value as a Rust string.
+    pub fn new_string(&self, value: impl Into<String>) -> Value {
+        Value::String(value.into())
+    }
+
+    /// Build an explicit null pointer value.
+    pub fn null_pointer(&self) -> Value {
+        Value::NullPointer
+    }
+}
+
+/// One patch component (`hkReflect::Version::Component` subset).
+#[derive(Clone, Debug)]
 pub enum PatchComponent {
     /// `PATCH_MEMBER_RENAMED`.
     MemberRenamed {
@@ -193,6 +241,153 @@ pub enum PatchComponent {
         /// Replacement value.
         default: PatchDefault,
     },
+    /// `PATCH_DATAOBJECT_FUNCTION`, applied to the whole record.
+    DataObjectFunction {
+        /// Diagnostic name from the compiled patch table.
+        name: String,
+        /// Deterministic callback.
+        function: DataObjectPatchFn,
+    },
+    /// `PATCH_VAR_FUNCTION`, applied to one named field.
+    VarFunction {
+        /// Diagnostic name from the compiled patch table.
+        name: String,
+        /// Field whose value is passed to the callback.
+        field: String,
+        /// Deterministic callback.
+        function: VarPatchFn,
+    },
+    /// `PATCH_TYPE_CHANGED` with an old-style type description.
+    TypeChanged {
+        /// Field whose type changes.
+        name: String,
+        /// Legacy type before the change.
+        old_type: LegacyType,
+        /// Old type name, when `old_type` is `FromName`.
+        old_type_name: String,
+        /// Tuple length of the old field, zero when scalar.
+        old_tuples: u32,
+        /// Legacy type after the change.
+        new_type: LegacyType,
+        /// New type name, when `new_type` is `FromName`.
+        new_type_name: String,
+        /// Tuple length of the new field, zero when scalar.
+        new_tuples: u32,
+        /// Conversion callback receiving old/new type names.
+        function: TypeChangePatchFn,
+    },
+    /// `PATCH_VAR_TYPE_CHANGED` with string type descriptions.
+    VarTypeChanged {
+        /// Field whose type changes.
+        name: String,
+        /// Old type description, e.g. `int[32]`.
+        old_type: String,
+        /// New type description.
+        new_type: String,
+        /// Conversion callback receiving old/new type descriptions.
+        function: VarTypeChangePatchFn,
+    },
+}
+
+impl PartialEq for PatchComponent {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::MemberRenamed { old: a, new: b }, Self::MemberRenamed { old: c, new: d }) => {
+                a == c && b == d
+            }
+            (Self::MemberRemoved { name: a }, Self::MemberRemoved { name: b }) => a == b,
+            (
+                Self::MemberAdded {
+                    name: a,
+                    ty: at,
+                    default: av,
+                },
+                Self::MemberAdded {
+                    name: b,
+                    ty: bt,
+                    default: bv,
+                },
+            ) => a == b && at == bt && av == bv,
+            (
+                Self::MemberDefaultSet {
+                    name: a,
+                    default: av,
+                },
+                Self::MemberDefaultSet {
+                    name: b,
+                    default: bv,
+                },
+            ) => a == b && av == bv,
+            (
+                Self::DataObjectFunction {
+                    name: a,
+                    function: fa,
+                },
+                Self::DataObjectFunction {
+                    name: b,
+                    function: fb,
+                },
+            ) => a == b && *fa as usize == *fb as usize,
+            (
+                Self::VarFunction {
+                    name: a,
+                    field: af,
+                    function: fa,
+                },
+                Self::VarFunction {
+                    name: b,
+                    field: bf,
+                    function: fb,
+                },
+            ) => a == b && af == bf && *fa as usize == *fb as usize,
+            (
+                Self::TypeChanged {
+                    name: a,
+                    old_type: aot,
+                    old_type_name: aon,
+                    old_tuples: aoc,
+                    new_type: ant,
+                    new_type_name: ann,
+                    new_tuples: anc,
+                    function: af,
+                },
+                Self::TypeChanged {
+                    name: b,
+                    old_type: bot,
+                    old_type_name: bon,
+                    old_tuples: boc,
+                    new_type: bnt,
+                    new_type_name: bnn,
+                    new_tuples: bnc,
+                    function: bf,
+                },
+            ) => {
+                a == b
+                    && aot == bot
+                    && aon == bon
+                    && aoc == boc
+                    && ant == bnt
+                    && ann == bnn
+                    && anc == bnc
+                    && *af as usize == *bf as usize
+            }
+            (
+                Self::VarTypeChanged {
+                    name: a,
+                    old_type: aot,
+                    new_type: ant,
+                    function: af,
+                },
+                Self::VarTypeChanged {
+                    name: b,
+                    old_type: bot,
+                    new_type: bnt,
+                    function: bf,
+                },
+            ) => a == b && aot == bot && ant == bnt && *af as usize == *bf as usize,
+            _ => false,
+        }
+    }
 }
 
 /// Sentinel used by `HK_CLASS_ADDED` and `HK_CLASS_REMOVED`.
@@ -255,10 +450,58 @@ impl PatchInfo {
     }
 }
 
+/// Maximum number of chained patches applied to one type id.
+pub const MAX_PATCH_CHAIN_STEPS: usize = 64;
+
+/// Failures reported by [`PatchSet::apply_chain`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatchError {
+    /// More than one patch starts at the same class/version pair.
+    DuplicatePatch {
+        /// Source class name.
+        type_name: String,
+        /// Source version.
+        version: i32,
+    },
+    /// The patch chain revisited a class/version pair.
+    PatchCycle {
+        /// Revisited class name.
+        type_name: String,
+        /// Revisited version.
+        version: i32,
+    },
+    /// The patch chain exceeded [`MAX_PATCH_CHAIN_STEPS`].
+    ChainTooLong {
+        /// Type id whose chain did not terminate.
+        type_id: TypeId,
+    },
+}
+
+impl core::fmt::Display for PatchError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DuplicatePatch { type_name, version } => {
+                write!(f, "duplicate patches for {type_name} v{version}")
+            }
+            Self::PatchCycle { type_name, version } => {
+                write!(f, "patch cycle at {type_name} v{version}")
+            }
+            Self::ChainTooLong { type_id } => {
+                write!(
+                    f,
+                    "patch chain for type {type_id} exceeded {MAX_PATCH_CHAIN_STEPS} steps"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PatchError {}
+
 /// Operations applied during one patch run.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PatchReport {
-    /// Number of matched record types.
+    /// Number of matched records (one per applied patch in a chain).
     pub records_patched: usize,
     /// Number of renamed fields.
     pub fields_renamed: usize,
@@ -268,6 +511,12 @@ pub struct PatchReport {
     pub fields_added: usize,
     /// Number of overwritten defaults.
     pub defaults_set: usize,
+    /// Number of data-object or field function callbacks.
+    pub function_patches: usize,
+    /// Number of type-change conversions.
+    pub type_changes: usize,
+    /// Number of chained patch steps.
+    pub chain_steps: usize,
 }
 
 /// Registered patch table (`PatchRegistry` / `PatchSet` subset).
@@ -295,7 +544,28 @@ impl PatchSet {
             .collect()
     }
 
-    /// Apply all matching patches recursively to a loaded bundle.
+    /// Class/version pairs with more than one registered patch.
+    ///
+    /// The SDK ignores the second definition; this subset reports it so callers
+    /// can decide whether to reject or intentionally keep the first patch.
+    pub fn conflicts(&self) -> Vec<(String, i32)> {
+        let mut seen = BTreeMap::new();
+        let mut conflicts = Vec::new();
+        for patch in &self.patches {
+            let key = (patch.old_name.clone(), patch.old_version);
+            let count = seen.entry(key.clone()).or_insert(0usize);
+            *count += 1;
+            if *count == 2 {
+                conflicts.push(key);
+            }
+        }
+        conflicts
+    }
+
+    /// Apply one matching patch per record recursively to a loaded bundle.
+    ///
+    /// This preserves the original single-step behaviour used by earlier
+    /// hkx tests. Use [`Self::apply_chain`] for version-chain upgrades.
     pub fn apply(&self, bundle: &mut Bundle) -> PatchReport {
         let mut report = PatchReport::default();
         let Bundle {
@@ -305,6 +575,63 @@ impl PatchSet {
             patch_value(value, type_info, self, &mut report);
         }
         report
+    }
+
+    /// Apply deterministic version chains to a loaded bundle.
+    ///
+    /// Type metadata is advanced with each patch so a v1→v2→v3 chain works
+    /// without reloading. Duplicate steps, cycles and overlong chains are
+    /// reported as errors instead of silently stopping.
+    pub fn apply_chain(&self, bundle: &mut Bundle) -> Result<PatchReport, PatchError> {
+        let mut report = PatchReport::default();
+        let Bundle {
+            type_info, objects, ..
+        } = bundle;
+
+        let mut states = HashMap::new();
+        for (index, meta) in type_info.types.iter().enumerate() {
+            if let Some(meta) = meta.as_ref().and_then(|meta| meta.name.as_ref()) {
+                states.insert(
+                    index as TypeId,
+                    (
+                        meta.to_string(),
+                        type_info.types[index]
+                            .as_ref()
+                            .and_then(|entry| entry.version)
+                            .unwrap_or(0) as i32,
+                    ),
+                );
+            }
+        }
+
+        for value in objects.iter_mut() {
+            patch_value_chain(value, type_info, &mut states, self, &mut report)?;
+        }
+        Ok(report)
+    }
+
+    /// Alias for [`Self::apply_chain`] emphasising the checked error surface.
+    pub fn apply_checked(&self, bundle: &mut Bundle) -> Result<PatchReport, PatchError> {
+        self.apply_chain(bundle)
+    }
+
+    fn unique_patch_for(
+        &self,
+        type_name: &str,
+        version: i32,
+    ) -> Result<Option<&PatchInfo>, PatchError> {
+        let mut matching = self
+            .patches
+            .iter()
+            .filter(|patch| patch.old_name == type_name && patch.old_version == version);
+        let first = matching.next();
+        if matching.next().is_some() {
+            return Err(PatchError::DuplicatePatch {
+                type_name: type_name.to_string(),
+                version,
+            });
+        }
+        Ok(first)
     }
 }
 
@@ -338,6 +665,77 @@ fn patch_value(
     }
 }
 
+fn patch_value_chain(
+    value: &mut Value,
+    type_info: &mut TypeInfo,
+    states: &mut HashMap<TypeId, (String, i32)>,
+    patches: &PatchSet,
+    report: &mut PatchReport,
+) -> Result<(), PatchError> {
+    match value {
+        Value::Record(record) => {
+            let type_id = record.type_id;
+            if let Some((mut name, mut version)) = states.get(&type_id).cloned() {
+                let mut visited = HashSet::new();
+                loop {
+                    if !visited.insert((name.clone(), version)) {
+                        return Err(PatchError::PatchCycle {
+                            type_name: name,
+                            version,
+                        });
+                    }
+                    let Some(patch) = patches.unique_patch_for(&name, version)? else {
+                        break;
+                    };
+                    apply_components(record, patch, report);
+                    report.records_patched += 1;
+                    report.chain_steps += 1;
+                    if report.chain_steps > MAX_PATCH_CHAIN_STEPS {
+                        return Err(PatchError::ChainTooLong { type_id });
+                    }
+                    if !patch.new_name.is_empty() {
+                        name = patch.new_name.clone();
+                    }
+                    if patch.new_version >= 0 {
+                        version = patch.new_version;
+                    }
+                    advance_type_metadata(type_info, type_id, &name, version);
+                }
+            }
+            for (_, field) in &mut record.fields {
+                patch_value_chain(field, type_info, states, patches, report)?;
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                patch_value_chain(value, type_info, states, patches, report)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn advance_type_metadata(type_info: &mut TypeInfo, type_id: TypeId, name: &str, version: i32) {
+    if let Some(meta) = type_info
+        .types
+        .get_mut(type_id as usize)
+        .and_then(|entry| entry.as_mut())
+    {
+        meta.name = Some(name.to_string());
+        if version >= 0 {
+            meta.version = Some(version as u32);
+        }
+    }
+    if let Some(identity) = type_info
+        .identities
+        .get_mut(type_id as usize)
+        .and_then(|entry| entry.as_mut())
+    {
+        identity.name = Some(name.to_string());
+    }
+}
+
 fn type_key(type_info: &TypeInfo, type_id: u32) -> Option<(String, i32)> {
     let meta = type_info.types.get(type_id as usize)?.as_ref()?;
     let name = meta.name.as_ref().or_else(|| {
@@ -351,6 +749,7 @@ fn type_key(type_info: &TypeInfo, type_id: u32) -> Option<(String, i32)> {
 }
 
 fn apply_components(record: &mut Record, patch: &PatchInfo, report: &mut PatchReport) {
+    let helper = PatchFunctionHelper;
     for component in &patch.components {
         match component {
             PatchComponent::MemberRenamed { old, new } => {
@@ -378,6 +777,43 @@ fn apply_components(record: &mut Record, patch: &PatchInfo, report: &mut PatchRe
                     record.fields.push((name.clone(), default.to_value()));
                 }
                 report.defaults_set += 1;
+            }
+            PatchComponent::DataObjectFunction { function, .. } => {
+                function(record, &helper);
+                report.function_patches += 1;
+            }
+            PatchComponent::VarFunction {
+                field, function, ..
+            } => {
+                if let Some((_, value)) = record.fields.iter_mut().find(|(name, _)| name == field) {
+                    function(value, &helper);
+                    report.function_patches += 1;
+                }
+            }
+            PatchComponent::TypeChanged {
+                name,
+                old_type_name,
+                new_type_name,
+                function,
+                ..
+            } => {
+                if let Some((_, value)) = record.fields.iter_mut().find(|(field, _)| field == name)
+                {
+                    function(value, old_type_name, new_type_name, &helper);
+                    report.type_changes += 1;
+                }
+            }
+            PatchComponent::VarTypeChanged {
+                name,
+                old_type,
+                new_type,
+                function,
+            } => {
+                if let Some((_, value)) = record.fields.iter_mut().find(|(field, _)| field == name)
+                {
+                    function(value, old_type, new_type, &helper);
+                    report.type_changes += 1;
+                }
             }
         }
     }
