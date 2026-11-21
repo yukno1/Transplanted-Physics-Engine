@@ -16,7 +16,8 @@ use std::sync::Arc;
 use base_math::{Aabb, Transform};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_union};
+use crate::mass::mass_from_aabb;
+use crate::{MassConfig, MassError, MassProperties, MassQuality, Shape, aabb_union};
 
 /// One child of a [`CompoundShape`] (`hknpShapeInstance`).
 #[derive(Clone)]
@@ -136,6 +137,22 @@ impl Shape for CompoundShape {
             total += child.shape.volume()?;
         }
         Some(total)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        if self.children.is_empty() {
+            return Ok(MassProperties::zero());
+        }
+        let mut properties = Vec::with_capacity(self.children.len());
+        for child in &self.children {
+            let local = if config.quality == MassQuality::Low {
+                mass_from_aabb(&child.calc_aabb(), config)?
+            } else {
+                child.shape.mass_properties(config)?
+            };
+            properties.push(local.transformed(&child.transform));
+        }
+        Ok(MassProperties::combine_all(properties))
     }
 
     fn as_any(&self) -> &dyn Any {

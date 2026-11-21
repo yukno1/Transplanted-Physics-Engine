@@ -67,7 +67,7 @@
 
 use base_math::Vector4;
 
-use crate::solver::{SolverBody, angular_mass};
+use crate::solver::{SolverBody, angular_impulse_vector, angular_mass, inertia_scalar};
 
 /// Solver-level ball-and-socket joint (`hknpBallAndSocketConstraintData`).
 ///
@@ -299,6 +299,9 @@ pub struct SixDofJoint {
     pub linear_axis_min: [f32; 3],
     /// Upper per-axis translations.
     pub linear_axis_max: [f32; 3],
+    /// World-space constraint-frame axes `[twist, plane, twist × plane]` used
+    /// by swing and per-axis translation rows.
+    pub linear_axes: [Vector4; 3],
 }
 
 /// Solver-level prismatic joint (`hknpPrismaticConstraintData` subset).
@@ -1739,7 +1742,8 @@ fn solve_six_dof_rows(
         bias_scale,
         max_bias,
     );
-    let [u, v] = perpendicular_axes(normalized(joint.twist_axis_a));
+    let u = joint.linear_axes[1];
+    let v = joint.linear_axes[2];
     solve_unilateral_angular_row(
         bodies,
         joint.body_a,
@@ -1764,9 +1768,8 @@ fn solve_six_dof_rows(
         bias_scale,
         max_bias,
     );
-    // Per-axis translations reuse the same deterministic basis as the world
-    // builder: twist, then the two perpendiculars derived from it.
-    let axes = [normalized(joint.twist_axis_a), u, v];
+    // Per-axis translations use the explicit world-space constraint frame.
+    let axes = joint.linear_axes;
     for index in 0..3 {
         if !joint.linear_axis_enabled[index] {
             rows[4 + index] = 0.0;
@@ -1961,14 +1964,15 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
                     rows[1],
                 );
             }
-            let [u, v] = perpendicular_axes(twist);
+            let u = joint.linear_axes[1];
+            let v = joint.linear_axes[2];
             if joint.swing0_angle.abs() > joint.swing0_max {
                 warm_start_unilateral_angular_row(bodies, joint.body_a, joint.body_b, u, rows[2]);
             }
             if joint.swing1_angle.abs() > joint.swing1_max {
                 warm_start_unilateral_angular_row(bodies, joint.body_a, joint.body_b, v, rows[3]);
             }
-            let axes = [twist, u, v];
+            let axes = joint.linear_axes;
             for index in 0..3 {
                 if !joint.linear_axis_enabled[index] {
                     continue;
@@ -2156,12 +2160,7 @@ fn angular_effective_mass(
 }
 
 fn inertia_term(body: &SolverBody, axis: Vector4) -> f32 {
-    if body.inverse_inertia == Vector4::ZERO {
-        return 0.0;
-    }
-    axis.x * axis.x * body.inverse_inertia.x
-        + axis.y * axis.y * body.inverse_inertia.y
-        + axis.z * axis.z * body.inverse_inertia.z
+    inertia_scalar(body, axis)
 }
 
 /// Apply opposing angular impulses `axis * lambda` to the two bodies.
@@ -2177,16 +2176,9 @@ fn apply_angular_impulse(
 }
 
 impl SolverBody {
-    /// Apply a pure angular impulse `direction * scale` (diagonal inertia).
+    /// Apply a pure angular impulse `direction * scale`.
     pub(crate) fn apply_angular_impulse_scaled(&mut self, direction: Vector4, scale: f32) {
-        if self.inverse_inertia == Vector4::ZERO {
-            return;
-        }
-        self.angular_velocity += Vector4::from_xyz(
-            direction.x * self.inverse_inertia.x * scale,
-            direction.y * self.inverse_inertia.y * scale,
-            direction.z * self.inverse_inertia.z * scale,
-        );
+        self.angular_velocity += angular_impulse_vector(self, direction) * scale;
     }
 }
 

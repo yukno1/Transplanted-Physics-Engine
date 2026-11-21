@@ -42,5 +42,8 @@ pub mod motion_manager;
 
 pub use body::{Body, BodyCinfo};
 pub use body_manager::BodyManager;
-pub use motion::Motion;
+pub use motion::{
+    Motion, inverse_inertia_diagonal_matrix, inverse_inertia_is_diagonal,
+    world_inverse_inertia_from_mass_properties,
+};
 pub use motion_manager::MotionManager;

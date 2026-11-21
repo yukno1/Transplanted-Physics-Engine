@@ -24,7 +24,9 @@
 //! [`Shape::aabb`] is the local-space AABB (including the convex radius), [`Shape::calc_aabb`]
 //! maps it through a [`base_math::Transform`], [`Shape::support`] is the local support
 //! point (convex shapes only) and [`Shape::volume`] is the analytic volume where
-//! available (`None` for composites/meshes).
+//! available (`None` for composites/meshes). [`Shape::mass_properties`] builds full
+//! volume/COM/inertia data from a [`MassConfig`], using analytic formulas for
+//! solid primitives and deterministic aggregation/approximation for composites.
 //!
 //! The default [`Shape::dispatch_type`]/[`Shape::flags`] implementations mirror
 //! the C++ `hknpShape::getDispatchType()`/`FlagsEnum` mapping: convex shapes
@@ -42,8 +44,10 @@
 //!
 //! `hknpCompressedMeshShape`, `hknpExternMeshShape`, `hknpBreakableCompoundShape`,
 //! `hknpLodShape`, decorator/masked shapes, shape tag codecs, shape key masks/
-//! iterators, `hknpShapeMassProperties` and the full `hknpShapeFunctions` surface
-//! (queries/GSK/face info). Those follow with `phys-collide` (Phase 7).
+//! iterators, attached/compressed `hknpShapeMassProperties` and the full
+//! `hknpShapeFunctions` surface (queries/GSK/face info). Mass-property building is
+//! available through [`Shape::mass_properties`]; packed/attached property caches
+//! and high-quality compressed-mesh aggregation remain unported.
 
 use core::any::Any;
 
@@ -56,6 +60,7 @@ pub mod compound;
 pub mod convex_hull;
 pub mod cylinder;
 pub mod height_field;
+pub mod mass;
 pub mod mesh;
 pub mod sphere;
 pub mod triangle;
@@ -66,6 +71,7 @@ pub use compound::{CompoundShape, ShapeInstance};
 pub use convex_hull::ConvexHullShape;
 pub use cylinder::CylinderShape;
 pub use height_field::HeightFieldShape;
+pub use mass::{MassConfig, MassError, MassProperties, MassQuality};
 pub use mesh::{BvhNode, MeshShape};
 pub use sphere::SphereShape;
 pub use triangle::TriangleShape;
@@ -126,6 +132,14 @@ pub trait Shape: Send + Sync + core::fmt::Debug {
 
     /// Analytic volume, when the shape has one (`None` for meshes/composites).
     fn volume(&self) -> Option<f32>;
+
+    /// Build full mass properties from `config` (`hknpShape::buildMassProperties`).
+    ///
+    /// The default implementation uses the local AABB, matching the SDK's
+    /// null-function fallback. Primitives override this with analytic tensors.
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        mass::mass_from_aabb(&self.aabb(), config)
+    }
 
     /// Local support point in `direction` (convex shapes only).
     fn support(&self, direction: Vector4) -> Option<Vector4> {

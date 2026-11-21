@@ -6,10 +6,11 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Quaternion, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_bounding_radius, unit_direction};
+use crate::mass::matrix_diagonal;
+use crate::{MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction};
 
 /// Sphere (`hknpSphereShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,6 +68,13 @@ impl Shape for SphereShape {
 
     fn volume(&self) -> Option<f32> {
         Some(4.0 / 3.0 * core::f32::consts::PI * self.radius * self.radius * self.radius)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        let radius_squared = self.radius * self.radius;
+        let volume = 4.0 / 3.0 * core::f32::consts::PI * radius_squared * self.radius;
+        let inertia = matrix_diagonal(Vector4::splat(0.4 * volume * radius_squared));
+        MassProperties::from_geometry(volume, self.center, inertia, Quaternion::IDENTITY, config)
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {

@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use base_math::{Aabb, Quaternion, Transform, Vector4};
-use phys_shape::Shape;
+use base_math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
+use phys_shape::{MassConfig, MassProperties, Shape};
 use phys_types::{
     BodyId, BodyIndex, BodyQualityId, CollisionFlags, MaterialId, MotionId, MotionPropertiesId,
     MotionType,
@@ -59,6 +59,8 @@ pub struct BodyCinfo {
     pub angular_velocity: Vector4,
     /// Mass: `< 0` use the shape mass, `0` infinite mass, `> 0` explicit mass.
     pub mass: f32,
+    /// Configuration used to derive mass properties from the shape when `mass < 0`.
+    pub mass_config: MassConfig,
     /// Motion properties template.
     pub motion_properties_id: MotionPropertiesId,
     /// Maximum penetration recovery speed.
@@ -85,6 +87,7 @@ impl BodyCinfo {
             linear_velocity: Vector4::ZERO,
             angular_velocity: Vector4::ZERO,
             mass: -1.0,
+            mass_config: MassConfig::DEFAULT,
             motion_properties_id: MotionPropertiesId::INVALID,
             max_depenetration_speed: DEFAULT_MAX_DEPENETRATION_SPEED,
             collision_look_ahead_distance: 0.0,
@@ -138,6 +141,13 @@ impl BodyCinfo {
     #[must_use]
     pub fn with_mass(mut self, mass: f32) -> Self {
         self.mass = mass;
+        self
+    }
+
+    /// Set the mass configuration used when `mass < 0`.
+    #[must_use]
+    pub fn with_mass_config(mut self, mass_config: MassConfig) -> Self {
+        self.mass_config = mass_config;
         self
     }
 
@@ -218,6 +228,10 @@ pub struct Body {
     pub mass: f32,
     /// Diagonal inverse inertia in body-local space, used only by mass merges.
     pub inverse_inertia: Vector4,
+    /// Full mass properties derived from the shape or explicitly assigned.
+    pub mass_properties: Option<MassProperties>,
+    /// Full world-space inverse inertia matrix used by shared-motion mass merges.
+    pub inverse_inertia_world: Matrix3,
     /// Body state flags (including `IS_STATIC`/`IS_DYNAMIC`/`IS_KEYFRAMED`/`IS_ACTIVE`).
     pub flags: CollisionFlags,
     /// Root material id.
@@ -250,6 +264,8 @@ impl Body {
             motion_id,
             mass: 0.0,
             inverse_inertia: Vector4::ZERO,
+            mass_properties: None,
+            inverse_inertia_world: Matrix3::ZERO,
             flags: CollisionFlags::NONE,
             material_id: MaterialId::PRESET_DEFAULT,
             quality_id: BodyQualityId::INVALID,

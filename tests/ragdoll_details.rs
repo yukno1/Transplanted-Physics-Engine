@@ -85,8 +85,8 @@ fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
         Vector4::ZERO,
         Vector4::UNIT_Y,
         Vector4::UNIT_Y,
-        Vector4::UNIT_X,
-        Vector4::UNIT_X,
+        Vector4::UNIT_Z,
+        Vector4::UNIT_Z,
         limits,
     );
     let id = world.create_6dof_constraint(&info);
@@ -138,6 +138,15 @@ fn d3_shared_motion_rebuilds_mass_com_and_inertia() {
             .all_equal3(Vector4::from_xyz(1.5, 0.0, 0.0), 1e-6)
     );
     assert!(combined.inverse_inertia.x > 0.0);
+    assert!(combined.inverse_inertia_world.element(0, 0) > 0.0);
+    assert_eq!(
+        combined.inverse_inertia,
+        Vector4::from_xyz(
+            combined.inverse_inertia_world.element(0, 0),
+            combined.inverse_inertia_world.element(1, 1),
+            combined.inverse_inertia_world.element(2, 2),
+        )
+    );
 
     assert!(world.detach_bodies_with_mode(&[b], MotionMassUpdateMode::Rebuild));
     let remaining = world.motion(motion).unwrap();

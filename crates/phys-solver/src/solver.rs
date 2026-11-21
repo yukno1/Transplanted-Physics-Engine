@@ -40,20 +40,59 @@
 //! # Not ported in this phase
 //!
 //! The full constraint-atom system (`Solver/ConstraintAtom`, 49 files),
-//! restitution/mass modifiers, solver bodies' inertia in inertia space,
+//! restitution/mass modifiers, packed `hknpHalf` inertia storage,
 //! deactivation, and the SDK's determinism-check instrumentation. Material-
 //! driven friction/restitution and multi-point manifolds arrive with the
 //! material library and the extended manifold work.
 
-use base_math::Vector4;
+use base_math::{Matrix3, Vector4};
+
+#[inline]
+pub(crate) fn diagonal_inverse_inertia(value: Vector4) -> Matrix3 {
+    Matrix3::from_cols(
+        Vector4::from_xyz(value.x, 0.0, 0.0),
+        Vector4::from_xyz(0.0, value.y, 0.0),
+        Vector4::from_xyz(0.0, 0.0, value.z),
+    )
+}
+
+#[inline]
+pub(crate) fn inverse_inertia_is_diagonal(matrix: Matrix3, epsilon: f32) -> bool {
+    matrix.element(0, 1).abs() <= epsilon
+        && matrix.element(0, 2).abs() <= epsilon
+        && matrix.element(1, 0).abs() <= epsilon
+        && matrix.element(1, 2).abs() <= epsilon
+        && matrix.element(2, 0).abs() <= epsilon
+        && matrix.element(2, 1).abs() <= epsilon
+}
+
+#[inline]
+pub(crate) fn angular_impulse_vector(body: &SolverBody, torque: Vector4) -> Vector4 {
+    if inverse_inertia_is_diagonal(body.inverse_inertia_world, 1e-8) {
+        Vector4::from_xyz(
+            torque.x * body.inverse_inertia.x,
+            torque.y * body.inverse_inertia.y,
+            torque.z * body.inverse_inertia.z,
+        )
+    } else {
+        body.inverse_inertia_world.mul_vec(torque)
+    }
+}
+
+#[inline]
+pub(crate) fn inertia_scalar(body: &SolverBody, axis: Vector4) -> f32 {
+    angular_impulse_vector(body, axis).dot3(axis)
+}
 
 /// A body as seen by the solver (a velocity-buffer entry).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SolverBody {
     /// Inverse mass (`0` for static/keyframed/infinite mass).
     pub inverse_mass: f32,
-    /// Diagonal inverse inertia (world-space approximation).
+    /// Diagonal inverse inertia (world-space compatibility view).
     pub inverse_inertia: Vector4,
+    /// Full world-space inverse inertia matrix.
+    pub inverse_inertia_world: Matrix3,
     /// Center-of-mass position in world space.
     pub position: Vector4,
     /// Linear velocity in world space.
@@ -74,6 +113,29 @@ impl SolverBody {
         Self {
             inverse_mass,
             inverse_inertia,
+            inverse_inertia_world: diagonal_inverse_inertia(inverse_inertia),
+            position,
+            linear_velocity,
+            angular_velocity,
+        }
+    }
+
+    /// Construct a solver body with a full world inverse inertia matrix.
+    pub fn new_with_inertia_matrix(
+        inverse_mass: f32,
+        inverse_inertia_world: Matrix3,
+        position: Vector4,
+        linear_velocity: Vector4,
+        angular_velocity: Vector4,
+    ) -> Self {
+        Self {
+            inverse_mass,
+            inverse_inertia: Vector4::from_xyz(
+                inverse_inertia_world.element(0, 0),
+                inverse_inertia_world.element(1, 1),
+                inverse_inertia_world.element(2, 2),
+            ),
+            inverse_inertia_world,
             position,
             linear_velocity,
             angular_velocity,
@@ -102,11 +164,7 @@ impl SolverBody {
         }
         let r = point - self.position;
         let torque = r.cross(impulse);
-        self.angular_velocity += Vector4::from_xyz(
-            torque.x * self.inverse_inertia.x,
-            torque.y * self.inverse_inertia.y,
-            torque.z * self.inverse_inertia.z,
-        );
+        self.angular_velocity += angular_impulse_vector(self, torque);
     }
 }
 
@@ -439,16 +497,12 @@ fn effective_mass(
 }
 
 pub(crate) fn angular_mass(body: &SolverBody, direction: Vector4, point: Vector4) -> f32 {
-    if body.inverse_inertia == Vector4::ZERO {
+    if body.inverse_inertia == Vector4::ZERO && body.inverse_inertia_world == Matrix3::ZERO {
         return 0.0;
     }
     let r = point - body.position;
     let torque = r.cross(direction);
-    let angular = Vector4::from_xyz(
-        torque.x * body.inverse_inertia.x,
-        torque.y * body.inverse_inertia.y,
-        torque.z * body.inverse_inertia.z,
-    );
+    let angular = angular_impulse_vector(body, torque);
     angular.cross(r).dot3(direction)
 }
 

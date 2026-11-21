@@ -4,12 +4,15 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use base_math::{Quaternion, Transform, Vector4};
-use phys_body::{Body, BodyCinfo, BodyManager, Motion, MotionManager};
+use base_math::{Matrix3, Quaternion, Transform, Vector4};
+use phys_body::{
+    Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
+    inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
+};
 use phys_collide::{
     BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, collide_with_tolerance,
 };
-use phys_shape::Shape;
+use phys_shape::{MassProperties, Shape};
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
@@ -23,7 +26,7 @@ use crate::constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo, JointSlot,
     LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo, RagdollCinfo,
     SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo,
-    WheelSuspensionCinfo, WorldJoint,
+    WheelSuspensionCinfo, WorldJoint, six_dof_constraint_frame_axes,
 };
 use crate::island::{IslandInfo, build_islands};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
@@ -229,6 +232,16 @@ impl World {
     /// Static bodies share `MotionId::PRESET_STATIC`; dynamic/keyframed bodies
     /// get a fresh motion slot. The shape in the cinfo is shared via `Arc`.
     pub fn create_body(&mut self, cinfo: &BodyCinfo) -> BodyId {
+        let shape_properties = if cinfo.mass < 0.0 {
+            cinfo.shape.mass_properties(cinfo.mass_config).ok()
+        } else {
+            None
+        };
+        let resolved_mass = shape_properties
+            .map(|properties| properties.mass)
+            .unwrap_or(cinfo.mass);
+        let transform = cinfo.transform();
+
         let (motion_id, motion_flags) = match cinfo.motion_type {
             MotionType::Static => (MotionId::PRESET_STATIC, CollisionFlags::IS_STATIC),
             MotionType::Keyframed => {
@@ -238,7 +251,7 @@ impl World {
                     cinfo.orientation,
                     cinfo.linear_velocity,
                     cinfo.angular_velocity,
-                    cinfo.mass,
+                    resolved_mass,
                 );
                 (self.motions.allocate(motion), CollisionFlags::IS_KEYFRAMED)
             }
@@ -249,7 +262,7 @@ impl World {
                     cinfo.orientation,
                     cinfo.linear_velocity,
                     cinfo.angular_velocity,
-                    cinfo.mass,
+                    resolved_mass,
                 );
                 (
                     self.motions.allocate(motion),
@@ -258,11 +271,23 @@ impl World {
             }
         };
 
-        let mut body = Body::new(cinfo.shape.clone(), cinfo.transform(), motion_id);
+        if let Some(properties) = shape_properties {
+            if motion_id != MotionId::PRESET_STATIC && cinfo.motion_type.is_dynamic() {
+                let inertia_world =
+                    world_inverse_inertia_from_mass_properties(&properties, &transform);
+                if let Some(motion) = self.motions.get_mut(motion_id) {
+                    motion.set_inverse_inertia_world(inertia_world);
+                }
+            }
+        }
+
+        let mut body = Body::new(cinfo.shape.clone(), transform, motion_id);
         if let Some(motion) = self.motions.get(motion_id) {
             body.mass = motion.mass;
             body.inverse_inertia = motion.inverse_inertia;
+            body.inverse_inertia_world = motion.inverse_inertia_world;
         }
+        body.mass_properties = shape_properties;
         body.flags = cinfo.flags | motion_flags;
         body.material_id = cinfo.material_id;
         body.quality_id = cinfo.quality_id;
@@ -408,11 +433,14 @@ impl World {
             let Some(motion) = self.motions.get(motion_id).copied() else {
                 continue;
             };
-            let Some(body_properties) = self
-                .bodies
-                .get(body)
-                .map(|entry| (entry.transform, entry.mass, entry.inverse_inertia))
-            else {
+            let Some(body_properties) = self.bodies.get(body).map(|entry| {
+                (
+                    entry.transform,
+                    entry.mass,
+                    entry.inverse_inertia,
+                    entry.inverse_inertia_world,
+                )
+            }) else {
                 continue;
             };
             let transform = body_properties.0;
@@ -432,7 +460,11 @@ impl World {
                     motion.mass
                 },
             );
-            detached.inverse_inertia = body_properties.2;
+            if body_properties.3 != Matrix3::ZERO {
+                detached.set_inverse_inertia_world(body_properties.3);
+            } else {
+                detached.set_inverse_inertia_diagonal(body_properties.2);
+            }
             let new_id = self.motions.allocate(detached);
             self.detach_motion_membership(body);
             if let Some(entry) = self.bodies.get_mut(body) {
@@ -492,10 +524,35 @@ impl World {
         Some(group.motion_id)
     }
 
-    /// Recompute a shared dynamic motion's mass, center of mass and diagonal
-    /// inverse inertia from the given members (`rebuildMotionMassProperties`
-    /// subset). The full inertia tensor is projected onto the world diagonal
-    /// with the parallel-axis theorem; non-diagonal terms are discarded.
+    /// World-space mass properties of one body for shared-motion aggregation.
+    fn body_world_mass_properties(body: &Body) -> Option<MassProperties> {
+        if body.mass <= 0.0 || !body.mass.is_finite() {
+            return None;
+        }
+        if let Some(properties) = body.mass_properties {
+            return Some(properties.transformed(&body.transform));
+        }
+        let inverse_world = if body.inverse_inertia_world != Matrix3::ZERO
+            && (!inverse_inertia_is_diagonal(body.inverse_inertia_world, 1e-8)
+                || body.inverse_inertia == Vector4::ZERO)
+        {
+            body.inverse_inertia_world
+        } else {
+            inverse_inertia_diagonal_matrix(body.inverse_inertia)
+        };
+        let (inertia_tensor, _) = inverse_world.inverse();
+        Some(MassProperties {
+            volume: 0.0,
+            mass: body.mass,
+            center_of_mass: body.transform.translation,
+            inertia_tensor,
+            major_axis_space: Quaternion::IDENTITY,
+        })
+    }
+
+    /// Recompute a shared dynamic motion's mass, center of mass and full world
+    /// inverse inertia from the given members (`rebuildMotionMassProperties`).
+    /// Non-diagonal inertia terms are preserved through the parallel-axis theorem.
     fn recompute_motion_properties(&mut self, motion_id: MotionId, members: &[BodyId]) {
         let Some(motion) = self.motions.get(motion_id).copied() else {
             return;
@@ -503,85 +560,24 @@ impl World {
         if !motion.motion_type.is_dynamic() {
             return;
         }
-        let mut samples = Vec::with_capacity(members.len());
-        let mut total_mass = 0.0f32;
-        let mut center = Vector4::ZERO;
-        for &member in members {
-            let Some(body) = self.bodies.get(member) else {
-                continue;
-            };
-            if body.mass <= 0.0 || !body.mass.is_finite() {
-                continue;
-            }
-            samples.push((
-                body.transform.translation,
-                body.transform.rotation_quaternion(),
-                body.mass,
-                body.inverse_inertia,
-            ));
-            total_mass += body.mass;
-            center += body.transform.translation * body.mass;
-        }
-        if total_mass <= 0.0 || !total_mass.is_finite() {
+        let combined = MassProperties::combine_all(
+            members
+                .iter()
+                .filter_map(|&member| self.bodies.get(member))
+                .filter_map(Self::body_world_mass_properties),
+        );
+        if combined.mass <= 0.0 || !combined.mass.is_finite() {
             return;
         }
-        center *= 1.0 / total_mass;
-        let mut inertia = [0.0f32; 3];
-        let basis = [Vector4::UNIT_X, Vector4::UNIT_Y, Vector4::UNIT_Z];
-        for (position, rotation, mass, inverse_inertia) in samples {
-            let arm = position - center;
-            let arm_sq = arm.x * arm.x + arm.y * arm.y + arm.z * arm.z;
-            let rotated = [
-                rotation.rotate(basis[0]),
-                rotation.rotate(basis[1]),
-                rotation.rotate(basis[2]),
-            ];
-            let local_inertia = [
-                if inverse_inertia.x > 0.0 {
-                    1.0 / inverse_inertia.x
-                } else {
-                    0.0
-                },
-                if inverse_inertia.y > 0.0 {
-                    1.0 / inverse_inertia.y
-                } else {
-                    0.0
-                },
-                if inverse_inertia.z > 0.0 {
-                    1.0 / inverse_inertia.z
-                } else {
-                    0.0
-                },
-            ];
-            for axis in 0..3 {
-                let component = rotated[axis][axis];
-                inertia[axis] += local_inertia[axis] * component * component;
-                inertia[axis] += mass * (arm_sq - arm[axis] * arm[axis]);
-            }
-        }
         let old_position = motion.position;
-        let inverse = Vector4::from_xyz(
-            if inertia[0] > 0.0 {
-                1.0 / inertia[0]
-            } else {
-                0.0
-            },
-            if inertia[1] > 0.0 {
-                1.0 / inertia[1]
-            } else {
-                0.0
-            },
-            if inertia[2] > 0.0 {
-                1.0 / inertia[2]
-            } else {
-                0.0
-            },
-        );
+        let (inverse_world, _) = combined.inertia_tensor.inverse();
         if let Some(motion) = self.motions.get_mut(motion_id) {
-            motion.mass = total_mass;
-            motion.position = center;
-            motion.inverse_inertia = inverse;
-            motion.linear_velocity += motion.angular_velocity.cross(center - old_position);
+            motion.mass = combined.mass;
+            motion.position = combined.center_of_mass;
+            motion.set_inverse_inertia_world(inverse_world);
+            motion.linear_velocity += motion
+                .angular_velocity
+                .cross(combined.center_of_mass - old_position);
         }
     }
 
@@ -593,10 +589,33 @@ impl World {
         };
         let motion_id = body.motion_id;
         if let Some(motion) = self.motions.get_mut(motion_id) {
-            motion.inverse_inertia = inverse;
+            motion.set_inverse_inertia_diagonal(inverse);
         }
         if let Some(body) = self.bodies.get_mut(body_id) {
             body.inverse_inertia = inverse;
+            body.inverse_inertia_world = inverse_inertia_diagonal_matrix(inverse);
+        }
+        true
+    }
+
+    /// Set a body's full world-space inverse inertia matrix, keeping the
+    /// legacy diagonal view in sync.
+    pub fn set_body_inverse_inertia_world(&mut self, body_id: BodyId, matrix: Matrix3) -> bool {
+        let Some(body) = self.bodies.get(body_id) else {
+            return false;
+        };
+        let motion_id = body.motion_id;
+        let diagonal = Vector4::from_xyz(
+            matrix.element(0, 0),
+            matrix.element(1, 1),
+            matrix.element(2, 2),
+        );
+        if let Some(motion) = self.motions.get_mut(motion_id) {
+            motion.set_inverse_inertia_world(matrix);
+        }
+        if let Some(body) = self.bodies.get_mut(body_id) {
+            body.inverse_inertia = diagonal;
+            body.inverse_inertia_world = matrix;
         }
         true
     }
@@ -1305,16 +1324,16 @@ impl World {
                     let twist_b = unit_vector(transform_b.rotation.rotate(info.twist_axis_b));
                     let pivot_a = transform_a.transform_point(info.pivot_a);
                     let pivot_b = transform_b.transform_point(info.pivot_b);
-                    // Swing angles use the same deterministic perpendicular
-                    // basis as the solver rows (the cinfo reference axes are
-                    // reserved for measuring the twist angle).
-                    let u = deterministic_perpendicular(twist_a);
-                    let v = twist_a.cross(u);
-                    let error = twist_a.cross(twist_b);
-                    let plane_a = perpendicular_reference(
+                    // Constraint-frame columns are `[twist, plane, twist×plane]`,
+                    // matching `hknp6DofConstraintData::getConstraintFrameA/B`.
+                    let frame_axes = six_dof_constraint_frame_axes(
                         twist_a,
                         transform_a.rotation.rotate(info.plane_axis_a),
                     );
+                    let u = frame_axes[1];
+                    let v = frame_axes[2];
+                    let error = twist_a.cross(twist_b);
+                    let plane_a = frame_axes[1];
                     let plane_b = perpendicular_reference(
                         twist_a,
                         transform_b.rotation.rotate(info.plane_axis_b),
@@ -1322,7 +1341,7 @@ impl World {
                     let twist_angle = twist_a
                         .dot3(plane_a.cross(plane_b))
                         .atan2(plane_a.dot3(plane_b));
-                    let axis_vectors = [twist_a, u, v];
+                    let axis_vectors = frame_axes;
                     let mut linear_axis_enabled = [false; 3];
                     let mut linear_axis_translation = [0.0; 3];
                     let mut linear_axis_min = [f32::NEG_INFINITY; 3];
@@ -1368,6 +1387,7 @@ impl World {
                             linear_axis_translation,
                             linear_axis_min,
                             linear_axis_max,
+                            linear_axes: frame_axes,
                         }),
                     ));
                 }
@@ -1759,15 +1779,22 @@ impl World {
         let mut solver_bodies: Vec<SolverBody> = Vec::with_capacity(body_ids.len());
         for body in self.bodies.iter() {
             let motion = self.motions.get(body.motion_id);
-            let (inverse_mass, inverse_inertia) = if body.is_dynamic() {
-                (
-                    motion.map(Motion::inverse_mass).unwrap_or(0.0),
-                    motion
-                        .map(|motion| motion.inverse_inertia)
-                        .unwrap_or(Vector4::ZERO),
-                )
+            let (inverse_mass, inverse_inertia_world) = if body.is_dynamic() {
+                let matrix = motion
+                    .map(|motion| {
+                        if motion.inverse_inertia_world != Matrix3::ZERO
+                            && (!inverse_inertia_is_diagonal(motion.inverse_inertia_world, 1e-8)
+                                || motion.inverse_inertia == Vector4::ZERO)
+                        {
+                            motion.inverse_inertia_world
+                        } else {
+                            inverse_inertia_diagonal_matrix(motion.inverse_inertia)
+                        }
+                    })
+                    .unwrap_or(Matrix3::ZERO);
+                (motion.map(Motion::inverse_mass).unwrap_or(0.0), matrix)
             } else {
-                (0.0, Vector4::ZERO)
+                (0.0, Matrix3::ZERO)
             };
             let linear_velocity = motion
                 .map(|motion| motion.linear_velocity)
@@ -1775,9 +1802,9 @@ impl World {
             let angular_velocity = motion
                 .map(|motion| motion.angular_velocity)
                 .unwrap_or(Vector4::ZERO);
-            solver_bodies.push(SolverBody::new(
+            solver_bodies.push(SolverBody::new_with_inertia_matrix(
                 inverse_mass,
-                inverse_inertia,
+                inverse_inertia_world,
                 body.transform.translation,
                 linear_velocity,
                 angular_velocity,
@@ -2419,17 +2446,6 @@ fn unit_vector(direction: Vector4) -> Vector4 {
     } else {
         Vector4::UNIT_X
     }
-}
-
-/// First axis of the deterministic perpendicular basis used by the solver's
-/// swing rows (`phys_solver::constraint::perpendicular_axes`).
-fn deterministic_perpendicular(axis: Vector4) -> Vector4 {
-    let helper = if axis.x.abs() < 0.9 {
-        Vector4::UNIT_X
-    } else {
-        Vector4::UNIT_Y
-    };
-    unit_vector(axis.cross(helper))
 }
 
 /// Project `reference` onto the plane perpendicular to `axis` and normalize;

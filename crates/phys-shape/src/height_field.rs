@@ -11,7 +11,10 @@ use core::any::Any;
 use base_math::{Aabb, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_bounding_radius};
+use crate::mass::mass_from_aabb;
+use crate::{
+    MassConfig, MassError, MassProperties, MassQuality, Shape, TriangleShape, aabb_bounding_radius,
+};
 
 /// Errors from [`HeightFieldShape::new`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +174,26 @@ impl Shape for HeightFieldShape {
 
     fn volume(&self) -> Option<f32> {
         None
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        if config.quality != MassQuality::High || self.int_size_x < 2 || self.int_size_z < 2 {
+            return mass_from_aabb(&self.aabb, config);
+        }
+        let mut properties = Vec::with_capacity((self.int_size_x - 1) * (self.int_size_z - 1) * 2);
+        for z in 0..self.int_size_z - 1 {
+            for x in 0..self.int_size_x - 1 {
+                let p00 = self.vertex(x, z);
+                let p10 = self.vertex(x + 1, z);
+                let p01 = self.vertex(x, z + 1);
+                let p11 = self.vertex(x + 1, z + 1);
+                let first = TriangleShape::with_convex_radius(p00, p10, p11, 0.0);
+                let second = TriangleShape::with_convex_radius(p00, p11, p01, 0.0);
+                properties.push(first.mass_properties(config)?);
+                properties.push(second.mass_properties(config)?);
+            }
+        }
+        Ok(MassProperties::combine_all(properties))
     }
 
     fn as_any(&self) -> &dyn Any {

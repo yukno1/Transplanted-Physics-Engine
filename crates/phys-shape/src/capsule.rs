@@ -7,10 +7,11 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Matrix3, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_bounding_radius, unit_direction};
+use crate::mass::{matrix_add, matrix_outer, matrix_scale};
+use crate::{MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction};
 
 /// Capsule (`hknpCapsuleShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -100,6 +101,43 @@ impl Shape for CapsuleShape {
         let cylinder = pi * self.radius * self.radius * self.segment_length();
         let caps = 4.0 / 3.0 * pi * self.radius * self.radius * self.radius;
         Some(cylinder + caps)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        let pi = core::f32::consts::PI;
+        let radius_squared = self.radius * self.radius;
+        let length = self.segment_length();
+        let cylinder_mass = pi * radius_squared * length;
+        let cap_mass = 4.0 / 3.0 * pi * radius_squared * self.radius;
+        let volume = cylinder_mass + cap_mass;
+
+        let axial = 0.5 * cylinder_mass * radius_squared + 0.4 * cap_mass * radius_squared;
+        let perpendicular = cylinder_mass * (3.0 * radius_squared + length * length) / 12.0
+            + cap_mass * (0.4 * radius_squared + 0.25 * length * length);
+
+        let axis = self.axis().unwrap_or(Vector4::UNIT_X);
+        let reference = if axis.x.abs() < 0.9 {
+            Vector4::UNIT_X
+        } else {
+            Vector4::UNIT_Y
+        };
+        let perpendicular_a = axis.cross(reference).normalized3();
+        let perpendicular_b = axis.cross(perpendicular_a).normalized3();
+        let major_axis_space =
+            Matrix3::from_cols(perpendicular_a, perpendicular_b, axis).to_quaternion();
+
+        let axial_outer = matrix_outer(axis, axis);
+        let unit_inertia = matrix_add(
+            &matrix_scale(Matrix3::IDENTITY, perpendicular),
+            &matrix_scale(axial_outer, axial - perpendicular),
+        );
+        MassProperties::from_geometry(
+            volume,
+            (self.point_a + self.point_b) * 0.5,
+            unit_inertia,
+            major_axis_space,
+            config,
+        )
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {

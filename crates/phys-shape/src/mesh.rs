@@ -15,7 +15,11 @@ use core::any::Any;
 use base_math::{Aabb, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_bounding_radius, aabb_union};
+use crate::mass::mass_from_aabb;
+use crate::{
+    MassConfig, MassError, MassProperties, MassQuality, Shape, TriangleShape, aabb_bounding_radius,
+    aabb_union,
+};
 
 const LEAF_TRIANGLES: usize = 4;
 
@@ -165,6 +169,23 @@ impl Shape for MeshShape {
 
     fn volume(&self) -> Option<f32> {
         None
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        if config.quality != MassQuality::High || self.triangles.is_empty() {
+            return mass_from_aabb(&self.aabb, config);
+        }
+        let mut properties = Vec::with_capacity(self.triangles.len());
+        for &[a, b, c] in &self.triangles {
+            let triangle = TriangleShape::with_convex_radius(
+                self.vertices[a as usize],
+                self.vertices[b as usize],
+                self.vertices[c as usize],
+                0.0,
+            );
+            properties.push(triangle.mass_properties(config)?);
+        }
+        Ok(MassProperties::combine_all(properties))
     }
 
     fn as_any(&self) -> &dyn Any {

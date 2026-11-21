@@ -1,7 +1,47 @@
 //! `hknpMotion` — rigid motion state.
 
-use base_math::{Quaternion, Transform, Vector4};
+use base_math::{Matrix3, Quaternion, Transform, Vector4};
+use phys_shape::MassProperties;
 use phys_types::MotionType;
+
+/// Build a diagonal matrix from the legacy per-axis inverse inertia view.
+#[inline]
+pub fn inverse_inertia_diagonal_matrix(value: Vector4) -> Matrix3 {
+    Matrix3::from_cols(
+        Vector4::from_xyz(value.x, 0.0, 0.0),
+        Vector4::from_xyz(0.0, value.y, 0.0),
+        Vector4::from_xyz(0.0, 0.0, value.z),
+    )
+}
+
+/// Whether the off-diagonal terms are small enough to use the legacy fast path.
+#[inline]
+pub fn inverse_inertia_is_diagonal(matrix: Matrix3, epsilon: f32) -> bool {
+    matrix.element(0, 1).abs() <= epsilon
+        && matrix.element(0, 2).abs() <= epsilon
+        && matrix.element(1, 0).abs() <= epsilon
+        && matrix.element(1, 2).abs() <= epsilon
+        && matrix.element(2, 0).abs() <= epsilon
+        && matrix.element(2, 1).abs() <= epsilon
+}
+
+/// Compute the world-space inverse inertia matrix from shape mass properties.
+///
+/// Singular (zero-volume/static) inertia produces a zero matrix, matching the
+/// SDK's `HK_INVERSION_FAILURE_SET_ZERO` policy.
+pub fn world_inverse_inertia_from_mass_properties(
+    properties: &MassProperties,
+    transform: &Transform,
+) -> Matrix3 {
+    if properties.mass <= 0.0 {
+        return Matrix3::ZERO;
+    }
+    let (inverse_local, _) = properties.inertia_tensor.inverse();
+    let rotation = transform.rotation;
+    rotation
+        .mul_mat(&inverse_local)
+        .mul_mat(&rotation.transpose())
+}
 
 /// Motion state of a body (`hknpMotion`).
 ///
@@ -27,7 +67,11 @@ pub struct Motion {
     /// Mass; `0` means infinite mass (`m_inverseInertia[3] == 0` in the SDK).
     pub mass: f32,
     /// Diagonal inverse inertia in motion space (`m_inverseInertia[0..3]`).
+    ///
+    /// Kept as the compatibility view of [`Motion::inverse_inertia_world`].
     pub inverse_inertia: Vector4,
+    /// Full world-space inverse inertia matrix used by the matrix solver path.
+    pub inverse_inertia_world: Matrix3,
 }
 
 impl Motion {
@@ -41,6 +85,7 @@ impl Motion {
             angular_velocity: Vector4::ZERO,
             mass: 0.0,
             inverse_inertia: Vector4::ZERO,
+            inverse_inertia_world: Matrix3::ZERO,
         }
     }
 
@@ -61,6 +106,7 @@ impl Motion {
             angular_velocity,
             mass,
             inverse_inertia: Vector4::ZERO,
+            inverse_inertia_world: Matrix3::ZERO,
         }
     }
 
@@ -82,6 +128,22 @@ impl Motion {
         } else {
             0.0
         }
+    }
+
+    /// Set the legacy diagonal inverse inertia view and keep the matrix in sync.
+    pub fn set_inverse_inertia_diagonal(&mut self, value: Vector4) {
+        self.inverse_inertia = value;
+        self.inverse_inertia_world = inverse_inertia_diagonal_matrix(value);
+    }
+
+    /// Set the full world-space inverse inertia matrix and refresh the diagonal view.
+    pub fn set_inverse_inertia_world(&mut self, matrix: Matrix3) {
+        self.inverse_inertia_world = matrix;
+        self.inverse_inertia = Vector4::from_xyz(
+            matrix.element(0, 0),
+            matrix.element(1, 1),
+            matrix.element(2, 2),
+        );
     }
 
     /// Whether this motion is static.
@@ -121,13 +183,20 @@ impl Motion {
         self.linear_velocity += impulse * self.inverse_mass();
     }
 
-    /// Apply a world-space angular impulse using the diagonal inverse inertia.
+    /// Apply a world-space angular impulse.
+    ///
+    /// Diagonal matrices keep the original component-wise operation order; full
+    /// tensors use a single matrix-vector product.
     pub fn apply_angular_impulse(&mut self, impulse: Vector4) {
-        self.angular_velocity += Vector4::from_xyz(
-            impulse.x * self.inverse_inertia.x,
-            impulse.y * self.inverse_inertia.y,
-            impulse.z * self.inverse_inertia.z,
-        );
+        if inverse_inertia_is_diagonal(self.inverse_inertia_world, 1e-8) {
+            self.angular_velocity += Vector4::from_xyz(
+                impulse.x * self.inverse_inertia.x,
+                impulse.y * self.inverse_inertia.y,
+                impulse.z * self.inverse_inertia.z,
+            );
+        } else {
+            self.angular_velocity += self.inverse_inertia_world.mul_vec(impulse);
+        }
     }
 }
 

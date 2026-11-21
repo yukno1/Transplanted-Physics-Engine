@@ -74,10 +74,11 @@
 //!
 //! Body addition queues, command queue/determinism checking, deactivation
 //! manager, events/modifiers, user body buffers,
-//! `hknpWorldReader`/`hknpWorldWriter` traits, multi-body mass-property
-//! merging for shared motions, the SDK constraint-atom/constraint-group
-//! system, the vehicle extension layer (suspension raycast / engine /
-//! friction solver), and `hkx` asset loading.
+//! `hknpWorldReader`/`hknpWorldWriter` traits, the SDK constraint-atom/
+//! constraint-group system, the vehicle extension layer (suspension raycast /
+//! engine / friction solver), and `hkx` asset loading. Shared motions do
+//! rebuild full mass properties from their members; packed/compressed SDK
+//! mass representations are still not reproduced.
 
 use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
@@ -99,7 +100,7 @@ pub use constraint::{
     LimitedHingeCinfo, PointToPlaneCinfo, PrismaticCinfo, PrismaticMotorCinfo,
     PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo, RagdollCinfo, SixDofAxisMode,
     SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo,
-    WorldJoint,
+    WorldJoint, six_dof_constraint_frame_axes,
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};

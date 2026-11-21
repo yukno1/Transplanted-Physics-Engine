@@ -7,10 +7,13 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Matrix3, Quaternion, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{Shape, aabb_bounding_radius, unit_direction};
+use crate::mass::{
+    matrix_add, matrix_diagonal, matrix_outer, matrix_scale, matrix_sub, matrix_trace,
+};
+use crate::{MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction};
 
 /// Triangle (`hknpTriangleShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -86,6 +89,51 @@ impl Shape for TriangleShape {
     fn volume(&self) -> Option<f32> {
         // A triangle has zero solid volume (the convex radius is surface rounding).
         Some(0.0)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        let area = self.area();
+        if area <= 0.0 {
+            return MassProperties::from_geometry(
+                0.0,
+                self.points[0],
+                Matrix3::ZERO,
+                Quaternion::IDENTITY,
+                config,
+            );
+        }
+
+        let center = (self.points[0] + self.points[1] + self.points[2]) / 3.0;
+        let sum = self.points[0] + self.points[1] + self.points[2];
+        let squares = matrix_add(
+            &matrix_add(
+                &matrix_outer(self.points[0], self.points[0]),
+                &matrix_outer(self.points[1], self.points[1]),
+            ),
+            &matrix_outer(self.points[2], self.points[2]),
+        );
+        let second_moment =
+            matrix_scale(matrix_add(&matrix_outer(sum, sum), &squares), area / 12.0);
+        let shifted = matrix_sub(
+            &second_moment,
+            &matrix_scale(matrix_outer(center, center), area),
+        );
+        let inertia = matrix_sub(
+            &matrix_diagonal(Vector4::splat(matrix_trace(shifted))),
+            &shifted,
+        );
+
+        let normal = unit_direction(self.normal()).unwrap_or(Vector4::UNIT_Z);
+        let reference = if normal.x.abs() < 0.9 {
+            Vector4::UNIT_X
+        } else {
+            Vector4::UNIT_Y
+        };
+        let tangent_a = normal.cross(reference).normalized3();
+        let tangent_b = normal.cross(tangent_a).normalized3();
+        let major_axis_space = Matrix3::from_cols(tangent_a, tangent_b, normal).to_quaternion();
+
+        MassProperties::from_geometry(area, center, inertia, major_axis_space, config)
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {

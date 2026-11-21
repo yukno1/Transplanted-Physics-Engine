@@ -19,7 +19,7 @@ use base_math::{Quaternion, Vector4};
 use phys_types::{BodyId, ConstraintId};
 use phys_world::{
     HingeCinfo, HingeLimitsCinfo, RagdollCinfo, SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo,
-    World, WorldJoint,
+    World, WorldJoint, six_dof_constraint_frame_axes,
 };
 
 /// SDK `smallTolerance` used when widening limits.
@@ -404,16 +404,6 @@ fn unit(direction: Vector4) -> Vector4 {
     }
 }
 
-/// Deterministic perpendicular of `axis` used by the 6DOF swing rows.
-fn deterministic_perpendicular(axis: Vector4) -> Vector4 {
-    let helper = if axis.x.abs() < 0.9 {
-        Vector4::UNIT_X
-    } else {
-        Vector4::UNIT_Y
-    };
-    unit(axis.cross(helper))
-}
-
 /// Project `reference` onto the plane perpendicular to `axis`, with the
 /// same deterministic fallback as the world's hinge construction.
 fn perpendicular_reference(axis: Vector4, reference: Vector4) -> Vector4 {
@@ -466,10 +456,12 @@ fn six_dof_state(world: &World, info: &SixDofCinfo) -> (f32, f32, f32, f32) {
     let transform_b = body_b.transform;
     let twist_a = unit(transform_a.rotation.rotate(info.twist_axis_a));
     let twist_b = unit(transform_b.rotation.rotate(info.twist_axis_b));
-    let u = deterministic_perpendicular(twist_a);
-    let v = twist_a.cross(u);
+    let frame_axes =
+        six_dof_constraint_frame_axes(twist_a, transform_a.rotation.rotate(info.plane_axis_a));
+    let u = frame_axes[1];
+    let v = frame_axes[2];
     let error = twist_a.cross(twist_b);
-    let plane_a = perpendicular_reference(twist_a, transform_a.rotation.rotate(info.plane_axis_a));
+    let plane_a = frame_axes[1];
     let plane_b = perpendicular_reference(twist_a, transform_b.rotation.rotate(info.plane_axis_b));
     let twist = twist_a
         .dot3(plane_a.cross(plane_b))
@@ -493,11 +485,15 @@ fn six_dof_axis_state(world: &World, info: &SixDofCinfo) -> [f32; 3] {
     let transform_a = body_a.transform;
     let transform_b = body_b.transform;
     let twist = unit(transform_a.rotation.rotate(info.twist_axis_a));
-    let u = deterministic_perpendicular(twist);
-    let v = twist.cross(u);
+    let frame_axes =
+        six_dof_constraint_frame_axes(twist, transform_a.rotation.rotate(info.plane_axis_a));
     let delta =
         transform_a.transform_point(info.pivot_a) - transform_b.transform_point(info.pivot_b);
-    [delta.dot3(twist), delta.dot3(u), delta.dot3(v)]
+    [
+        delta.dot3(frame_axes[0]),
+        delta.dot3(frame_axes[1]),
+        delta.dot3(frame_axes[2]),
+    ]
 }
 
 /// Current SDK-style plane angle (deviation of the A-twist/B-plane angle

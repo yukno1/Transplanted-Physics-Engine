@@ -9,10 +9,14 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Matrix3, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{DEFAULT_CONVEX_RADIUS, Shape, aabb_bounding_radius, unit_direction};
+use crate::mass::{matrix_add, matrix_outer, matrix_scale};
+use crate::{
+    DEFAULT_CONVEX_RADIUS, MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius,
+    unit_direction,
+};
 
 /// Finite cylinder (`hknpCylinderShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -140,6 +144,38 @@ impl Shape for CylinderShape {
 
     fn volume(&self) -> Option<f32> {
         Some(self.polygon_area() * self.height())
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        let height = self.height();
+        let radius_squared = self.radius * self.radius;
+        let volume = self.polygon_area() * height;
+        let axial = 0.5 * volume * radius_squared;
+        let perpendicular = volume * (3.0 * radius_squared + height * height) / 12.0;
+
+        let axis = unit_direction(self.point_b - self.point_a).unwrap_or(Vector4::UNIT_X);
+        let reference = if axis.x.abs() < 0.9 {
+            Vector4::UNIT_X
+        } else {
+            Vector4::UNIT_Y
+        };
+        let perpendicular_a = axis.cross(reference).normalized3();
+        let perpendicular_b = axis.cross(perpendicular_a).normalized3();
+        let major_axis_space =
+            Matrix3::from_cols(perpendicular_a, perpendicular_b, axis).to_quaternion();
+
+        let axial_outer = matrix_outer(axis, axis);
+        let unit_inertia = matrix_add(
+            &matrix_scale(Matrix3::IDENTITY, perpendicular),
+            &matrix_scale(axial_outer, axial - perpendicular),
+        );
+        MassProperties::from_geometry(
+            volume,
+            (self.point_a + self.point_b) * 0.5,
+            unit_inertia,
+            major_axis_space,
+            config,
+        )
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {

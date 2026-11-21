@@ -403,6 +403,40 @@ impl RagdollCinfo {
     }
 }
 
+#[inline]
+fn unit_axis(vector: Vector4) -> Vector4 {
+    let length = vector.length3();
+    if length > 1e-10 {
+        vector * (1.0 / length)
+    } else {
+        Vector4::UNIT_X
+    }
+}
+
+/// Build the world-space 6DOF constraint frame from twist and plane axes
+/// (`hknp6DofConstraintData::getConstraintFrameA/B`).
+///
+/// Columns are `[twist, plane, twist × plane]`; the plane axis is projected onto
+/// the twist plane and falls back to a deterministic perpendicular when
+/// degenerate. This is the single source of truth for world construction,
+/// solver rows, warm-start replay and ragdoll easing.
+pub fn six_dof_constraint_frame_axes(twist: Vector4, plane: Vector4) -> [Vector4; 3] {
+    let twist = unit_axis(twist);
+    let projected = plane - twist * plane.dot3(twist);
+    let plane = if projected.length3() > 1e-10 {
+        unit_axis(projected)
+    } else {
+        let helper = if twist.x.abs() < 0.9 {
+            Vector4::UNIT_X
+        } else {
+            Vector4::UNIT_Y
+        };
+        unit_axis(twist.cross(helper))
+    };
+    let binormal = unit_axis(twist.cross(plane));
+    [twist, plane, binormal]
+}
+
 /// Per-axis translation mode (`hknp6DofConstraintData::AxisMode` subset).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SixDofAxisMode {
@@ -427,7 +461,7 @@ pub struct SixDofLimitsCinfo {
     pub swing1_max: f32,
     /// Maximum distance between the two pivots (stiff-spring row).
     pub linear_limit: f32,
-    /// Per-axis modes in world X/Y/Z order (twist axis and its perpendiculars).
+    /// Per-axis modes in constraint-frame order `[twist, plane, twist × plane]`.
     pub linear_axes: [SixDofAxisMode; 3],
     /// Per-axis lower translations, used when the mode is `Limited`.
     pub linear_min: [f32; 3],

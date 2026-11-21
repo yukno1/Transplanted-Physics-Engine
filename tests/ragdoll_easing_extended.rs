@@ -120,11 +120,12 @@ fn e5_six_dof_saves_loosens_and_eases_back() {
     );
     action.loosen(&mut world);
     let loose = six_dof_limits(&world, id);
-    assert!(loose.swing0_max > original.swing0_max);
+    assert_eq!(loose.swing0_max, original.swing0_max);
+    assert!(loose.swing1_max > original.swing1_max);
     action.restore(&mut world, 1.0);
     assert!(!action.step(&mut world, 0.25));
-    let halfway = six_dof_limits(&world, id).swing0_max;
-    assert!(halfway < loose.swing0_max && halfway > original.swing0_max);
+    let halfway = six_dof_limits(&world, id).swing1_max;
+    assert!(halfway < loose.swing1_max && halfway > original.swing1_max);
     assert!(!action.step(&mut world, 0.25));
     assert!(!action.step(&mut world, 0.25));
     assert!(action.step(&mut world, 0.25));

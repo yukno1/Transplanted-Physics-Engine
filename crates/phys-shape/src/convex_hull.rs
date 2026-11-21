@@ -11,10 +11,17 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Matrix3, Quaternion, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{DEFAULT_CONVEX_RADIUS, Shape, aabb_bounding_radius, unit_direction};
+use crate::mass::{
+    mass_from_aabb, matrix_add, matrix_diagonal, matrix_outer, matrix_scale, matrix_sub,
+    matrix_trace,
+};
+use crate::{
+    DEFAULT_CONVEX_RADIUS, MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius,
+    unit_direction,
+};
 
 /// Convex hull (`hknpConvexHull` / `hknpConvexPolytopeShape`).
 #[derive(Clone, Debug, PartialEq)]
@@ -119,6 +126,64 @@ impl Shape for ConvexHullShape {
             six_volume += pa.dot3(pb.cross(pc));
         }
         Some(six_volume.abs() / 6.0)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        if self.faces.is_empty() {
+            return mass_from_aabb(&self.aabb(), config);
+        }
+
+        let mut signed_volume = 0.0f32;
+        let mut center_integral = Vector4::ZERO;
+        let mut second_moment = Matrix3::ZERO;
+        for &[a, b, c] in &self.faces {
+            let pa = self.vertices[a as usize];
+            let pb = self.vertices[b as usize];
+            let pc = self.vertices[c as usize];
+            let tetra_volume = pa.dot3(pb.cross(pc)) / 6.0;
+            if tetra_volume == 0.0 {
+                continue;
+            }
+            let sum = pa + pb + pc;
+            let squares = matrix_add(
+                &matrix_add(&matrix_outer(pa, pa), &matrix_outer(pb, pb)),
+                &matrix_outer(pc, pc),
+            );
+            signed_volume += tetra_volume;
+            center_integral += sum * (tetra_volume / 4.0);
+            second_moment = matrix_add(
+                &second_moment,
+                &matrix_scale(
+                    matrix_add(&matrix_outer(sum, sum), &squares),
+                    tetra_volume / 20.0,
+                ),
+            );
+        }
+
+        if signed_volume.abs() <= f32::EPSILON {
+            return mass_from_aabb(&self.aabb(), config);
+        }
+        let sign = if signed_volume < 0.0 { -1.0 } else { 1.0 };
+        let center_of_mass = center_integral / signed_volume;
+        let second_moment = matrix_scale(second_moment, sign);
+        let inertia_origin = matrix_sub(
+            &matrix_diagonal(Vector4::splat(matrix_trace(second_moment))),
+            &second_moment,
+        );
+        let distance_squared = center_of_mass.dot3(center_of_mass);
+        let shift = matrix_sub(
+            &matrix_diagonal(Vector4::splat(distance_squared)),
+            &matrix_outer(center_of_mass, center_of_mass),
+        );
+        let inertia = matrix_sub(&inertia_origin, &matrix_scale(shift, signed_volume.abs()));
+
+        MassProperties::from_geometry(
+            signed_volume.abs(),
+            center_of_mass,
+            inertia,
+            Quaternion::IDENTITY,
+            config,
+        )
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {

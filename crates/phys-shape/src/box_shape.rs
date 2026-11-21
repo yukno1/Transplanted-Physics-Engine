@@ -12,10 +12,11 @@
 
 use core::any::Any;
 
-use base_math::{Aabb, Vector4};
+use base_math::{Aabb, Quaternion, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::{DEFAULT_CONVEX_RADIUS, Shape, unit_direction};
+use crate::mass::matrix_diagonal;
+use crate::{DEFAULT_CONVEX_RADIUS, MassConfig, MassError, MassProperties, Shape, unit_direction};
 
 /// Oriented box in the local frame (`hknpBoxShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -92,6 +93,17 @@ impl Shape for BoxShape {
     fn volume(&self) -> Option<f32> {
         let h = self.half_extents;
         Some(8.0 * h.x * h.y * h.z)
+    }
+
+    fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
+        let h = self.half_extents;
+        let volume = 8.0 * h.x * h.y * h.z;
+        let inertia = matrix_diagonal(Vector4::from_xyz(
+            volume / 3.0 * (h.y * h.y + h.z * h.z),
+            volume / 3.0 * (h.x * h.x + h.z * h.z),
+            volume / 3.0 * (h.x * h.x + h.y * h.y),
+        ));
+        MassProperties::from_geometry(volume, Vector4::ZERO, inertia, Quaternion::IDENTITY, config)
     }
 
     fn support(&self, direction: Vector4) -> Option<Vector4> {
