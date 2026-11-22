@@ -9,18 +9,24 @@
 //!   constraints with static/dynamic friction).
 //! * [`proxy`] — `hknpCharacterProxy` (self-maintained contact manifold +
 //!   shape-cast driven movement + listeners/phantom presence).
+//! * [`ray_casting`] — `hknpRayCastingCharacterControllerUtil` (eight directional
+//!   casts, step-height diffs and bump/easing parameters).
 //! * [`listener`] — local subset of `hknpCharacterProxyListener`, including
 //!   object/character interaction callbacks.
 //! * [`manager`] — world post-solve bridge, batched stepping and serial
 //!   deferred interaction application.
+//! * [`contact_editing`] — world contact-modifier / post-collide bridge for the
+//!   rigid-body route (deterministic contact filtering without Jacobian access).
 //! * [`rigid_body`] / [`rigid_body_listener`] — rigid-body character route and
 //!   its three listener entry points.
 //! * [`state_machine`] — `hknpCharacterStateManager` / `hknpCharacterContext`
 //!   with the four wired default states (OnGround / Jumping / InAir / Climbing).
 //! * [`triggers`] — per-frame trigger enter/exit events by AABB overlap diff.
 //!
-//! The `RayCasting` route and solver-level contact editing are not ported
-//! (see README Phase 15 / current status).
+//! The VDB monitor and raw Jacobian editing remain unported. Contact filtering
+//! for the rigid-body route is available through [`contact_editing`], and
+//! [`ray_casting`] supplies height/displacement parameters without requiring a
+//! dedicated ray-cast rigid-body class (the SDK has only the utility).
 //! A typical frame:
 //!
 //! ```ignore
@@ -32,9 +38,11 @@
 //! proxy.integrate(&mut world, dt, &surface);
 //! ```
 
+pub mod contact_editing;
 pub mod listener;
 pub mod manager;
 pub mod proxy;
+pub mod ray_casting;
 pub mod rigid_body;
 pub mod rigid_body_listener;
 pub mod simplex_solver;
@@ -42,12 +50,16 @@ pub mod state_machine;
 pub mod surface;
 pub mod triggers;
 
+pub use contact_editing::CharacterContactBridge;
 pub use listener::{
     CharacterInteractionInfo, CharacterObjectInteractionEvent, CharacterObjectInteractionResult,
     CharacterProxyListener, CharacterProxyState,
 };
 pub use manager::CharacterProxyManager;
 pub use proxy::{CharacterProxy, CharacterProxyCinfo, Contact, DeferredInteraction};
+pub use ray_casting::{
+    CharacterParam, RayCastingCharacterCinfo, get_character_params, shape_cast_from_body,
+};
 pub use rigid_body::{CharacterRigidBody, CharacterRigidBodyCinfo};
 pub use rigid_body_listener::{
     CharacterRigidBodyListener, CharacterRigidBodyState, ContactPointInfo,

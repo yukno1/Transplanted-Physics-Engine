@@ -1,6 +1,6 @@
 //! `hknpWorld` — world assembly and single-threaded step pipeline.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +19,7 @@ use phys_solver::{
     RagdollJoint, SixDofJoint, Solver, SolverBody, SolverSettings, SpringJoint, WheelDrive,
     WheelJoint, WheelSuspension,
 };
-use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType};
+use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType, ShapeKey};
 
 use crate::cache::{ContactImpulseCache, ContactKey};
 use crate::constraint::{
@@ -28,10 +28,15 @@ use crate::constraint::{
     SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo,
     WheelSuspensionCinfo, WorldJoint, six_dof_constraint_frame_axes,
 };
+use crate::contact_modifier::{
+    ContactEditAction, ContactModifier, ContactModifierId, ContactModifierRegistry, EditableContact,
+};
+use crate::events::{PostCollideContactPoint, PostCollideEvent, TriggerEvent, TriggerEventMerger};
 use crate::island::{IslandInfo, build_islands};
 use crate::signals::{
     MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
-    PostSolveConnectionId, PostSolveEvent, PostSolveSignal,
+    PostCollideConnectionId, PostCollideSignal, PostSolveConnectionId, PostSolveEvent,
+    PostSolveSignal, TriggerConnectionId, TriggerSignal,
 };
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
@@ -108,6 +113,18 @@ pub struct World {
     mass_signal: MassSignal,
     /// Post-solve notifications (`hknpWorld::m_signals.m_postSolve` subset).
     post_solve_signal: PostSolveSignal,
+    /// Bodies flagged as trigger volumes (`hknpCollisionFlags::IS_TRIGGER` subset).
+    trigger_bodies: BTreeSet<BodyId>,
+    /// Trigger pairs that overlapped at the end of the previous step.
+    active_trigger_pairs: BTreeSet<(BodyId, BodyId)>,
+    /// Per-step trigger enter/exit accumulator (`hknpEventMergeAndDispatcher`).
+    trigger_merge: TriggerEventMerger,
+    /// World trigger event dispatch.
+    trigger_signal: TriggerSignal,
+    /// Pre-solve contact snapshots for character rigid-body listeners.
+    post_collide_signal: PostCollideSignal,
+    /// Deterministic contact-row editors applied before islands are built.
+    contact_modifiers: ContactModifierRegistry,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -132,6 +149,11 @@ impl fmt::Debug for World {
             .field("mass_cache", &self.mass_cache)
             .field("mass_signal", &self.mass_signal)
             .field("post_solve_signal", &self.post_solve_signal)
+            .field("trigger_bodies", &self.trigger_bodies.len())
+            .field("active_trigger_pairs", &self.active_trigger_pairs.len())
+            .field("trigger_signal", &self.trigger_signal)
+            .field("post_collide_signal", &self.post_collide_signal)
+            .field("contact_modifiers", &self.contact_modifiers)
             .field("step_count", &self.step_count)
             .field("last_delta_time", &self.last_delta_time)
             .field("last_manifold_count", &self.last_manifold_count)
@@ -165,6 +187,12 @@ impl World {
             mass_cache: ShapeMassCache::new(),
             mass_signal: MassSignal::default(),
             post_solve_signal: PostSolveSignal::default(),
+            trigger_bodies: BTreeSet::new(),
+            active_trigger_pairs: BTreeSet::new(),
+            trigger_merge: TriggerEventMerger::default(),
+            trigger_signal: TriggerSignal::default(),
+            post_collide_signal: PostCollideSignal::default(),
+            contact_modifiers: ContactModifierRegistry::default(),
             cinfo,
             gravity,
             step_count: 0,
@@ -851,6 +879,121 @@ impl World {
         &self.post_solve_signal
     }
 
+    /// Mark or unmark a body as a trigger volume.
+    ///
+    /// Trigger pairs are detected from cached body AABBs each step (deterministic
+    /// broad-phase order), so static and sleeping bodies participate as well.
+    /// Returns `false` when the id is not a live body.
+    pub fn set_body_trigger(&mut self, body_id: BodyId, enabled: bool) -> bool {
+        if self.bodies.get(body_id).is_none() {
+            return false;
+        }
+        if enabled {
+            self.trigger_bodies.insert(body_id);
+        } else {
+            self.trigger_bodies.remove(&body_id);
+            self.active_trigger_pairs
+                .retain(|&(a, b)| a != body_id && b != body_id);
+        }
+        true
+    }
+
+    /// Whether a body is currently marked as a trigger.
+    pub fn is_body_trigger(&self, body_id: BodyId) -> bool {
+        self.trigger_bodies.contains(&body_id)
+    }
+
+    /// Iterate live trigger bodies in ascending id order.
+    pub fn trigger_bodies(&self) -> impl Iterator<Item = BodyId> + '_ {
+        self.trigger_bodies.iter().copied()
+    }
+
+    /// Queue an explicit trigger enter/exit transition for the current step.
+    ///
+    /// Automatic AABB diffs already feed the same per-step merger; this API
+    /// lets a narrower collision source (or a test) merge multiple transitions
+    /// for one pair. An enter followed by an exit in the same step produces
+    /// `TriggerStatus::Updated` when the world cinfo enables it.
+    pub fn record_trigger_transition(&mut self, a: BodyId, b: BodyId, entered: bool) -> bool {
+        if self.bodies.get(a).is_none() || self.bodies.get(b).is_none() {
+            return false;
+        }
+        let (body_a, body_b) = if a < b { (a, b) } else { (b, a) };
+        if entered {
+            self.trigger_merge
+                .enter(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+        } else {
+            self.trigger_merge
+                .exit(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+        }
+        true
+    }
+
+    /// Subscribe to world-level trigger events.
+    ///
+    /// Events are emitted once per step after contact generation and before the
+    /// solver runs, in canonical `(body_a, body_b, shape key)` order.
+    pub fn subscribe_trigger_events<F>(&self, listener: F) -> TriggerConnectionId
+    where
+        F: Fn(&TriggerEvent) + Send + Sync + 'static,
+    {
+        self.trigger_signal.subscribe(listener)
+    }
+
+    /// Remove a previously registered trigger subscription.
+    pub fn unsubscribe_trigger_event(&self, id: TriggerConnectionId) -> bool {
+        self.trigger_signal.unsubscribe(id)
+    }
+
+    /// Read-only view of the world's trigger signal.
+    pub fn trigger_signal(&self) -> &TriggerSignal {
+        &self.trigger_signal
+    }
+
+    /// Subscribe to pre-solve contact snapshots for a body pair.
+    ///
+    /// These callbacks observe the contacts *after* [`crate::ContactModifier`]
+    /// hooks ran and before islands and solving; they cannot mutate the world.
+    pub fn subscribe_post_collide<F>(&self, listener: F) -> PostCollideConnectionId
+    where
+        F: Fn(&crate::events::PostCollideEvent) + Send + Sync + 'static,
+    {
+        self.post_collide_signal.subscribe(listener)
+    }
+
+    /// Remove a previously registered post-collide subscription.
+    pub fn unsubscribe_post_collide(&self, id: PostCollideConnectionId) -> bool {
+        self.post_collide_signal.unsubscribe(id)
+    }
+
+    /// Read-only view of the world's post-collide signal.
+    pub fn post_collide_signal(&self) -> &PostCollideSignal {
+        &self.post_collide_signal
+    }
+
+    /// Register a contact modifier used by both single- and multi-threaded steps.
+    pub fn register_contact_modifier(
+        &self,
+        modifier: Arc<dyn ContactModifier>,
+    ) -> ContactModifierId {
+        self.contact_modifiers.register(modifier)
+    }
+
+    /// Remove a registered contact modifier.
+    pub fn unregister_contact_modifier(&self, id: ContactModifierId) -> bool {
+        self.contact_modifiers.unregister(id)
+    }
+
+    /// Remove all registered contact modifiers.
+    pub fn clear_contact_modifiers(&self) {
+        self.contact_modifiers.clear();
+    }
+
+    /// Number of registered contact modifiers.
+    pub fn contact_modifier_count(&self) -> usize {
+        self.contact_modifiers.len()
+    }
+
     /// Destroy a body and its motion (`destroyBodies`).
     pub fn destroy_body(&mut self, body_id: BodyId) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
@@ -868,6 +1011,9 @@ impl World {
         if destroyed {
             self.remove_joints_of(body_id);
             self.sleep_states.remove(&body_id);
+            self.trigger_bodies.remove(&body_id);
+            self.active_trigger_pairs
+                .retain(|&(a, b)| a != body_id && b != body_id);
         }
         destroyed
     }
@@ -1950,6 +2096,112 @@ impl World {
         self.contact_cache.clear();
     }
 
+    /// Flatten manifolds into solver rows, applying contact modifiers first.
+    ///
+    /// The returned rows, warm-start keys and impulses stay index-aligned: a
+    /// dropped point is excluded from all three. One post-collide event is
+    /// produced per manifold (including those whose points were all dropped)
+    /// so listeners can observe the filtering.
+    fn build_contact_rows(
+        &self,
+        contacts: &[ContactManifold],
+        index_map: &HashMap<BodyId, usize>,
+        modifiers: &[Arc<dyn ContactModifier>],
+        step_number: u64,
+        delta_time: f32,
+    ) -> (
+        Vec<ContactConstraint>,
+        Vec<ContactKey>,
+        Vec<ContactImpulse>,
+        Vec<PostCollideEvent>,
+    ) {
+        let point_count: usize = contacts
+            .iter()
+            .map(|contact| contact.manifold.num_points())
+            .sum();
+        let mut constraints = Vec::with_capacity(point_count);
+        let mut contact_keys = Vec::with_capacity(point_count);
+        let mut contact_impulses = Vec::with_capacity(point_count);
+        let mut events = Vec::with_capacity(contacts.len());
+
+        for contact in contacts {
+            let (Some(&body_a), Some(&body_b)) = (
+                index_map.get(&contact.body_a),
+                index_map.get(&contact.body_b),
+            ) else {
+                continue;
+            };
+            let Some(transform_b) = self.bodies.get(contact.body_b).map(|body| body.transform)
+            else {
+                continue;
+            };
+
+            let mut points = Vec::with_capacity(contact.manifold.points.len());
+            let mut dropped = 0usize;
+            for point in &contact.manifold.points {
+                let mut editable = EditableContact {
+                    body_a: contact.body_a,
+                    body_b: contact.body_b,
+                    normal: contact.manifold.normal,
+                    position: point.position,
+                    penetration: (-point.distance).max(0.0),
+                    friction: 0.5,
+                };
+                let mut keep = true;
+                for modifier in modifiers {
+                    if modifier.modify(&mut editable) == ContactEditAction::Drop {
+                        keep = false;
+                        break;
+                    }
+                }
+                if !keep {
+                    dropped += 1;
+                    continue;
+                }
+
+                let penetration = editable.penetration.max(0.0);
+                let constraint_point = editable.position - editable.normal * (penetration * 0.5);
+                constraints.push(ContactConstraint::new(
+                    body_a,
+                    body_b,
+                    editable.normal,
+                    constraint_point,
+                    penetration,
+                    editable.friction,
+                ));
+                let key = ContactKey {
+                    body_a: contact.body_a,
+                    body_b: contact.body_b,
+                    local_point_b: transform_b.inverse_transform_point(editable.position),
+                    normal: editable.normal,
+                };
+                contact_impulses.push(if self.cinfo.enable_warm_starting {
+                    self.contact_cache.match_impulse(key)
+                } else {
+                    ContactImpulse::default()
+                });
+                contact_keys.push(key);
+                points.push(PostCollideContactPoint {
+                    position: editable.position,
+                    normal: editable.normal,
+                    penetration,
+                    friction: editable.friction,
+                });
+            }
+
+            events.push(PostCollideEvent {
+                step_count: step_number,
+                delta_time,
+                body_a: contact.body_a,
+                body_b: contact.body_b,
+                points,
+                dropped_point_count: dropped,
+            });
+        }
+
+        (constraints, contact_keys, contact_impulses, events)
+    }
+
     /// Advance the world by `delta_time` using one thread.
     ///
     /// Shortcut for [`World::step_with_threads(delta_time, 1)`].
@@ -1977,11 +2229,10 @@ impl World {
         } else {
             self.collect_contacts()
         };
-        self.last_manifold_count = contacts.len();
-        self.last_contact_count = contacts
-            .iter()
-            .map(|contact| contact.manifold.num_points())
-            .sum();
+        // Trigger overlap transitions are collected from broad-phase AABBs and
+        // emitted before contact rows are built; subscribers cannot mutate the
+        // world, so ordering relative to the solver is stable.
+        self.update_trigger_events();
 
         let gravity = self.gravity;
         if delta_time > 0.0 {
@@ -2042,48 +2293,21 @@ impl World {
             ));
         }
 
-        // Contacts plus their warm-start identity (point on B in B's local
-        // space, so the same feature can be found again next step).
-        let mut constraints = Vec::with_capacity(self.last_contact_count);
-        let mut contact_keys = Vec::with_capacity(self.last_contact_count);
-        let mut contact_impulses = Vec::with_capacity(self.last_contact_count);
-        for contact in &contacts {
-            let (Some(&body_a), Some(&body_b)) = (
-                index_map.get(&contact.body_a),
-                index_map.get(&contact.body_b),
-            ) else {
-                continue;
-            };
-            let Some(transform_b) = self.bodies.get(contact.body_b).map(|body| body.transform)
-            else {
-                continue;
-            };
-            for point in &contact.manifold.points {
-                // Contact point midway between the two surfaces.
-                let constraint_point =
-                    point.position + contact.manifold.normal * (point.distance * 0.5);
-                let penetration = (-point.distance).max(0.0);
-                constraints.push(ContactConstraint::new(
-                    body_a,
-                    body_b,
-                    contact.manifold.normal,
-                    constraint_point,
-                    penetration,
-                    0.5,
-                ));
-                let key = ContactKey {
-                    body_a: contact.body_a,
-                    body_b: contact.body_b,
-                    local_point_b: transform_b.inverse_transform_point(point.position),
-                    normal: contact.manifold.normal,
-                };
-                contact_impulses.push(if self.cinfo.enable_warm_starting {
-                    self.contact_cache.match_impulse(key)
-                } else {
-                    ContactImpulse::default()
-                });
-                contact_keys.push(key);
-            }
+        // Contact rows are shared by both step paths; modifiers run once per
+        // step over a snapshot so parallel workers cannot see partial edits.
+        let modifier_snapshot = self.contact_modifiers.snapshot();
+        let (constraints, contact_keys, mut contact_impulses, post_collide_events) = self
+            .build_contact_rows(
+                &contacts,
+                &index_map,
+                &modifier_snapshot,
+                self.step_count + 1,
+                delta_time,
+            );
+        self.last_manifold_count = post_collide_events.len();
+        self.last_contact_count = constraints.len();
+        for event in &post_collide_events {
+            self.post_collide_signal.emit(event);
         }
 
         let solver_joints = self.build_solver_joints(&index_map);
@@ -2427,6 +2651,85 @@ impl World {
             .expect("parallel contact worker panicked");
         results.sort_unstable_by_key(|(index, _)| *index);
         results.into_iter().map(|(_, manifold)| manifold).collect()
+    }
+
+    /// Refresh trigger overlaps and dispatch merged events for this step.
+    ///
+    /// The detector uses broad-phase AABB pairs (canonical `(low, high)` order)
+    /// rather than narrow-phase manifolds, so static, sleeping and non-convex
+    /// trigger bodies all participate. `DONT_COLLIDE` and the world collision
+    /// filter are honoured. Shape keys are `INVALID` because contacts are
+    /// body-pair level; leaf-level events stay in the character query tracker.
+    fn update_trigger_events(&mut self) {
+        if self.trigger_bodies.is_empty() {
+            self.active_trigger_pairs.clear();
+        } else {
+            let entries: Vec<BodyAabb> = self
+                .bodies
+                .iter()
+                .map(|body| BodyAabb::new(body.id, body.aabb))
+                .collect();
+            let mut current = BTreeSet::new();
+            for pair in self.broad_phase.find_pairs(&entries) {
+                let (low, high) = if pair.a < pair.b {
+                    (pair.a, pair.b)
+                } else {
+                    (pair.b, pair.a)
+                };
+                if !self.trigger_bodies.contains(&low) && !self.trigger_bodies.contains(&high) {
+                    continue;
+                }
+                let (Some(body_a), Some(body_b)) =
+                    (self.bodies.get(pair.a), self.bodies.get(pair.b))
+                else {
+                    continue;
+                };
+                if body_a.flags.contains(CollisionFlags::DONT_COLLIDE)
+                    || body_b.flags.contains(CollisionFlags::DONT_COLLIDE)
+                {
+                    continue;
+                }
+                if let Some(filter) = &self.collision_filter {
+                    if !filter.is_body_pair_enabled(
+                        pair.a,
+                        body_a.collision_filter_info,
+                        pair.b,
+                        body_b.collision_filter_info,
+                    ) {
+                        continue;
+                    }
+                }
+                current.insert((low, high));
+            }
+
+            let enters: Vec<(BodyId, BodyId)> = current
+                .iter()
+                .copied()
+                .filter(|pair| !self.active_trigger_pairs.contains(pair))
+                .collect();
+            let exits: Vec<(BodyId, BodyId)> = self
+                .active_trigger_pairs
+                .iter()
+                .copied()
+                .filter(|pair| !current.contains(pair))
+                .collect();
+            for (body_a, body_b) in enters {
+                self.trigger_merge
+                    .enter(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+            }
+            for (body_a, body_b) in exits {
+                self.trigger_merge
+                    .exit(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+            }
+            self.active_trigger_pairs = current;
+        }
+
+        let events = self
+            .trigger_merge
+            .flush(self.cinfo.raise_trigger_updated_events);
+        for event in events {
+            self.trigger_signal.emit(&event);
+        }
     }
 
     fn contact_candidates(&self) -> Vec<ContactCandidate> {
@@ -4297,5 +4600,135 @@ mod tests {
         // Joint type lookups stay in sync.
         assert_eq!(world.constraints_of_body(chassis).count(), 2);
         assert!(matches!(world.constraint(id), Some(WorldJoint::Wheel(_))));
+    }
+
+    #[test]
+    fn trigger_bodies_emit_enter_and_exit_from_aabb_overlaps() {
+        use crate::events::TriggerStatus;
+
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let trigger = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(1.0))).with_position(Vector4::ZERO),
+        );
+        let other = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+                .with_position(Vector4::from_xyz(0.5, 0.0, 0.0)),
+        );
+        assert!(world.set_body_trigger(trigger, true));
+        assert!(world.is_body_trigger(trigger));
+        assert!(!world.is_body_trigger(other));
+
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        let connection = world.subscribe_trigger_events(move |event| {
+            sink.lock().unwrap().push(event.status);
+        });
+
+        world.step(0.0);
+        assert_eq!(*log.lock().unwrap(), vec![TriggerStatus::Entered]);
+        world.set_body_position(other, Vector4::from_xyz(8.0, 0.0, 0.0));
+        world.step(0.0);
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![TriggerStatus::Entered, TriggerStatus::Exited]
+        );
+        assert!(world.unsubscribe_trigger_event(connection));
+        world.set_body_position(other, Vector4::from_xyz(0.5, 0.0, 0.0));
+        world.step(0.0);
+        assert_eq!(log.lock().unwrap().len(), 2);
+    }
+
+    struct DropContacts;
+    impl ContactModifier for DropContacts {
+        fn modify(&self, _: &mut EditableContact) -> ContactEditAction {
+            ContactEditAction::Drop
+        }
+    }
+
+    struct SetFriction(f32);
+    impl ContactModifier for SetFriction {
+        fn modify(&self, contact: &mut EditableContact) -> ContactEditAction {
+            contact.friction = self.0;
+            ContactEditAction::Keep
+        }
+    }
+
+    #[test]
+    fn contact_modifier_drops_points_and_post_collide_reports_them() {
+        let mut world = World::new(WorldCinfo::new());
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        world.subscribe_post_collide(move |event| {
+            sink.lock()
+                .unwrap()
+                .push((event.points.len(), event.dropped_point_count));
+        });
+        let id = world.register_contact_modifier(Arc::new(DropContacts));
+        for _ in 0..20 {
+            world.step(1.0 / 60.0);
+        }
+        assert_eq!(world.stats().last_contact_count, 0);
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|&(retained, dropped)| retained == 0 && dropped > 0)
+        );
+        assert!(world.unregister_contact_modifier(id));
+        assert_eq!(world.contact_modifier_count(), 0);
+    }
+
+    #[test]
+    fn contact_modifier_edits_friction_seen_by_post_collide() {
+        let mut world = World::new(WorldCinfo::new());
+        world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        );
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        world.subscribe_post_collide(move |event| {
+            for point in &event.points {
+                sink.lock().unwrap().push(point.friction);
+            }
+        });
+        let id = world.register_contact_modifier(Arc::new(SetFriction(0.9)));
+        for _ in 0..8 {
+            world.step(1.0 / 60.0);
+        }
+        assert!(seen.lock().unwrap().contains(&0.9));
+        world.clear_contact_modifiers();
+        assert!(!world.contact_modifiers.unregister(id));
+    }
+
+    #[test]
+    fn explicit_trigger_transitions_merge_into_updated_only_when_enabled() {
+        use crate::events::TriggerStatus;
+
+        let mut world = World::new(WorldCinfo::new().with_raise_trigger_updated_events(true));
+        let a = world.create_body(&BodyCinfo::new(box_shape(Vector4::splat(0.5))));
+        let b = world.create_body(
+            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+                .with_position(Vector4::from_xyz(8.0, 0.0, 0.0)),
+        );
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&log);
+        world.subscribe_trigger_events(move |event| {
+            sink.lock().unwrap().push(event.status);
+        });
+
+        assert!(world.record_trigger_transition(a, b, true));
+        assert!(world.record_trigger_transition(b, a, false));
+        world.step(0.0);
+        assert_eq!(*log.lock().unwrap(), vec![TriggerStatus::Updated]);
+        assert!(!world.record_trigger_transition(BodyId::INVALID, b, true));
     }
 }

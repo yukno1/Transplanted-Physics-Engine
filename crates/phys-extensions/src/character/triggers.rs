@@ -7,10 +7,15 @@
 //! through [`TriggerTracker::update_observations`] and keeps the older
 //! body-level AABB approximation in [`TriggerTracker::update`].
 //!
-//! Material `TRIGGER_TYPE`, broad/contact-solver modifiers and world-level
-//! `hknpTriggerEvent` dispatch remain outside this subset. `Updated` is an
-//! opt-in observation-level status: it is emitted only when a caller supplies
-//! observations with a changed position/normal for an already overlapping key.
+//! Material `TRIGGER_TYPE` and broad/contact-solver modifiers remain outside
+//! this subset. `Updated` here is an opt-in **observation-level** status: it is
+//! emitted only when a caller supplies observations with a changed
+//! position/normal for an already overlapping key. It is intentionally
+//! distinct from the world-level
+//! [`phys_world::TriggerStatus::Updated`],
+//! which means "enter and exit merged for the same pair within one step"; the
+//! two paths are independent and are never dispatched twice for one event.
+//! World-level events are re-exported as `WorldTrigger*` from this crate.
 
 use std::collections::{BTreeMap, HashSet};
 

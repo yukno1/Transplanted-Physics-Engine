@@ -49,6 +49,9 @@ pub struct WorldCinfo {
     pub sleeping_angular_threshold: f32,
     /// Whether contact impulses are warm started across steps (default true).
     pub enable_warm_starting: bool,
+    /// Whether a trigger pair that exits and re-enters in the same step emits
+    /// `TriggerStatus::Updated` (`m_raiseTriggerUpdatedEvents`, default false).
+    pub raise_trigger_updated_events: bool,
     /// Expected step delta time (default 1/30 s).
     pub expected_delta_time: f32,
 }
@@ -70,6 +73,7 @@ impl Default for WorldCinfo {
             sleeping_linear_threshold: 0.1,
             sleeping_angular_threshold: 0.1,
             enable_warm_starting: true,
+            raise_trigger_updated_events: false,
             expected_delta_time: 1.0 / 30.0,
         }
     }
@@ -160,6 +164,13 @@ impl WorldCinfo {
         self
     }
 
+    /// Enable or disable same-step trigger `Updated` events.
+    #[must_use]
+    pub fn with_raise_trigger_updated_events(mut self, enabled: bool) -> Self {
+        self.raise_trigger_updated_events = enabled;
+        self
+    }
+
     /// Set the expected step delta time used for solver scaling.
     #[must_use]
     pub fn with_expected_delta_time(mut self, delta_time: f32) -> Self {
@@ -188,6 +199,7 @@ mod tests {
         assert!((cinfo.sleeping_linear_threshold - 0.1).abs() < 1e-6);
         assert!((cinfo.sleeping_angular_threshold - 0.1).abs() < 1e-6);
         assert!(cinfo.enable_warm_starting);
+        assert!(!cinfo.raise_trigger_updated_events);
         assert!((cinfo.expected_delta_time - 1.0 / 30.0).abs() < 1e-6);
     }
 
@@ -203,7 +215,8 @@ mod tests {
             .with_deactivation(false)
             .with_sleeping(true)
             .with_sleeping_settings(1.0, 0.2, 0.3)
-            .with_warm_starting(false);
+            .with_warm_starting(false)
+            .with_raise_trigger_updated_events(true);
         assert_eq!(cinfo.name.as_deref(), Some("test"));
         assert_eq!(cinfo.body_buffer_capacity, 10);
         assert_eq!(cinfo.solver_tau, 0.5);
@@ -214,5 +227,6 @@ mod tests {
         assert!((cinfo.sleeping_linear_threshold - 0.2).abs() < 1e-6);
         assert!((cinfo.sleeping_angular_threshold - 0.3).abs() < 1e-6);
         assert!(!cinfo.enable_warm_starting);
+        assert!(cinfo.raise_trigger_updated_events);
     }
 }

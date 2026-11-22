@@ -15,9 +15,11 @@
 //!
 //! # Blocked extension systems
 //!
-//! The CharacterControl `RayCasting` route, solver-level contact editing and
-//! VDB monitor callbacks are not ported. The rigid-body route is a local
-//! subset using body/query APIs. Ragdoll easing now covers
+//! The SDK has no ray-casting rigid-body class; the `RayCasting` utility is
+//! available as [`character::get_character_params`], and VDB monitor callbacks
+//! are not ported. Solver-level contact *filtering* for the rigid-body route is
+//! available through [`character::CharacterContactBridge`] (no raw Jacobian
+//! access). Ragdoll easing now covers
 //! the limited-hinge and 6DOF limit sets and the state manager accepts ten
 //! user-defined states, optional ragdoll plane-angle and 6DOF per-axis
 //! translation limits, and shared-motion mass merges. The `ActionManager`
@@ -33,14 +35,24 @@ pub mod ragdoll_penetration;
 pub mod vehicle;
 pub mod world_hash;
 
+/// World-level event names are prefixed to keep them distinct from the
+/// query-based character [`TriggerEvent`] / [`TriggerStatus`] pair.
+pub use phys_world::{
+    ContactEditAction, ContactModifier, ContactModifierId, ContactModifierRegistry,
+    EditableContact, PostCollideEvent as WorldPostCollideEvent, TriggerEvent as WorldTriggerEvent,
+    TriggerEventMerger as WorldTriggerEventMerger, TriggerSignal as WorldTriggerSignal,
+    TriggerStatus as WorldTriggerStatus,
+};
+
 pub use character::{
-    CharacterContext, CharacterInput, CharacterInteractionInfo, CharacterObjectInteractionEvent,
-    CharacterObjectInteractionResult, CharacterOutput, CharacterProxy, CharacterProxyCinfo,
-    CharacterProxyListener, CharacterProxyManager, CharacterProxyState, CharacterRigidBody,
-    CharacterRigidBodyCinfo, CharacterRigidBodyListener, CharacterRigidBodyState, CharacterState,
-    CharacterStateManager, CharacterStateType, Contact as CharacterContact, ContactPointInfo,
-    DeferredInteraction, SupportedState, SurfaceInfo, TriggerEvent, TriggerObservation,
-    TriggerStatus, TriggerTracker,
+    CharacterContactBridge, CharacterContext, CharacterInput, CharacterInteractionInfo,
+    CharacterObjectInteractionEvent, CharacterObjectInteractionResult, CharacterOutput,
+    CharacterParam, CharacterProxy, CharacterProxyCinfo, CharacterProxyListener,
+    CharacterProxyManager, CharacterProxyState, CharacterRigidBody, CharacterRigidBodyCinfo,
+    CharacterRigidBodyListener, CharacterRigidBodyState, CharacterState, CharacterStateManager,
+    CharacterStateType, Contact as CharacterContact, ContactPointInfo, DeferredInteraction,
+    RayCastingCharacterCinfo, SupportedState, SurfaceInfo, TriggerEvent, TriggerObservation,
+    TriggerStatus, TriggerTracker, get_character_params, shape_cast_from_body,
 };
 
 pub use ragdoll::{Ragdoll, RagdollBone, RagdollData, RagdollError, RagdollLimits};

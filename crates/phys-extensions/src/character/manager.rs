@@ -11,8 +11,11 @@ use std::sync::{Arc, Mutex};
 
 use base_math::Aabb;
 use base_thread::parallel::parallel_for_chunks;
-use phys_world::{PostSolveConnectionId, World};
+use phys_world::{
+    ContactModifier, ContactModifierId, PostCollideConnectionId, PostSolveConnectionId, World,
+};
 
+use super::contact_editing::CharacterContactBridge;
 use super::listener::CharacterInteractionInfo;
 use super::proxy::CharacterProxy;
 use super::rigid_body::CharacterRigidBody;
@@ -40,6 +43,9 @@ struct ManagerState {
 pub struct CharacterProxyManager {
     state: Arc<Mutex<ManagerState>>,
     connections: Arc<Mutex<Vec<PostSolveConnectionId>>>,
+    contact_bridge: CharacterContactBridge,
+    contact_modifiers: Arc<Mutex<Vec<ContactModifierId>>>,
+    post_collide_connections: Arc<Mutex<Vec<PostCollideConnectionId>>>,
 }
 
 impl CharacterProxyManager {
@@ -77,6 +83,9 @@ impl CharacterProxyManager {
         let mut state = self.state.lock().expect("character manager lock poisoned");
         state.next_rigid_body_id += 1;
         let id = state.next_rigid_body_id;
+        let body = character.body();
+        self.contact_bridge
+            .register(body, character.listener_slot());
         state.rigid_bodies.push((id, character));
         id
     }
@@ -88,7 +97,9 @@ impl CharacterProxyManager {
             .rigid_bodies
             .iter()
             .position(|(other, _)| *other == id)?;
-        Some(state.rigid_bodies.remove(index).1)
+        let (_, character) = state.rigid_bodies.remove(index);
+        self.contact_bridge.unregister(character.body());
+        Some(character)
     }
 
     /// Number of registered rigid-body characters.
@@ -170,6 +181,21 @@ impl CharacterProxyManager {
     /// Connect to `world`'s post-solve signal. Calling this twice registers a
     /// second independent connection; use [`Self::detach`] to remove them all.
     pub fn attach(&self, world: &World) -> PostSolveConnectionId {
+        let modifier = Arc::new(self.contact_bridge.clone()) as Arc<dyn ContactModifier>;
+        let modifier_id = world.register_contact_modifier(modifier);
+        self.contact_modifiers
+            .lock()
+            .expect("character manager lock poisoned")
+            .push(modifier_id);
+
+        let bridge = self.contact_bridge.clone();
+        let post_collide =
+            world.subscribe_post_collide(move |event| bridge.dispatch_post_collide(event));
+        self.post_collide_connections
+            .lock()
+            .expect("character manager lock poisoned")
+            .push(post_collide);
+
         let state = Arc::clone(&self.state);
         let connection = world.subscribe_post_solve(move |_event| {
             let mut state = state.lock().expect("character manager lock poisoned");
@@ -235,7 +261,7 @@ impl CharacterProxyManager {
         connection
     }
 
-    /// Remove all world post-solve connections created by [`Self::attach`].
+    /// Remove all world connections created by [`Self::attach`].
     pub fn detach(&self, world: &World) {
         let mut connections = self
             .connections
@@ -243,6 +269,24 @@ impl CharacterProxyManager {
             .expect("character manager lock poisoned");
         for connection in connections.drain(..) {
             let _ = world.unsubscribe_post_solve(connection);
+        }
+        drop(connections);
+
+        let mut modifiers = self
+            .contact_modifiers
+            .lock()
+            .expect("character manager lock poisoned");
+        for modifier in modifiers.drain(..) {
+            world.unregister_contact_modifier(modifier);
+        }
+        drop(modifiers);
+
+        let mut post_collide = self
+            .post_collide_connections
+            .lock()
+            .expect("character manager lock poisoned");
+        for connection in post_collide.drain(..) {
+            let _ = world.unsubscribe_post_collide(connection);
         }
     }
 
@@ -252,6 +296,21 @@ impl CharacterProxyManager {
             .lock()
             .expect("character manager lock poisoned")
             .len()
+    }
+
+    /// Number of live contact-edit / post-collide connections.
+    pub fn contact_connection_count(&self) -> usize {
+        let modifiers = self
+            .contact_modifiers
+            .lock()
+            .expect("character manager lock poisoned")
+            .len();
+        let post_collide = self
+            .post_collide_connections
+            .lock()
+            .expect("character manager lock poisoned")
+            .len();
+        modifiers + post_collide
     }
 
     /// Step all registered characters and apply their deferred pushes.

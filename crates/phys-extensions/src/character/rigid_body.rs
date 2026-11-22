@@ -4,10 +4,12 @@
 //! dynamic body and steers it with velocity/position control. Support checks
 //! use the world's convex closest-point queries, and listeners receive the
 //! SDK's three logical entry points: contact filtering, post-collide and
-//! post-solve. Solver-level contact disabling and Jacobian editing are not
-//! available in this port.
+//! post-solve. When managed by [`super::manager::CharacterProxyManager`], the
+//! listener is also wired to the world's deterministic contact modifier and
+//! post-collide signal, so `filter_contact_point` can drop real solver contacts.
+//! Raw Jacobian editing and VDB monitor callbacks remain out of scope.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base_math::{Aabb, Quaternion, Transform, Vector4};
 use phys_body::BodyCinfo;
@@ -20,6 +22,10 @@ use super::rigid_body_listener::{
     CharacterRigidBodyListener, CharacterRigidBodyState, ContactPointInfo,
 };
 use super::surface::{SupportedState, SurfaceInfo};
+
+/// Shared listener slot used by the world contact bridge.
+pub(crate) type RigidBodyListenerCell =
+    Arc<Mutex<Option<Arc<Mutex<Box<dyn CharacterRigidBodyListener>>>>>>;
 
 /// Construction info for [`CharacterRigidBody`].
 ///
@@ -102,7 +108,7 @@ pub struct CharacterRigidBody {
     supported: bool,
     cached_position: Vector4,
     cached_velocity: Vector4,
-    listener: Option<Box<dyn CharacterRigidBodyListener>>,
+    listener_slot: RigidBodyListenerCell,
 }
 
 impl CharacterRigidBody {
@@ -135,13 +141,24 @@ impl CharacterRigidBody {
             supported: false,
             cached_position: info.position,
             cached_velocity: Vector4::ZERO,
-            listener: None,
+            listener_slot: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Attach a listener (replaces any previous one).
+    ///
+    /// The listener is kept behind a shared mutex so a manager can wire the
+    /// same callback into the world's contact modifier and post-collide signal.
     pub fn set_listener(&mut self, listener: Box<dyn CharacterRigidBodyListener>) {
-        self.listener = Some(listener);
+        *self
+            .listener_slot
+            .lock()
+            .expect("character listener lock poisoned") = Some(Arc::new(Mutex::new(listener)));
+    }
+
+    /// Shared listener slot for the manager's world contact bridge.
+    pub(crate) fn listener_slot(&self) -> RigidBodyListenerCell {
+        Arc::clone(&self.listener_slot)
     }
 
     /// Character body id.
@@ -225,13 +242,13 @@ impl CharacterRigidBody {
     /// after the world step.
     pub fn step(&mut self, world: &mut World, delta_time: f32, surface: &SurfaceInfo) {
         let mut points = self.collect_contacts(world);
-        if let Some(listener) = self.listener.as_mut() {
+        self.with_listener(|listener| {
             points.retain(|point| {
                 let mut point = *point;
                 listener.filter_contact_point(&mut point)
             });
             listener.on_post_collide(&points);
-        }
+        });
 
         let mut velocity = self.linear_velocity(world);
         if surface.supported_state == SupportedState::Supported && self.max_force > 0.0 {
@@ -256,14 +273,27 @@ impl CharacterRigidBody {
 
     /// Dispatch the post-solve listener from the state cached by [`Self::step`].
     pub(crate) fn fire_post_solve_from_snapshot(&mut self) {
-        if let Some(listener) = self.listener.as_mut() {
-            listener.on_post_solve(&CharacterRigidBodyState {
-                body: self.body,
-                position: self.cached_position,
-                velocity: self.cached_velocity,
-                supported: self.supported,
-            });
-        }
+        let state = CharacterRigidBodyState {
+            body: self.body,
+            position: self.cached_position,
+            velocity: self.cached_velocity,
+            supported: self.supported,
+        };
+        self.with_listener(|listener| listener.on_post_solve(&state));
+    }
+
+    fn with_listener<R>(
+        &self,
+        visit: impl FnOnce(&mut dyn CharacterRigidBodyListener) -> R,
+    ) -> Option<R> {
+        let listener = self
+            .listener_slot
+            .lock()
+            .expect("character listener lock poisoned")
+            .as_ref()
+            .cloned()?;
+        let mut listener = listener.lock().unwrap_or_else(|error| error.into_inner());
+        Some(visit(listener.as_mut()))
     }
 
     fn collect_contacts(&self, world: &World) -> Vec<ContactPointInfo> {

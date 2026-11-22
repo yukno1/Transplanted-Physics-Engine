@@ -163,8 +163,16 @@ impl MassSignal {
     }
 }
 
+use crate::events::{PostCollideEvent, TriggerEvent};
+
 /// Listener handle returned by [`PostSolveSignal::subscribe`].
 pub type PostSolveConnectionId = u64;
+
+/// Listener handle returned by [`TriggerSignal::subscribe`].
+pub type TriggerConnectionId = u64;
+
+/// Listener handle returned by [`PostCollideSignal::subscribe`].
+pub type PostCollideConnectionId = u64;
 
 /// Copyable summary of a completed world step.
 ///
@@ -296,6 +304,116 @@ impl PostSolveSignal {
         self.firing.fetch_sub(1, Ordering::Relaxed);
     }
 }
+
+type EventListener<E> = Arc<dyn Fn(&E) + Send + Sync>;
+type EventListenerEntry<E> = (u64, EventListener<E>);
+
+/// Thread-safe synchronous signal shared by world trigger and post-collide
+/// notifications.
+///
+/// Listener snapshots are taken under the lock and invoked in subscription
+/// order after the lock is released. Unsubscribing while an emission is in
+/// progress replaces the listener with a no-op for the current pass, matching
+/// [`PostSolveSignal`] semantics; nested emissions are allowed.
+#[derive(Clone)]
+pub struct EventSignal<E> {
+    listeners: Arc<Mutex<Vec<EventListenerEntry<E>>>>,
+    next_id: Arc<AtomicU64>,
+    firing: Arc<AtomicUsize>,
+}
+
+impl<E> Default for EventSignal<E> {
+    fn default() -> Self {
+        Self {
+            listeners: Arc::new(Mutex::new(Vec::new())),
+            next_id: Arc::new(AtomicU64::new(1)),
+            firing: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl<E> fmt::Debug for EventSignal<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventSignal")
+            .field("subscriptions", &self.num_subscriptions())
+            .field("firing", &self.is_firing())
+            .finish()
+    }
+}
+
+impl<E> EventSignal<E> {
+    /// Subscribe a callback; the returned handle can be passed to [`Self::unsubscribe`].
+    pub fn subscribe<F>(&self, listener: F) -> u64
+    where
+        F: Fn(&E) + Send + Sync + 'static,
+    {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.listeners
+            .lock()
+            .expect("event signal lock poisoned")
+            .push((id, Arc::new(listener)));
+        id
+    }
+
+    /// Remove a previously registered callback.
+    pub fn unsubscribe(&self, id: u64) -> bool {
+        let mut listeners = self.listeners.lock().expect("event signal lock poisoned");
+        if let Some(index) = listeners.iter().position(|entry| entry.0 == id) {
+            if self.is_firing() {
+                listeners[index].1 = Arc::new(|_| {});
+            } else {
+                listeners.remove(index);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove all callbacks.
+    pub fn unsubscribe_all(&self) {
+        let mut listeners = self.listeners.lock().expect("event signal lock poisoned");
+        if self.is_firing() {
+            for (_, listener) in listeners.iter_mut() {
+                *listener = Arc::new(|_| {});
+            }
+        } else {
+            listeners.clear();
+        }
+    }
+
+    /// Number of registered callbacks.
+    pub fn num_subscriptions(&self) -> usize {
+        self.listeners
+            .lock()
+            .expect("event signal lock poisoned")
+            .len()
+    }
+
+    /// Whether this signal is currently being emitted.
+    pub fn is_firing(&self) -> bool {
+        self.firing.load(Ordering::Relaxed) > 0
+    }
+
+    /// Emit an event to the callbacks registered when emission starts.
+    pub fn emit(&self, event: &E) {
+        let listeners = {
+            let guard = self.listeners.lock().expect("event signal lock poisoned");
+            guard.clone()
+        };
+        self.firing.fetch_add(1, Ordering::Relaxed);
+        for (_, listener) in listeners {
+            listener(event);
+        }
+        self.firing.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// World trigger event signal (`hknpWorld::m_signals` trigger dispatch subset).
+pub type TriggerSignal = EventSignal<TriggerEvent>;
+
+/// World post-collide event signal (`hknpWorld::m_postCollide` subset).
+pub type PostCollideSignal = EventSignal<PostCollideEvent>;
 
 #[cfg(test)]
 mod tests {

@@ -14,6 +14,7 @@
 //! | [`WorldJoint`]/[`JointType`] | `hknpConstraintData::ConstraintType` subset | stored joint families and body↔constraint lookup |
 //! | [`QueryFilter`] | `hknpCollisionQuery` filter subset | body/motion-type filtering for world queries |
 //! | [`CollisionFilter`]/[`GroupCollisionFilter`]/[`PairCollisionFilter`] | `Collide/Filter` subset | info/body-pair/query collision decisions (`set_collision_filter`) |
+//! | [`TriggerEvent`]/[`TriggerEventMerger`] | `Collide/Event` + `EventMergeAndDispatcher` subset | deterministic per-step trigger enter/exit/update merging |
 //! | [`RayCastHit`]/[`ShapeCastHitInfo`]/[`ClosestPointHit`]/[`ClosestPointsHit`] | `Collide/Query` subset | world ray cast, shape cast, closest point/shape and AABB queries |
 //!
 //! # Step pipeline
@@ -67,8 +68,14 @@
 //! bodies, so [`World::step_with_threads`] can solve island groups in parallel
 //! and merge the per-island results with bit-identical velocities.
 //!
+//! Bodies flagged with [`World::set_body_trigger`] emit deterministic
+//! [`TriggerEvent`]s from broad-phase AABB overlaps; same-step enter/exit pairs
+//! collapse into `Updated` only when enabled in [`WorldCinfo`]. Trigger events
+//! carry `ShapeKey::INVALID` (body-pair granularity), while leaf shape keys are
+//! provided by query-based character trigger tracking.
+//!
 //! Material libraries, restitution, broad-phase layers, command queues and
-//! events/modifiers remain future work.
+//! general event modifiers remain future work.
 //!
 //! # Not ported in this phase
 //!
@@ -91,6 +98,8 @@ pub use phys_collide::{CollisionFilter, GroupCollisionFilter, PairCollisionFilte
 mod cache;
 pub mod cinfo;
 pub mod constraint;
+pub mod contact_modifier;
+pub mod events;
 mod island;
 pub mod query;
 pub mod signals;
@@ -105,11 +114,18 @@ pub use constraint::{
     SixDofCinfo, SixDofLimitsCinfo, SpringCinfo, WheelCinfo, WheelDriveCinfo, WheelSuspensionCinfo,
     WorldJoint, six_dof_constraint_frame_axes,
 };
+pub use contact_modifier::{
+    ContactEditAction, ContactModifier, ContactModifierId, ContactModifierRegistry, EditableContact,
+};
+pub use events::{
+    PostCollideContactPoint, PostCollideEvent, TriggerEvent, TriggerEventMerger, TriggerStatus,
+};
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
 pub use signals::{
-    MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
-    PostSolveConnectionId, PostSolveEvent, PostSolveSignal,
+    EventSignal, MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
+    PostCollideConnectionId, PostCollideSignal, PostSolveConnectionId, PostSolveEvent,
+    PostSolveSignal, TriggerConnectionId, TriggerSignal,
 };
 pub use world::{MotionMassUpdateMode, World};
 
