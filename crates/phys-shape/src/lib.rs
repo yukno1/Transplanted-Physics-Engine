@@ -44,10 +44,11 @@
 //!
 //! `hknpCompressedMeshShape`, `hknpExternMeshShape`, `hknpBreakableCompoundShape`,
 //! `hknpLodShape`, decorator/masked shapes, shape tag codecs, shape key masks/
-//! iterators, attached/compressed `hknpShapeMassProperties` and the full
-//! `hknpShapeFunctions` surface (queries/GSK/face info). Mass-property building is
-//! available through [`Shape::mass_properties`]; packed/attached property caches
-//! and high-quality compressed-mesh aggregation remain unported.
+//! iterators, attached `hknpShapeMassProperties` and the full `hknpShapeFunctions`
+//! surface (queries/GSK/face info). Mass-property building is available through
+//! [`Shape::mass_properties`], with a portable compressed representation and
+//! deterministic principal-axis solver in [`mass`]; exact SDK packed-byte
+//! compatibility and attached-property caches remain unverified.
 
 use core::any::Any;
 
@@ -71,7 +72,11 @@ pub use compound::{CompoundShape, ShapeInstance};
 pub use convex_hull::ConvexHullShape;
 pub use cylinder::CylinderShape;
 pub use height_field::HeightFieldShape;
-pub use mass::{MassConfig, MassError, MassProperties, MassQuality};
+pub use mass::{
+    CompressedMassProperties, MassConfig, MassDistribution, MassError, MassProperties,
+    MassPropertiesTree, MassQuality, PackedUnitVector4, PackedVector3, ShapeCacheKey,
+    ShapeMassCache, diagonalize_symmetric,
+};
 pub use mesh::{BvhNode, MeshShape};
 pub use sphere::SphereShape;
 pub use triangle::TriangleShape;

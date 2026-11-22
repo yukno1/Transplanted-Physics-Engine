@@ -7,12 +7,22 @@
 //! [`MassConfig`] carries either an explicit mass or a negative density.
 //!
 //! All tensors are expressed about the shape's centre of mass in shape-local
-//! space. The port does not reproduce the SDK's packed `hknpHalf`/15-bit
-//! compressed forms; [`MassProperties::major_axis_space`] is kept for API
-//! compatibility and is identity unless a shape has an analytic principal
-//! frame.
+//! space. A deterministic portable 15-bit compression scheme is available via
+//! [`CompressedMassProperties`] and a fixed-schedule principal-axis solver via
+//! [`diagonalize_symmetric`]; neither is claimed to be bit-identical to the
+//! SDK's float-bit packing without a real `.hkx` golden comparison.
 
 use base_math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
+
+mod cache;
+mod compressed;
+mod distribution;
+mod eigen;
+
+pub use cache::{MassPropertiesTree, ShapeCacheKey, ShapeMassCache};
+pub use compressed::{CompressedMassProperties, PackedUnitVector4, PackedVector3};
+pub use distribution::MassDistribution;
+pub use eigen::{DiagonalizedSymmetric, diagonalize_symmetric};
 
 /// Quality hint used when a composite shape has no closed-form inertia
 /// (`hknpShape::MassConfig::MassPropertiesComputationQuality`).

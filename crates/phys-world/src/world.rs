@@ -12,7 +12,7 @@ use phys_body::{
 use phys_collide::{
     BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, collide_with_tolerance,
 };
-use phys_shape::{MassProperties, Shape};
+use phys_shape::{MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache};
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
@@ -29,6 +29,9 @@ use crate::constraint::{
     WheelSuspensionCinfo, WorldJoint, six_dof_constraint_frame_axes,
 };
 use crate::island::{IslandInfo, build_islands};
+use crate::signals::{
+    MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
+};
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Per-body deactivation state (the world's deactivation-manager subset).
@@ -98,6 +101,10 @@ pub struct World {
     motion_groups: Vec<MotionGroup>,
     /// Body → shared-motion group lookup (never iterated).
     group_of_body: HashMap<BodyId, usize>,
+    /// Insertion-ordered shape mass-property cache.
+    mass_cache: ShapeMassCache,
+    /// Mass-property change notifications (post-rebuild dispatch).
+    mass_signal: MassSignal,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -119,6 +126,8 @@ impl fmt::Debug for World {
             .field("sleep_states", &self.sleep_states)
             .field("last_islands", &self.last_islands)
             .field("collision_filter", &self.collision_filter.is_some())
+            .field("mass_cache", &self.mass_cache)
+            .field("mass_signal", &self.mass_signal)
             .field("step_count", &self.step_count)
             .field("last_delta_time", &self.last_delta_time)
             .field("last_manifold_count", &self.last_manifold_count)
@@ -149,6 +158,8 @@ impl World {
             collision_filter: None,
             motion_groups: Vec::new(),
             group_of_body: HashMap::new(),
+            mass_cache: ShapeMassCache::new(),
+            mass_signal: MassSignal::default(),
             cinfo,
             gravity,
             step_count: 0,
@@ -233,7 +244,9 @@ impl World {
     /// get a fresh motion slot. The shape in the cinfo is shared via `Arc`.
     pub fn create_body(&mut self, cinfo: &BodyCinfo) -> BodyId {
         let shape_properties = if cinfo.mass < 0.0 {
-            cinfo.shape.mass_properties(cinfo.mass_config).ok()
+            self.mass_cache
+                .compute(&cinfo.shape, cinfo.mass_config)
+                .ok()
         } else {
             None
         };
@@ -288,6 +301,8 @@ impl World {
             body.inverse_inertia_world = motion.inverse_inertia_world;
         }
         body.mass_properties = shape_properties;
+        body.mass_config = cinfo.mass_config;
+        body.derive_mass_from_shape = cinfo.mass < 0.0;
         body.flags = cinfo.flags | motion_flags;
         body.material_id = cinfo.material_id;
         body.quality_id = cinfo.quality_id;
@@ -584,6 +599,7 @@ impl World {
     /// Set a body's local inverse inertia, keeping the stored mass-merge
     /// source in sync with its motion.
     pub fn set_body_inverse_inertia(&mut self, body_id: BodyId, inverse: Vector4) -> bool {
+        let old = self.body_mass_summary(body_id);
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
@@ -594,13 +610,16 @@ impl World {
         if let Some(body) = self.bodies.get_mut(body_id) {
             body.inverse_inertia = inverse;
             body.inverse_inertia_world = inverse_inertia_diagonal_matrix(inverse);
+            body.mass_version = body.mass_version.wrapping_add(1);
         }
+        self.emit_mass_change(body_id, MassChangeReason::InverseInertiaSet, old);
         true
     }
 
     /// Set a body's full world-space inverse inertia matrix, keeping the
     /// legacy diagonal view in sync.
     pub fn set_body_inverse_inertia_world(&mut self, body_id: BodyId, matrix: Matrix3) -> bool {
+        let old = self.body_mass_summary(body_id);
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
@@ -616,8 +635,193 @@ impl World {
         if let Some(body) = self.bodies.get_mut(body_id) {
             body.inverse_inertia = diagonal;
             body.inverse_inertia_world = matrix;
+            body.mass_version = body.mass_version.wrapping_add(1);
+        }
+        self.emit_mass_change(body_id, MassChangeReason::InverseInertiaSet, old);
+        true
+    }
+
+    fn body_mass_summary(&self, body_id: BodyId) -> Option<MassSummary> {
+        let body = self.bodies.get(body_id)?;
+        let mut summary = MassSummary::from_properties(body.mass_properties.as_ref())?;
+        summary.inverse_inertia_world = body.inverse_inertia_world;
+        Some(summary)
+    }
+
+    fn emit_mass_change(
+        &self,
+        body_id: BodyId,
+        reason: MassChangeReason,
+        old: Option<MassSummary>,
+    ) {
+        let event = MassChangeEvent {
+            body: body_id,
+            reason,
+            old,
+            new: self.body_mass_summary(body_id),
+        };
+        self.mass_signal.emit(&event);
+    }
+
+    fn rebuild_body_mass_properties_inner(
+        &mut self,
+        body_id: BodyId,
+        reason: MassChangeReason,
+    ) -> bool {
+        let old = self.body_mass_summary(body_id);
+        let (motion_id, transform, derive_from_shape, mass_config, shape, existing_properties) = {
+            let Some(body) = self.bodies.get(body_id) else {
+                return false;
+            };
+            (
+                body.motion_id,
+                body.transform,
+                body.derive_mass_from_shape,
+                body.mass_config,
+                body.shape.clone(),
+                body.mass_properties,
+            )
+        };
+        let properties = if derive_from_shape {
+            self.mass_cache.compute(&shape, mass_config).ok()
+        } else {
+            existing_properties
+        };
+
+        if let Some(motion) = self.motions.get_mut(motion_id) {
+            if motion.motion_type.is_dynamic() {
+                let matrix = properties.map(|properties| {
+                    world_inverse_inertia_from_mass_properties(&properties, &transform)
+                });
+                if let Some(matrix) = matrix {
+                    motion.mass = properties.map_or(motion.mass, |p| p.mass);
+                    motion.set_inverse_inertia_world(matrix);
+                }
+            }
+        }
+
+        if let Some(body) = self.bodies.get_mut(body_id) {
+            body.mass_properties = properties;
+            if motion_id != MotionId::PRESET_STATIC {
+                if let Some(motion) = self.motions.get(motion_id) {
+                    body.mass = motion.mass;
+                    body.inverse_inertia = motion.inverse_inertia;
+                    body.inverse_inertia_world = motion.inverse_inertia_world;
+                }
+            }
+            body.mass_version = body.mass_version.wrapping_add(1);
+        }
+
+        if let Some(&group_index) = self.group_of_body.get(&body_id) {
+            let members = self.motion_groups[group_index].members.clone();
+            self.recompute_motion_properties(motion_id, &members);
+        }
+        self.emit_mass_change(body_id, reason, old);
+        true
+    }
+
+    /// Replace a body's shape and rebuild cached mass properties
+    /// (`hknpWorld` shape-mutation subset).
+    pub fn set_body_shape(&mut self, body_id: BodyId, shape: Arc<dyn Shape>) -> bool {
+        let old_shape = {
+            let Some(body) = self.bodies.get(body_id) else {
+                return false;
+            };
+            body.shape.clone()
+        };
+        self.mass_cache.invalidate(&old_shape);
+        self.bodies.get_mut(body_id).unwrap().set_shape(shape);
+        self.rebuild_body_mass_properties_inner(body_id, MassChangeReason::ShapeReplaced)
+    }
+
+    /// Replace a body's mass configuration and rebuild derived mass properties.
+    pub fn set_body_mass_config(&mut self, body_id: BodyId, config: MassConfig) -> bool {
+        let Some(body) = self.bodies.get_mut(body_id) else {
+            return false;
+        };
+        body.set_mass_config(config);
+        self.rebuild_body_mass_properties_inner(body_id, MassChangeReason::MassConfigChanged)
+    }
+
+    /// Replace a body's explicit mass. Negative values switch back to
+    /// shape-derived mass properties.
+    pub fn set_body_mass(&mut self, body_id: BodyId, mass: f32) -> bool {
+        if !mass.is_finite() {
+            return false;
+        }
+        let old = self.body_mass_summary(body_id);
+        let explicit = mass >= 0.0;
+        {
+            let Some(body) = self.bodies.get_mut(body_id) else {
+                return false;
+            };
+            let motion_id = body.motion_id;
+            body.mass = mass;
+            body.derive_mass_from_shape = !explicit;
+            body.mass_version = body.mass_version.wrapping_add(1);
+            if explicit {
+                body.mass_properties = body
+                    .mass_properties
+                    .and_then(|properties| properties.with_mass(mass).ok());
+                if let Some(motion) = self.motions.get_mut(motion_id) {
+                    motion.mass = mass;
+                    if mass == 0.0 {
+                        motion.set_inverse_inertia_diagonal(Vector4::ZERO);
+                    }
+                }
+                if let Some(motion) = self.motions.get(motion_id) {
+                    body.inverse_inertia = motion.inverse_inertia;
+                    body.inverse_inertia_world = motion.inverse_inertia_world;
+                }
+            }
+        };
+        if explicit {
+            self.emit_mass_change(body_id, MassChangeReason::MassConfigChanged, old);
+        } else {
+            self.rebuild_body_mass_properties_inner(body_id, MassChangeReason::MassConfigChanged);
         }
         true
+    }
+
+    /// Rebuild one body's mass properties from its current shape/config.
+    pub fn rebuild_body_mass_properties(&mut self, body_id: BodyId) -> bool {
+        self.rebuild_body_mass_properties_inner(body_id, MassChangeReason::MotionRebuilt)
+    }
+
+    /// Mass distribution of one body (`hknpMassDistribution` diagnostic API).
+    pub fn body_mass_distribution(&self, body_id: BodyId) -> Option<MassDistribution> {
+        let body = self.bodies.get(body_id)?;
+        if let Some(properties) = body.mass_properties.as_ref() {
+            return MassDistribution::from_mass_properties(properties).ok();
+        }
+        MassDistribution::from_shape(&body.shape, body.mass_config).ok()
+    }
+
+    /// Build a unit-mass distribution from transformed shapes (`setFromShapes`).
+    pub fn mass_distribution_from_shapes(
+        &self,
+        shapes: &[(Transform, Arc<dyn Shape>)],
+        config: MassConfig,
+    ) -> Result<MassDistribution, phys_shape::MassError> {
+        MassDistribution::from_shapes(shapes, config)
+    }
+
+    /// Subscribe to post-rebuild mass-property change notifications.
+    pub fn subscribe_mass_changes<F>(&self, listener: F) -> MassConnectionId
+    where
+        F: Fn(&MassChangeEvent) + Send + Sync + 'static,
+    {
+        self.mass_signal.subscribe(listener)
+    }
+
+    /// Remove a mass-change subscription.
+    pub fn unsubscribe_mass_change(&self, id: MassConnectionId) -> bool {
+        self.mass_signal.unsubscribe(id)
+    }
+
+    /// Read-only view of the world's mass-change signal.
+    pub fn mass_signal(&self) -> &MassSignal {
+        &self.mass_signal
     }
 
     /// Destroy a body and its motion (`destroyBodies`).

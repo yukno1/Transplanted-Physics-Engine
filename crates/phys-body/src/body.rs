@@ -226,10 +226,16 @@ pub struct Body {
     /// Mass used when this body's properties are merged into a shared motion.
     /// `0` means infinite mass; it is copied from `BodyCinfo` at creation.
     pub mass: f32,
+    /// Whether mass/COM/inertia should be derived from the shape on rebuild.
+    pub derive_mass_from_shape: bool,
     /// Diagonal inverse inertia in body-local space, used only by mass merges.
     pub inverse_inertia: Vector4,
     /// Full mass properties derived from the shape or explicitly assigned.
     pub mass_properties: Option<MassProperties>,
+    /// Mass configuration captured at creation or by the latest mass update.
+    pub mass_config: MassConfig,
+    /// Monotonically increasing version for mass-property cache invalidation.
+    pub mass_version: u64,
     /// Full world-space inverse inertia matrix used by shared-motion mass merges.
     pub inverse_inertia_world: Matrix3,
     /// Body state flags (including `IS_STATIC`/`IS_DYNAMIC`/`IS_KEYFRAMED`/`IS_ACTIVE`).
@@ -263,8 +269,11 @@ impl Body {
             shape,
             motion_id,
             mass: 0.0,
+            derive_mass_from_shape: false,
             inverse_inertia: Vector4::ZERO,
             mass_properties: None,
+            mass_config: MassConfig::DEFAULT,
+            mass_version: 0,
             inverse_inertia_world: Matrix3::ZERO,
             flags: CollisionFlags::NONE,
             material_id: MaterialId::PRESET_DEFAULT,
@@ -296,9 +305,19 @@ impl Body {
     }
 
     /// Replace the shape and refresh the cached AABB.
+    ///
+    /// Bumps [`Body::mass_version`] so world-level mass caches can be
+    /// invalidated even when the caller only mutates the body directly.
     pub fn set_shape(&mut self, shape: Arc<dyn Shape>) {
         self.shape = shape;
+        self.mass_version = self.mass_version.wrapping_add(1);
         self.refresh_aabb();
+    }
+
+    /// Replace the captured mass configuration and invalidate mass caches.
+    pub fn set_mass_config(&mut self, mass_config: MassConfig) {
+        self.mass_config = mass_config;
+        self.mass_version = self.mass_version.wrapping_add(1);
     }
 
     /// Whether this body has the `IS_STATIC` flag.

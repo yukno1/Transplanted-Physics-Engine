@@ -7,7 +7,7 @@ use proton::body::BodyCinfo;
 use proton::math::{Matrix3, Quaternion, Transform, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::mass::{MassConfig, MassError};
-use proton::shape::{BoxShape, CompoundShape, Shape, ShapeInstance, SphereShape};
+use proton::shape::{BoxShape, CompoundShape, Shape, ShapeInstance, ShapeMassCache, SphereShape};
 use proton::world::{World, WorldCinfo};
 
 #[test]
@@ -115,4 +115,16 @@ fn shape_derived_mass_trace_is_deterministic() {
         world.snapshot().to_text()
     }
     assert_eq!(trace(), trace());
+}
+
+#[test]
+fn shape_mass_cache_reuses_and_invalidates_by_identity() {
+    let shape = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let config = MassConfig::from_density(1.0);
+    let mut cache = ShapeMassCache::new();
+    let first = cache.compute(&shape, config).unwrap();
+    assert_eq!(cache.get(&shape, config), Some(first));
+    assert_eq!(cache.compute(&shape, config).unwrap(), first);
+    cache.invalidate(&shape);
+    assert!(cache.is_empty());
 }

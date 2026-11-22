@@ -16,7 +16,7 @@ use std::sync::Arc;
 use base_math::{Aabb, Transform};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::mass::mass_from_aabb;
+use crate::mass::{MassPropertiesTree, mass_from_aabb};
 use crate::{MassConfig, MassError, MassProperties, MassQuality, Shape, aabb_union};
 
 /// One child of a [`CompoundShape`] (`hknpShapeInstance`).
@@ -143,6 +143,15 @@ impl Shape for CompoundShape {
         if self.children.is_empty() {
             return Ok(MassProperties::zero());
         }
+        if config.quality == MassQuality::High {
+            let mut tree = MassPropertiesTree::default();
+            for child in &self.children {
+                let local = child.shape.mass_properties(config)?;
+                tree.add(local.transformed(&child.transform))?;
+            }
+            return tree.finish();
+        }
+
         let mut properties = Vec::with_capacity(self.children.len());
         for child in &self.children {
             let local = if config.quality == MassQuality::Low {

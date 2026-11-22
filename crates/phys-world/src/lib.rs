@@ -77,8 +77,10 @@
 //! `hknpWorldReader`/`hknpWorldWriter` traits, the SDK constraint-atom/
 //! constraint-group system, the vehicle extension layer (suspension raycast /
 //! engine / friction solver), and `hkx` asset loading. Shared motions do
-//! rebuild full mass properties from their members; packed/compressed SDK
-//! mass representations are still not reproduced.
+//! rebuild full mass properties from their members, and shape/config changes
+//! invalidate caches and emit post-rebuild notifications. The portable 15-bit
+//! mass compression in [`phys_shape::mass`] is deterministic but not verified
+//! bit-identical to SDK-packed assets.
 
 use base_math::{Quaternion, Vector4};
 use phys_collide::Manifold;
@@ -91,6 +93,7 @@ pub mod cinfo;
 pub mod constraint;
 mod island;
 pub mod query;
+pub mod signals;
 pub mod world;
 
 pub use cinfo::WorldCinfo;
@@ -104,6 +107,7 @@ pub use constraint::{
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
+pub use signals::{MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary};
 pub use world::{MotionMassUpdateMode, World};
 
 /// Deterministic per-body state captured by [`World::snapshot`].
