@@ -32,9 +32,45 @@ use core::any::Any;
 
 use base_math::{Aabb, Transform, Vector4};
 use phys_shape::{CompoundShape, HeightFieldShape, MeshShape, Shape};
-use phys_types::ShapeType;
+use phys_types::{ShapeKey, ShapeType};
 
 use crate::gjk::{GjkResult, closest_points};
+
+/// Deterministic query-side leaf key kinds.
+///
+/// These are portable identifiers for diagnostic/trigger granularity; they are
+/// **not** claimed to be bit-identical to SDK `hknpShapeKey` values.
+pub mod leaf_key {
+    use phys_types::ShapeKey;
+
+    /// Direct convex hit (no composite leaf).
+    pub const CONVEX: u32 = 0;
+    /// Mesh triangle leaf.
+    pub const MESH: u32 = 1;
+    /// Height-field cell/sub-triangle leaf.
+    pub const HEIGHT_FIELD: u32 = 2;
+    /// Compound child (combined with its nested leaf key).
+    pub const COMPOUND: u32 = 3;
+
+    /// Encode a leaf kind and index into a stable [`ShapeKey`].
+    pub fn new(kind: u32, index: u32) -> ShapeKey {
+        ShapeKey::new(((kind & 0xff) << 24) | (index & 0x00ff_ffff))
+    }
+
+    /// Encode a height-field cell/sub-triangle leaf.
+    pub fn height_field(cell_z: usize, cell_x: usize, sub_triangle: usize) -> ShapeKey {
+        new(
+            HEIGHT_FIELD,
+            ((cell_z as u32) << 18) | ((cell_x as u32) << 1) | (sub_triangle as u32 & 1),
+        )
+    }
+
+    /// Combine a compound child index with its nested leaf key.
+    pub fn compound_child(child_index: usize, inner: ShapeKey) -> ShapeKey {
+        let index = ((child_index as u32 & 0xff) << 16) | (inner.raw() & 0xffff);
+        new(COMPOUND, index)
+    }
+}
 
 /// Maximum conservative-advancement steps before giving up.
 const MAX_ADVANCE_STEPS: usize = 32;
@@ -50,6 +86,8 @@ pub struct RayHit {
     pub position: Vector4,
     /// Outward surface normal at the hit.
     pub normal: Vector4,
+    /// Leaf shape key (invalid for a direct convex hit).
+    pub shape_key: ShapeKey,
 }
 
 /// Cast a ray against a convex or composite shape.
@@ -126,6 +164,7 @@ fn raycast_convex(
                 hit_fraction: fraction,
                 position: point,
                 normal: -direction,
+                shape_key: ShapeKey::INVALID,
             });
         }
         if result.distance <= HIT_EPSILON {
@@ -133,6 +172,7 @@ fn raycast_convex(
                 hit_fraction: fraction,
                 position: result.point_b,
                 normal: result.normal,
+                shape_key: ShapeKey::INVALID,
             });
         }
 
@@ -167,7 +207,7 @@ fn raycast_mesh(
     }
     let local_origin = transform.inverse_transform_point(origin);
     let local_direction = transform.rotation.rotate_inverse(direction);
-    let mut best: Option<(f32, u32, Vector4, Vector4)> = None;
+    let mut best: Option<(f32, ShapeKey, Vector4, Vector4)> = None;
 
     let mut stack = vec![0usize];
     while let Some(node_index) = stack.pop() {
@@ -196,33 +236,30 @@ fn raycast_mesh(
                     if t > max_length {
                         continue;
                     }
+                    let key = leaf_key::new(leaf_key::MESH, triangle_index);
                     let better = match &best {
-                        Some((current, index, _, _)) => (t, triangle_index) < (*current, *index),
+                        Some((current, current_key, _, _)) => (t, key) < (*current, *current_key),
                         None => true,
                     };
                     if better {
-                        best = Some((
-                            t,
-                            triangle_index,
-                            local_origin + local_direction * t,
-                            normal,
-                        ));
+                        best = Some((t, key, local_origin + local_direction * t, normal));
                     }
                 }
             }
         }
     }
 
-    best.map(|(fraction, _, position, normal)| RayHit {
+    best.map(|(fraction, key, position, normal)| RayHit {
         hit_fraction: fraction,
         position: transform.transform_point(position),
         normal: transform.rotation.rotate(normal),
+        shape_key: key,
     })
 }
 
-/// Best height-field leaf hit: `(distance, (cell z, cell x, sub-triangle),
-/// local position, local normal)`.
-type HeightFieldHit = (f32, (usize, usize, usize), Vector4, Vector4);
+/// Best height-field leaf hit: `(distance, leaf key, local position, local
+/// normal)`.
+type HeightFieldHit = (f32, ShapeKey, Vector4, Vector4);
 
 /// Walk the height-field cells inside the ray interval.
 fn raycast_height_field(
@@ -281,7 +318,7 @@ fn raycast_height_field(
                 if t > max_length {
                     continue;
                 }
-                let key = (z, x, sub);
+                let key = leaf_key::height_field(z, x, sub);
                 let better = match &best {
                     Some((current, current_key, _, _)) => (t, key) < (*current, *current_key),
                     None => true,
@@ -293,10 +330,11 @@ fn raycast_height_field(
         }
     }
 
-    best.map(|(fraction, _, position, normal)| RayHit {
+    best.map(|(fraction, key, position, normal)| RayHit {
         hit_fraction: fraction,
         position: transform.transform_point(position),
         normal: transform.rotation.rotate(normal),
+        shape_key: key,
     })
 }
 
@@ -319,6 +357,10 @@ fn raycast_compound(
             max_length,
         ) else {
             continue;
+        };
+        let hit = RayHit {
+            shape_key: leaf_key::compound_child(child_index, hit.shape_key),
+            ..hit
         };
         let better = match &best {
             Some((fraction, index, _)) => (hit.hit_fraction, child_index) < (*fraction, *index),

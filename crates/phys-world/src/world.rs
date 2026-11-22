@@ -31,6 +31,7 @@ use crate::constraint::{
 use crate::island::{IslandInfo, build_islands};
 use crate::signals::{
     MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
+    PostSolveConnectionId, PostSolveEvent, PostSolveSignal,
 };
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
@@ -105,6 +106,8 @@ pub struct World {
     mass_cache: ShapeMassCache,
     /// Mass-property change notifications (post-rebuild dispatch).
     mass_signal: MassSignal,
+    /// Post-solve notifications (`hknpWorld::m_signals.m_postSolve` subset).
+    post_solve_signal: PostSolveSignal,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -128,6 +131,7 @@ impl fmt::Debug for World {
             .field("collision_filter", &self.collision_filter.is_some())
             .field("mass_cache", &self.mass_cache)
             .field("mass_signal", &self.mass_signal)
+            .field("post_solve_signal", &self.post_solve_signal)
             .field("step_count", &self.step_count)
             .field("last_delta_time", &self.last_delta_time)
             .field("last_manifold_count", &self.last_manifold_count)
@@ -160,6 +164,7 @@ impl World {
             group_of_body: HashMap::new(),
             mass_cache: ShapeMassCache::new(),
             mass_signal: MassSignal::default(),
+            post_solve_signal: PostSolveSignal::default(),
             cinfo,
             gravity,
             step_count: 0,
@@ -822,6 +827,28 @@ impl World {
     /// Read-only view of the world's mass-change signal.
     pub fn mass_signal(&self) -> &MassSignal {
         &self.mass_signal
+    }
+
+    /// Subscribe to the world's post-solve signal (`hknpWorld::m_postSolve`).
+    ///
+    /// The listener receives a copyable [`PostSolveEvent`] after integration;
+    /// it cannot borrow the world mutably. Callbacks run at the end of every
+    /// [`Self::step`] / [`Self::step_with_threads`] in subscription order.
+    pub fn subscribe_post_solve<F>(&self, listener: F) -> PostSolveConnectionId
+    where
+        F: Fn(&PostSolveEvent) + Send + Sync + 'static,
+    {
+        self.post_solve_signal.subscribe(listener)
+    }
+
+    /// Remove a previously registered post-solve subscription.
+    pub fn unsubscribe_post_solve(&self, id: PostSolveConnectionId) -> bool {
+        self.post_solve_signal.unsubscribe(id)
+    }
+
+    /// Read-only view of the world's post-solve signal.
+    pub fn post_solve_signal(&self) -> &PostSolveSignal {
+        &self.post_solve_signal
     }
 
     /// Destroy a body and its motion (`destroyBodies`).
@@ -2342,6 +2369,16 @@ impl World {
 
         self.step_count += 1;
         self.last_delta_time = delta_time;
+
+        // `hknpWorldEx::postSolve`: notify after the step's state is stable.
+        let event = PostSolveEvent {
+            step_count: self.step_count,
+            delta_time,
+            manifold_count: self.last_manifold_count,
+            contact_count: self.last_contact_count,
+            island_count: self.last_islands.len(),
+        };
+        self.post_solve_signal.emit(&event);
     }
 
     /// Run the collide stage and return contact manifolds for the current

@@ -8,6 +8,7 @@ description = "hknp extensions: WorldHash + vehicle + character control (proxy /
 
 [dependencies]
 base-math = { path = "../base-math" }
+base-thread = { path = "../base-thread" }
 phys-body = { path = "../phys-body" }
 phys-collide = { path = "../phys-collide" }
 phys-shape = { path = "../phys-shape" }

@@ -8,7 +8,7 @@ use phys_extensions::{
     SupportedState, SurfaceInfo, TriggerEvent, TriggerStatus, TriggerTracker,
 };
 use phys_shape::{BoxShape, Shape};
-use phys_types::MotionType;
+use phys_types::{MotionType, ShapeKey};
 use phys_world::{QueryFilter, World, WorldCinfo};
 
 const DT: f32 = 1.0 / 60.0;
@@ -117,6 +117,7 @@ fn t1_tracker_reports_enter_exit_and_clear() {
         entered,
         vec![TriggerEvent {
             body: first,
+            shape_key: ShapeKey::INVALID,
             status: TriggerStatus::Entered
         }]
     );
@@ -133,6 +134,7 @@ fn t1_tracker_reports_enter_exit_and_clear() {
         tracker.clear(),
         vec![TriggerEvent {
             body: second,
+            shape_key: ShapeKey::INVALID,
             status: TriggerStatus::Exited
         }]
     );

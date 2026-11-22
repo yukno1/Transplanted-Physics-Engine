@@ -1,8 +1,6 @@
 //! Character proxy listener and phantom presence integration tests.
 
-use std::cell::RefCell;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base_math::Vector4 as V4;
 use phys_extensions::{
@@ -10,13 +8,13 @@ use phys_extensions::{
     CharacterProxyState, SurfaceInfo, TriggerEvent, TriggerStatus,
 };
 use phys_shape::{BoxShape, CapsuleShape, Shape};
-use phys_types::{BodyId, CollisionFlags, MotionType};
+use phys_types::{BodyId, CollisionFlags, MotionType, ShapeKey};
 use phys_world::{World, WorldCinfo};
 
 const DT: f32 = 1.0 / 60.0;
 const UP: V4 = V4::UNIT_Y;
 
-type Log = Rc<RefCell<Vec<String>>>;
+type Log = Arc<Mutex<Vec<String>>>;
 
 struct Recorder {
     name: &'static str,
@@ -25,23 +23,28 @@ struct Recorder {
 
 impl CharacterProxyListener for Recorder {
     fn shape_changed(&mut self) {
-        self.log.borrow_mut().push(format!("{}:shape", self.name));
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("{}:shape", self.name));
     }
 
     fn contact_added(&mut self, contact: &Contact) {
         self.log
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push(format!("{}:add:{}", self.name, contact.body.value()));
     }
 
     fn contact_removed(&mut self, contact: &Contact) {
         self.log
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .push(format!("{}:remove:{}", self.name, contact.body.value()));
     }
 
     fn character_callback(&mut self, state: &CharacterProxyState) {
-        self.log.borrow_mut().push(format!(
+        self.log.lock().unwrap().push(format!(
             "{}:step:{}:{}",
             self.name, state.contact_count, state.position.x
         ));
@@ -50,9 +53,10 @@ impl CharacterProxyListener for Recorder {
     fn trigger_volume_interaction(&mut self, event: TriggerEvent) {
         let status = match event.status {
             TriggerStatus::Entered => "enter",
+            TriggerStatus::Updated => "update",
             TriggerStatus::Exited => "exit",
         };
-        self.log.borrow_mut().push(format!(
+        self.log.lock().unwrap().push(format!(
             "{}:trigger:{}:{}",
             self.name,
             status,
@@ -98,22 +102,23 @@ fn world_with_ground() -> (World, BodyId) {
 
 #[test]
 fn l1_add_remove_and_reverse_order_dispatch() {
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
     let mut proxy = proxy_at(V4::ZERO);
     let first = proxy.add_listener(recorder("A", &log));
     proxy.add_listener(recorder("B", &log));
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         vec!["A:shape".to_string(), "B:shape".to_string()]
     );
 
     let trigger = TriggerEvent {
         body: BodyId::new(7),
+        shape_key: ShapeKey::INVALID,
         status: TriggerStatus::Entered,
     };
     proxy.dispatch_trigger_events(&[trigger]);
     assert_eq!(
-        *log.borrow(),
+        *log.lock().unwrap(),
         vec![
             "A:shape".to_string(),
             "B:shape".to_string(),
@@ -124,30 +129,32 @@ fn l1_add_remove_and_reverse_order_dispatch() {
 
     assert!(proxy.remove_listener(first));
     assert!(!proxy.remove_listener(first));
-    log.borrow_mut().clear();
+    log.lock().unwrap().clear();
     proxy.dispatch_trigger_events(&[trigger]);
-    assert_eq!(*log.borrow(), vec!["B:trigger:enter:7".to_string()]);
+    assert_eq!(*log.lock().unwrap(), vec!["B:trigger:enter:7".to_string()]);
 }
 
 #[test]
 fn l2_manifold_changes_fire_contact_events() {
     let (mut world, ground) = world_with_ground();
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
     let mut proxy = proxy_at(V4::from_xyz(0.0, 0.05, 0.0));
     proxy.add_listener(recorder("A", &log));
 
     proxy.refresh_manifold(&world);
     assert!(
-        log.borrow()
+        log.lock()
+            .unwrap()
             .iter()
             .any(|event| event == &format!("A:add:{}", ground.value()))
     );
 
-    log.borrow_mut().clear();
+    log.lock().unwrap().clear();
     assert!(world.destroy_body(ground));
     proxy.refresh_manifold(&world);
     assert!(
-        log.borrow()
+        log.lock()
+            .unwrap()
             .iter()
             .any(|event| event == &format!("A:remove:{}", ground.value()))
     );
@@ -156,14 +163,14 @@ fn l2_manifold_changes_fire_contact_events() {
 #[test]
 fn l3_character_callback_runs_once_after_integrate() {
     let (mut world, _) = world_with_ground();
-    let log: Log = Rc::new(RefCell::new(Vec::new()));
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
     let mut proxy = proxy_at(V4::from_xyz(0.0, 0.05, 0.0));
     proxy.add_listener(recorder("A", &log));
     let surface = proxy.check_support(&world, -UP, DT);
 
     proxy.integrate(&mut world, DT, &surface);
 
-    let binding = log.borrow();
+    let binding = log.lock().unwrap();
     let steps: Vec<_> = binding.iter().filter(|e| e.contains(":step:")).collect();
     assert_eq!(steps.len(), 1);
     assert!(steps[0].starts_with("A:step:"));

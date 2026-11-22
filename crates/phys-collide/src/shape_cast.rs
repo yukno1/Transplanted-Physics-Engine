@@ -36,9 +36,10 @@
 
 use base_math::{Aabb, Transform, Vector4};
 use phys_shape::{CompoundShape, HeightFieldShape, MeshShape, Shape, TriangleShape};
-use phys_types::ShapeType;
+use phys_types::{ShapeKey, ShapeType};
 
 use crate::gjk::closest_points;
+use crate::query::leaf_key;
 
 /// `HKNP_DEFAULT_SHAPE_CAST_ACCURACY`.
 pub const DEFAULT_SHAPE_CAST_TOLERANCE: f32 = 0.001;
@@ -59,6 +60,8 @@ pub struct ShapeCastHit {
     pub point_on_query: Vector4,
     /// Whether the query shape was already overlapping at the start.
     pub start_penetrating: bool,
+    /// Leaf shape key (invalid for a direct convex hit).
+    pub shape_key: ShapeKey,
 }
 
 /// Cast a convex query shape along `direction` against another shape.
@@ -129,6 +132,7 @@ pub fn shape_cast(
             direction,
             max_distance,
             tolerance,
+            ShapeKey::INVALID,
         ),
     }
 }
@@ -143,16 +147,17 @@ fn cast_convex(
     direction: Vector4,
     max_distance: f32,
     tolerance: f32,
+    shape_key: ShapeKey,
 ) -> Option<ShapeCastHit> {
     let mut pose = *query_transform;
     let first = closest_points(query_shape, &pose, target_shape, target_transform)?;
     if first.intersects {
-        return Some(start_penetrating_hit(&first, direction));
+        return Some(start_penetrating_hit(&first, direction, shape_key));
     }
     let mut distance = first.distance;
     let mut normal = unit_or(first.normal, -direction);
     if distance <= tolerance {
-        return Some(contact_hit(0.0, &first, normal, true));
+        return Some(contact_hit(0.0, &first, normal, true, shape_key));
     }
 
     for _ in 0..MAX_ITERATIONS {
@@ -173,7 +178,13 @@ fn cast_convex(
         let traveled_distance = (pose.translation - query_transform.translation).length3();
         if result.intersects {
             let normal = unit_or(result.normal, -direction);
-            return Some(contact_hit(traveled_distance, &result, normal, false));
+            return Some(contact_hit(
+                traveled_distance,
+                &result,
+                normal,
+                false,
+                shape_key,
+            ));
         }
         if result.distance <= tolerance {
             return Some(contact_hit(
@@ -181,6 +192,7 @@ fn cast_convex(
                 &result,
                 unit_or(result.normal, normal),
                 false,
+                shape_key,
             ));
         }
         if result.distance >= distance - 1e-7 {
@@ -193,13 +205,18 @@ fn cast_convex(
     None
 }
 
-fn start_penetrating_hit(result: &crate::gjk::GjkResult, direction: Vector4) -> ShapeCastHit {
+fn start_penetrating_hit(
+    result: &crate::gjk::GjkResult,
+    direction: Vector4,
+    shape_key: ShapeKey,
+) -> ShapeCastHit {
     ShapeCastHit {
         fraction: 0.0,
         position: result.point_b,
         normal: unit_or(result.normal, -direction),
         point_on_query: result.point_a,
         start_penetrating: true,
+        shape_key,
     }
 }
 
@@ -208,6 +225,7 @@ fn contact_hit(
     result: &crate::gjk::GjkResult,
     normal: Vector4,
     start_penetrating: bool,
+    shape_key: ShapeKey,
 ) -> ShapeCastHit {
     ShapeCastHit {
         fraction,
@@ -215,6 +233,7 @@ fn contact_hit(
         normal,
         point_on_query: result.point_a,
         start_penetrating,
+        shape_key,
     }
 }
 
@@ -298,6 +317,7 @@ fn cast_mesh(
                     ];
                     let leaf =
                         TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
+                    let key = leaf_key::new(leaf_key::MESH, triangle_index);
                     let Some(hit) = cast_convex(
                         query_shape,
                         query_transform,
@@ -306,6 +326,7 @@ fn cast_mesh(
                         direction,
                         max_distance,
                         tolerance,
+                        key,
                     ) else {
                         continue;
                     };
@@ -358,7 +379,7 @@ fn cast_height_field(
     if cell_min_x > cell_max_x || cell_min_z > cell_max_z {
         return None;
     }
-    let mut best: Option<(f32, (usize, usize, usize), ShapeCastHit)> = None;
+    let mut best: Option<(f32, ShapeKey, ShapeCastHit)> = None;
     for z in cell_min_z..=cell_max_z {
         for x in cell_min_x..=cell_max_x {
             let p00 = heightfield.vertex(x, z);
@@ -367,6 +388,7 @@ fn cast_height_field(
             let p11 = heightfield.vertex(x + 1, z + 1);
             for (points, sub) in [([p00, p10, p11], 0usize), ([p00, p11, p01], 1usize)] {
                 let leaf = TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
+                let key = leaf_key::height_field(z, x, sub);
                 let Some(hit) = cast_convex(
                     query_shape,
                     query_transform,
@@ -375,10 +397,10 @@ fn cast_height_field(
                     direction,
                     max_distance,
                     tolerance,
+                    key,
                 ) else {
                     continue;
                 };
-                let key = (z, x, sub);
                 let better = match &best {
                     Some((fraction, current, _)) => (hit.fraction, key) < (*fraction, *current),
                     None => true,
@@ -424,6 +446,10 @@ fn cast_compound(
             tolerance,
         ) else {
             continue;
+        };
+        let hit = ShapeCastHit {
+            shape_key: leaf_key::compound_child(child_index, hit.shape_key),
+            ..hit
         };
         let better = match &best {
             Some((fraction, index, _)) => (hit.fraction, child_index) < (*fraction, *index),

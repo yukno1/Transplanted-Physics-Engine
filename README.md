@@ -159,7 +159,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | `phys-body` | hknpBody/BodyManager/Motion/MotionManager + Body/Motion 完整质量属性与世界逆惯量张量（保留 Vector4 对角兼容视图）+ Body 质量来源标记与缓存版本 | ✅ 已实现（Phase 6 + 后续子集） |
 | `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 完整世界逆惯量张量矩阵路径（对角快路径保留）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12 + 后续子集） |
 | `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动、limited-hinge/6DOF 约束框架轴限位关节）+ 质量派生、形状质量缓存、质量变更信号与共享运动完整惯量张量合并 + 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 + 共享运动（attached body/attach/detach） | ✅ 已实现（Phase 8/11/12 + 后续子集） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 + 用户自定义状态 + shared-motion 驱动 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
+| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom + post-solve 管理器 + 对象/角色交互 + shape-key trigger + rigid-body 路线/listener）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 + 用户自定义状态 + shared-motion 驱动 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
 | `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
@@ -717,6 +717,28 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 质量模式按 SDK `UpdateMotionMode` 命名为 `Keep/Update/Rebuild`，默认 `Keep`；`Update` 在本子集复用确定性重建，不做增量负质量更新。该子集的惯量重建最初只保留世界对角项；后续「Ragdoll 深度补齐」已升级为完整世界惯量张量并接入形状质量属性，但 SDK 的压缩惯量表示与信号驱动缓存仍未移植，故不宣称与原版复合质量逐位一致；keyframed 目标不重建。
 - 验证：`tests/ragdoll_details.rs` 覆盖默认关闭/非法输入拒绝/越界回推/模式保持/质量与质心/放宽回弹/逐位确定性；后续深度补齐再由 `tests/mass_properties.rs` 覆盖质量派生、非对角惯量与完整张量合并，全 workspace `cargo test` 全绿。
 
+### 后续子集：CharacterControl 剩余项（✅ 已完成，2026-11-22）
+
+交付（新增集成测试 `character_post_solve.rs` 2 个、`character_interactions.rs` 2 个、`character_shape_key_triggers.rs` 2 个、`character_multithreading.rs` 1 个、`character_rigid_body.rs` 3 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-world/post_solve.rs`、`world.rs` | 线程安全 `PostSolveSignal` + 可复制 `PostSolveEvent`（step/delta/contact/island 摘要），`step`/`step_with_threads` 积分完成后按订阅序派发；`subscribe_post_solve` / `unsubscribe_post_solve` 与 `mass_signal` 同为 `Arc<Mutex<_>>`，保持 `World: Send + Sync` |
+| `phys-collide/query.rs`、`shape_cast.rs`、`phys-world/query.rs` | `RayHit` / `ShapeCastHit` / `RayCastHit` / `ShapeCastHitInfo` 附带确定性本地 `ShapeKey`：mesh 叶三角形、height field cell/子三角形、compound 子形状索引（含嵌套 key）；既有命中排序与容差不变 |
+| `phys-extensions/character/listener.rs`、`proxy.rs` | 新增 `character_interaction` / `object_interaction` / `process_constraints` 默认空回调；`Contact` 带 `shape_key`；对象交互结果可被逆序 listener 修改（`CharacterObjectInteractionResult`）；standalone proxy 保持 `integrate` 末尾回调，管理器 proxy 改由 post-solve 派发，避免双发；`apply_deferred_updates` 串行提交冲量与 phantom 同步 |
+| `phys-extensions/character/manager.rs` | `CharacterProxyManager` 注册 proxy/rigid-body、连接/断开世界 post-solve、按 id 派发回调与 character↔character 交互；批量步进先用 `parallel_for_chunks` 并行算交互候选，再按 id 串行 integrate 与提交冲量，1/4 线程逐位一致 |
+| `phys-extensions/character/triggers.rs` | `TriggerTracker::update_observations` 按 `(BodyId, ShapeKey)` 差集产出 `Entered` / `Updated` / `Exited`；旧的 body 级 AABB `update` 保持兼容；`Updated` 为显式观测状态，不默认打开 |
+| `phys-extensions/character/rigid_body.rs`、`rigid_body_listener.rs` | `CharacterRigidBodyCinfo` 默认质量 75（SDK 构造函数值）、maxForce/maxSlope/supportDistance；真实 dynamic body + `check_support` / `step` / `set_linear_velocity`；listener 三入口 `filter_contact_point` / `on_post_collide` / `on_post_solve` |
+
+决策与偏差：
+
+- SDK 的 `characterCallback` 由 proxy 自己订阅 world `m_postSolve`（不是 `ProxyManager`），listener 逆注册序派发；Rust 的世界信号按订阅序派发，manager 内部对 proxy 按 id 升序派发，standalone proxy 仍在 `integrate` 末尾派发，两条路径互斥。
+- 原版多线程按流形接触数快排 + 原子抢任务，`applyDeferredUpdates` 按排序后索引串行提交；Rust 用确定性分块并行计算交互候选，回调和冲量提交始终按 id 串行，跨线程数逐位一致。
+- 查询 `ShapeKey` 是可诊断的迁移编码（mesh/height field/compound 叶索引组合），不宣称与 SDK 二进制 `hknpShapeKey` 逐位一致；trigger 的 `STATUS_UPDATED` 仅在观测位置/法线变化时产生，原版 world 级 merge dispatcher 的 UPDATED（默认关闭）未移植。
+- rigid-body 路线没有 `hknpSolverData` / Jacobian 改写、material trigger modifier、VDB monitor 与 world shift；listener 收到可复制的局部接触摘要与状态快照，`RayCasting` 路线仍未移植。
+- `CharacterProxyListener` / `CharacterRigidBodyListener` 增加 `Send` 约束以满足世界信号的线程安全订阅；现有测试监听器改为 `Arc<Mutex<_>>` 日志。
+- 验证：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、严格 `cargo doc`、`cargo build --workspace --release`、`cargo bench -p proton-engine --bench simulation -- --quick` 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -844,13 +866,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（Ragdoll 细节补齐，2026-11-21）：plane-angle limits（SDK 互补角映射 + 两条单边行）、6DOF `Unlimited/Limited/Fixed` 三轴平移限位、`MotionMassUpdateMode` 共享运动质量/COM/对角惯量重建；easing 同步保存放宽回弹；新增集成测试 `ragdoll_details.rs` 6 个
 - [x] 后续子集（Ragdoll 深度补齐，2026-11-21）：`phys-shape/mass.rs` 新增 `MassConfig`/`MassProperties`/`MassQuality` 与各形状解析/聚合质量属性；`Body`/`Motion`/`SolverBody` 增加世界逆惯量 `Matrix3` 并保留 `Vector4` 对角兼容视图；接触/关节冲量与共享运动合并使用完整张量；6DOF 三轴平移改用 SDK 约束框架列 `[twist, plane, twist×plane]`，world/solver/warm-start/easing 共用；新增集成测试 `mass_properties.rs` 5 个，更新 `ragdoll_details.rs`/`ragdoll_easing_extended.rs` 断言；`fmt`/`clippy -D warnings`/`test`/`release build`/严格 `doc`/`bench --quick` 全绿
 - [x] 后续子集（质量属性后续边界，2026-11-22）：新增可移植 15 位 `CompressedMassProperties`/`PackedVector3`/`PackedUnitVector4`、固定轮数 Jacobi 主轴对角化、`MassDistribution` 单位质量分布与 `MassPropertiesTree` 四子形状压缩聚合；`ShapeMassCache`、`Body` 质量来源/版本与 `World` 线程安全 `MassChangeEvent` 信号接入形状替换、质量配置、逆惯量设置与共享运动重建；新增集成测试 `mass_compression.rs` 3 个、`mass_distribution.rs` 2 个、`mass_property_signals.rs` 4 个，`mass_properties.rs` 增补缓存测试；`fmt`/`clippy -D warnings`/`test`/`release build`/严格 `doc`/`bench --quick` 全绿
-- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；CharacterControl 完整 signal 驱动的 post-solve/多线程回调、object/proxy interaction、shape-key 级 trigger 与 rigid-body listener；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐
+- [x] 后续子集（CharacterControl 剩余项，2026-11-22）：`World` post-solve signal 与确定性派发、查询命中携带本地 `ShapeKey`、object/character 交互回调与可修改结果、`CharacterProxyManager` 多线程候选计算 + 串行回调/冲量提交、shape-key trigger（`Entered`/`Updated`/`Exited`）、`CharacterRigidBody` 与三入口 listener；新增集成测试 10 个，1/4 线程 `hvk-trace v1` 逐位一致
+- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；CharacterControl 的 `RayCasting` 路线、solver 级接触编辑、VDB monitor 与 world-level `hknpTriggerEvent` UPDATED 事件流未移植；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐
 
 仓库现状（2026-11-22）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`；本次质量属性后续边界在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`；本次 CharacterControl 剩余项在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

@@ -107,7 +107,10 @@ pub use constraint::{
 };
 pub use island::IslandInfo;
 pub use query::{ClosestPointHit, ClosestPointsHit, QueryFilter, RayCastHit, ShapeCastHitInfo};
-pub use signals::{MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary};
+pub use signals::{
+    MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
+    PostSolveConnectionId, PostSolveEvent, PostSolveSignal,
+};
 pub use world::{MotionMassUpdateMode, World};
 
 /// Deterministic per-body state captured by [`World::snapshot`].

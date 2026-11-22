@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | [`world_hash`] | `Extensions/WorldHash` | deterministic FNV-1a hash of `WorldSnapshot` |
 //! | [`vehicle`] | `Extensions/Vehicle` | ray-cast suspension + default engine/transmission + simplified friction solver (Phase 13 subset) |
-//! | [`character`] | `Extensions/CharacterControl` | surface info + simplex solver + character proxy + state machine (OnGround/Jumping/InAir/Climbing) + trigger tracking + local listener/phantom presence (Phase 15 subset) |
+//! | [`character`] | `Extensions/CharacterControl` | surface info + simplex solver + character proxy + state machine (OnGround/Jumping/InAir/Climbing) + trigger tracking + local listener/phantom presence + post-solve manager + interactions + rigid-body route (Phase 15 + follow-up subsets) |
 //! | [`ragdoll`] | `Extensions/Ragdoll` + `KeyFrameUtil` | bone hierarchy binding, constraint creation, drive-to-pose and hard keyframes |
 //! | [`ragdoll_controller`] | `Extensions/Ragdoll/StateMachine` | Keyframed/Dynamic/Powered states, timed transition and powered motor blender |
 //! | [`ragdoll_penetration`] | `Extensions/Ragdoll/Utils/hknpRagdollPenetrationUtil` | root/bone penetration detection, status propagation and corrective impulses |
@@ -15,8 +15,9 @@
 //!
 //! # Blocked extension systems
 //!
-//! The CharacterControl `RigidBody` / `RayCasting` routes are not ported; they
-//! need the post-step deactivation/contact framework. Ragdoll easing now covers
+//! The CharacterControl `RayCasting` route, solver-level contact editing and
+//! VDB monitor callbacks are not ported. The rigid-body route is a local
+//! subset using body/query APIs. Ragdoll easing now covers
 //! the limited-hinge and 6DOF limit sets and the state manager accepts ten
 //! user-defined states, optional ragdoll plane-angle and 6DOF per-axis
 //! translation limits, and shared-motion mass merges. The `ActionManager`
@@ -33,9 +34,12 @@ pub mod vehicle;
 pub mod world_hash;
 
 pub use character::{
-    CharacterContext, CharacterInput, CharacterOutput, CharacterProxy, CharacterProxyCinfo,
-    CharacterProxyListener, CharacterProxyState, CharacterState, CharacterStateManager,
-    CharacterStateType, Contact as CharacterContact, SupportedState, SurfaceInfo, TriggerEvent,
+    CharacterContext, CharacterInput, CharacterInteractionInfo, CharacterObjectInteractionEvent,
+    CharacterObjectInteractionResult, CharacterOutput, CharacterProxy, CharacterProxyCinfo,
+    CharacterProxyListener, CharacterProxyManager, CharacterProxyState, CharacterRigidBody,
+    CharacterRigidBodyCinfo, CharacterRigidBodyListener, CharacterRigidBodyState, CharacterState,
+    CharacterStateManager, CharacterStateType, Contact as CharacterContact, ContactPointInfo,
+    DeferredInteraction, SupportedState, SurfaceInfo, TriggerEvent, TriggerObservation,
     TriggerStatus, TriggerTracker,
 };
 

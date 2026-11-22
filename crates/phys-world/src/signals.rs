@@ -163,6 +163,140 @@ impl MassSignal {
     }
 }
 
+/// Listener handle returned by [`PostSolveSignal::subscribe`].
+pub type PostSolveConnectionId = u64;
+
+/// Copyable summary of a completed world step.
+///
+/// The event deliberately carries no `World` or proxy reference: subscribers
+/// can be shared across threads and cannot borrow world state mutably during
+/// a signal emission.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PostSolveEvent {
+    /// Number of completed steps, including the one that emitted this event.
+    pub step_count: u64,
+    /// Delta time used by the completed step.
+    pub delta_time: f32,
+    /// Contact manifolds generated during the completed step.
+    pub manifold_count: usize,
+    /// Contact points generated during the completed step.
+    pub contact_count: usize,
+    /// Constraint islands solved during the completed step.
+    pub island_count: usize,
+}
+
+type PostSolveListener = Arc<dyn Fn(&PostSolveEvent) + Send + Sync>;
+
+/// Thread-safe synchronous signal emitted after a world step is integrated.
+///
+/// Callbacks are invoked in subscription order over a snapshot taken when the
+/// emission starts. Unsubscribing during an emission therefore only affects
+/// later emissions, and nested emissions are allowed. `Arc<Mutex<_>>` keeps
+/// [`crate::World`] `Send + Sync`.
+#[derive(Clone)]
+pub struct PostSolveSignal {
+    listeners: Arc<Mutex<Vec<(PostSolveConnectionId, PostSolveListener)>>>,
+    next_id: Arc<AtomicU64>,
+    firing: Arc<AtomicUsize>,
+}
+
+impl Default for PostSolveSignal {
+    fn default() -> Self {
+        Self {
+            listeners: Arc::new(Mutex::new(Vec::new())),
+            next_id: Arc::new(AtomicU64::new(1)),
+            firing: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+}
+
+impl fmt::Debug for PostSolveSignal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostSolveSignal")
+            .field("subscriptions", &self.num_subscriptions())
+            .field("firing", &self.is_firing())
+            .finish()
+    }
+}
+
+impl PostSolveSignal {
+    /// Subscribe a callback; returned handle can be passed to [`Self::unsubscribe`].
+    pub fn subscribe<F>(&self, listener: F) -> PostSolveConnectionId
+    where
+        F: Fn(&PostSolveEvent) + Send + Sync + 'static,
+    {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.listeners
+            .lock()
+            .expect("post-solve signal lock poisoned")
+            .push((id, Arc::new(listener)));
+        id
+    }
+
+    /// Remove a previously registered callback. Removals during emission are
+    /// applied to the next emission.
+    pub fn unsubscribe(&self, id: PostSolveConnectionId) -> bool {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .expect("post-solve signal lock poisoned");
+        if let Some(index) = listeners.iter().position(|entry| entry.0 == id) {
+            if self.is_firing() {
+                listeners[index].1 = Arc::new(|_| {});
+            } else {
+                listeners.remove(index);
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove all callbacks.
+    pub fn unsubscribe_all(&self) {
+        let mut listeners = self
+            .listeners
+            .lock()
+            .expect("post-solve signal lock poisoned");
+        if self.is_firing() {
+            for (_, listener) in listeners.iter_mut() {
+                *listener = Arc::new(|_| {});
+            }
+        } else {
+            listeners.clear();
+        }
+    }
+
+    /// Number of registered callbacks.
+    pub fn num_subscriptions(&self) -> usize {
+        self.listeners
+            .lock()
+            .expect("post-solve signal lock poisoned")
+            .len()
+    }
+
+    /// Whether this signal is currently being emitted.
+    pub fn is_firing(&self) -> bool {
+        self.firing.load(Ordering::Relaxed) > 0
+    }
+
+    /// Emit an event to the callbacks registered when emission starts.
+    pub fn emit(&self, event: &PostSolveEvent) {
+        let listeners = {
+            let guard = self
+                .listeners
+                .lock()
+                .expect("post-solve signal lock poisoned");
+            guard.clone()
+        };
+        self.firing.fetch_add(1, Ordering::Relaxed);
+        for (_, listener) in listeners {
+            listener(event);
+        }
+        self.firing.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +324,35 @@ mod tests {
         assert!(signal.unsubscribe(first));
         signal.emit(&event);
         assert_eq!(*seen.lock().unwrap(), vec![1, 2, 2]);
+    }
+
+    #[test]
+    fn post_solve_signal_preserves_order_and_defers_unsubscribe() {
+        let signal = PostSolveSignal::default();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let first = {
+            let seen = Arc::clone(&seen);
+            signal.subscribe(move |event| seen.lock().unwrap().push(event.step_count as i32))
+        };
+        signal.subscribe({
+            let seen = Arc::clone(&seen);
+            move |_| {
+                seen.lock().unwrap().push(-1);
+            }
+        });
+        let event = PostSolveEvent {
+            step_count: 3,
+            delta_time: 1.0 / 60.0,
+            manifold_count: 1,
+            contact_count: 1,
+            island_count: 1,
+        };
+        signal.emit(&event);
+        assert_eq!(*seen.lock().unwrap(), vec![3, -1]);
+        assert!(signal.unsubscribe(first));
+        signal.emit(&event);
+        assert_eq!(*seen.lock().unwrap(), vec![3, -1, -1]);
+        assert_eq!(signal.num_subscriptions(), 1);
+        assert!(!signal.is_firing());
     }
 }

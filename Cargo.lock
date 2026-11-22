@@ -57,6 +57,7 @@ name = "phys-extensions"
 version = "0.1.0"
 dependencies = [
  "base-math",
+ "base-thread",
  "phys-body",
  "phys-collide",
  "phys-shape",

@@ -49,10 +49,13 @@ use base_math::{Quaternion, Transform, Vector4};
 use phys_body::{Body, BodyCinfo};
 use phys_collide::{closest_points as gjk_closest_points, collide as collide_manifold};
 use phys_shape::Shape;
-use phys_types::{BodyId, CollisionFlags, MotionType};
+use phys_types::{BodyId, CollisionFlags, MotionType, ShapeKey};
 use phys_world::{QueryFilter, ShapeCastHitInfo, World};
 
-use super::listener::{CharacterProxyListener, CharacterProxyState};
+use super::listener::{
+    CharacterInteractionInfo, CharacterObjectInteractionEvent, CharacterObjectInteractionResult,
+    CharacterProxyListener, CharacterProxyState,
+};
 use super::simplex_solver::{SimplexSolverInput, SurfaceConstraint, solve};
 use super::surface::{SupportedState, SurfaceInfo};
 use super::triggers::TriggerEvent;
@@ -103,6 +106,20 @@ pub struct Contact {
     /// Penetration budget accumulated for max-slope plane handling
     /// (`m_allowedPenetration`).
     pub allowed_penetration: f32,
+    /// Leaf shape key of the hit body (`m_shapeKeyB` subset).
+    pub shape_key: ShapeKey,
+}
+
+/// A deferred object push collected during a character step
+/// (`hknpCharacterProxy::ObjectInteraction` subset).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DeferredInteraction {
+    /// Body receiving the impulse.
+    pub body: BodyId,
+    /// Vector impulse to apply.
+    pub impulse: Vector4,
+    /// Point of application (diagnostic; the linear-only port applies at COM).
+    pub impulse_position: Vector4,
 }
 
 impl Contact {
@@ -122,6 +139,7 @@ impl Contact {
             fraction: 0.0,
             distance,
             allowed_penetration: (keep_distance - distance).clamp(0.0, keep_distance),
+            shape_key: ShapeKey::INVALID,
         }
     }
 
@@ -144,6 +162,7 @@ impl Contact {
             fraction,
             distance,
             allowed_penetration: (keep_distance - distance).clamp(0.0, keep_distance),
+            shape_key: hit.shape_key,
         }
     }
 }
@@ -296,6 +315,9 @@ pub struct CharacterProxy {
     listeners: Vec<(u64, Box<dyn CharacterProxyListener>)>,
     next_listener_id: u64,
     phantom: Option<BodyId>,
+    id: u64,
+    post_solve_callback: bool,
+    deferred_interactions: Vec<DeferredInteraction>,
 }
 
 impl CharacterProxy {
@@ -335,6 +357,9 @@ impl CharacterProxy {
             listeners: Vec::new(),
             next_listener_id: 0,
             phantom: None,
+            id: 0,
+            post_solve_callback: false,
+            deferred_interactions: Vec::new(),
         }
     }
 
@@ -371,6 +396,52 @@ impl CharacterProxy {
     /// Set the linear velocity of the proxy.
     pub fn set_linear_velocity(&mut self, velocity: Vector4) {
         self.velocity = velocity;
+    }
+
+    /// Manager-assigned proxy id (zero for standalone proxies).
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(crate) fn set_id(&mut self, id: u64) {
+        self.id = id;
+    }
+
+    /// Whether `character_callback` is owned by the world post-solve signal.
+    pub(crate) fn set_post_solve_callback(&mut self, enabled: bool) {
+        self.post_solve_callback = enabled;
+    }
+
+    /// Copyable state snapshot used by post-solve listeners.
+    pub fn state(&self) -> CharacterProxyState {
+        CharacterProxyState {
+            id: self.id,
+            position: self.transform.translation,
+            velocity: self.velocity,
+            contact_count: self.manifold.len(),
+        }
+    }
+
+    /// Interaction pushes collected during the last step.
+    pub fn deferred_interactions(&self) -> &[DeferredInteraction] {
+        &self.deferred_interactions
+    }
+
+    /// Apply collected interaction impulses serially and clear the buffer
+    /// (`hknpCharacterProxy::applyDeferredUpdates` subset).
+    pub fn apply_deferred_updates(&mut self, world: &mut World) {
+        for interaction in &self.deferred_interactions {
+            let current = world
+                .body_linear_velocity(interaction.body)
+                .unwrap_or(Vector4::ZERO);
+            let _ = world
+                .set_body_linear_velocity(interaction.body, current + xyz(interaction.impulse));
+            let _ = world.wake_body(interaction.body);
+        }
+        self.deferred_interactions.clear();
+        if let Some(phantom) = self.phantom {
+            world.set_body_transform(phantom, self.transform);
+        }
     }
 
     /// Up direction.
@@ -462,8 +533,8 @@ impl CharacterProxy {
             .copied()
             .filter(|contact| !before.contains(contact))
             .collect();
-        removed.sort_by_key(|contact| contact.body.value());
-        added.sort_by_key(|contact| contact.body.value());
+        removed.sort_by_key(|contact| (contact.body.value(), contact.shape_key.raw()));
+        added.sort_by_key(|contact| (contact.body.value(), contact.shape_key.raw()));
         for contact in &removed {
             for (_, listener) in self.listeners.iter_mut().rev() {
                 listener.contact_removed(contact);
@@ -477,13 +548,37 @@ impl CharacterProxy {
     }
 
     fn fire_character_callback(&mut self) {
-        let state = CharacterProxyState {
-            position: self.transform.translation,
-            velocity: self.velocity,
-            contact_count: self.manifold.len(),
-        };
+        if self.post_solve_callback {
+            return;
+        }
+        let state = self.state();
         for (_, listener) in self.listeners.iter_mut().rev() {
             listener.character_callback(&state);
+        }
+    }
+
+    /// Dispatch the post-solve callback for manager-owned proxies.
+    pub(crate) fn fire_post_solve_callback(&mut self) {
+        if !self.post_solve_callback {
+            return;
+        }
+        let state = self.state();
+        for (_, listener) in self.listeners.iter_mut().rev() {
+            listener.character_callback(&state);
+        }
+    }
+
+    /// Dispatch a character↔character interaction in reverse listener order.
+    pub(crate) fn fire_character_interaction(&mut self, info: &CharacterInteractionInfo) {
+        for (_, listener) in self.listeners.iter_mut().rev() {
+            listener.character_interaction(info);
+        }
+    }
+
+    /// Dispatch the simplex constraint-processed callback.
+    pub(crate) fn fire_constraints_processed(&mut self, count: usize) {
+        for (_, listener) in self.listeners.iter_mut().rev() {
+            listener.process_constraints(count);
         }
     }
 
@@ -968,6 +1063,7 @@ impl CharacterProxy {
     ///
     /// `delta_time` must exceed `HK_REAL_EPSILON`.
     pub fn integrate(&mut self, world: &mut World, delta_time: f32, surface_info: &SurfaceInfo) {
+        self.deferred_interactions.clear();
         let before = self.manifold.clone();
         let mut remaining_time = delta_time;
         debug_assert!(
@@ -1030,6 +1126,7 @@ impl CharacterProxy {
             // Constraints from the manifold.
             let constraints =
                 self.create_constraints_from_manifold(world, delta_time - remaining_time);
+            self.fire_constraints_processed(constraints.len());
 
             // Simplex solve for the allowed displacement.
             let (solver_delta_time, new_displacement, solved_velocity) = {
@@ -1174,12 +1271,39 @@ impl CharacterProxy {
             }
 
             if impulse != 0.0 {
-                let current = world
-                    .body_linear_velocity(contact.body)
-                    .unwrap_or(Vector4::ZERO);
-                let _ = world
-                    .set_body_linear_velocity(contact.body, current + contact.normal * impulse);
-                let _ = world.wake_body(contact.body);
+                let event = CharacterObjectInteractionEvent {
+                    body: contact.body,
+                    position: contact.position,
+                    normal: contact.normal,
+                    object_impulse: impulse,
+                    timestep: delta_time,
+                    projected_velocity,
+                    object_mass_inv: inverse_mass,
+                };
+                let mut result = CharacterObjectInteractionResult {
+                    object_impulse: contact.normal * impulse,
+                    impulse_position: contact.position,
+                };
+                for (_, listener) in self.listeners.iter_mut().rev() {
+                    listener.object_interaction(&event, &mut result);
+                }
+                let deferred = DeferredInteraction {
+                    body: contact.body,
+                    impulse: result.object_impulse,
+                    impulse_position: result.impulse_position,
+                };
+                if self.post_solve_callback {
+                    // Manager-owned proxies apply pushes serially after all
+                    // characters have stepped.
+                    self.deferred_interactions.push(deferred);
+                } else {
+                    let current = world
+                        .body_linear_velocity(contact.body)
+                        .unwrap_or(Vector4::ZERO);
+                    let _ = world
+                        .set_body_linear_velocity(contact.body, current + xyz(deferred.impulse));
+                    let _ = world.wake_body(contact.body);
+                }
             }
         }
     }

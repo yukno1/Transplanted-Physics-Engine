@@ -18,7 +18,7 @@ use phys_collide::{
     DEFAULT_SHAPE_CAST_TOLERANCE, closest_points as gjk_closest_points, point_distance, shape_cast,
 };
 use phys_shape::Shape;
-use phys_types::BodyId;
+use phys_types::{BodyId, ShapeKey};
 
 use crate::world::World;
 
@@ -33,6 +33,8 @@ pub struct RayCastHit {
     pub position: Vector4,
     /// Outward surface normal at the hit.
     pub normal: Vector4,
+    /// Leaf shape key (invalid for a direct convex hit).
+    pub shape_key: ShapeKey,
 }
 
 /// A world shape-cast hit.
@@ -50,6 +52,8 @@ pub struct ShapeCastHitInfo {
     pub point_on_query: Vector4,
     /// Whether the query shape started overlapping the body.
     pub start_penetrating: bool,
+    /// Leaf shape key (invalid for a direct convex hit).
+    pub shape_key: ShapeKey,
 }
 
 /// Closest point on a body's shape to a query point or query shape.
@@ -235,6 +239,7 @@ impl World {
                 hit_fraction: hit.hit_fraction,
                 position: hit.position,
                 normal: hit.normal,
+                shape_key: hit.shape_key,
             };
             best = Some(match best {
                 Some(current)
@@ -300,6 +305,7 @@ impl World {
                 normal: hit.normal,
                 point_on_query: hit.point_on_query,
                 start_penetrating: hit.start_penetrating,
+                shape_key: hit.shape_key,
             };
             best = Some(match best {
                 Some(current)
