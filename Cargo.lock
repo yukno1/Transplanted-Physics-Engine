@@ -11,7 +11,6 @@ name = "base-geometry"
 version = "0.1.0"
 dependencies = [
  "base-math",
- "base-types",
 ]
 
 [[package]]
@@ -69,6 +68,7 @@ dependencies = [
 name = "phys-shape"
 version = "0.1.0"
 dependencies = [
+ "base-geometry",
  "base-math",
  "phys-types",
 ]

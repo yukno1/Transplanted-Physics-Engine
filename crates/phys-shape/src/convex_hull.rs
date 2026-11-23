@@ -5,14 +5,19 @@
 //! this port keeps the vertex list and optional triangle faces (used for volume
 //! and, later, for face queries), plus the convex radius.
 //!
-//! A hull with no faces still supports AABB/support queries; its volume is
-//! `None` because the port does not compute a hull from the vertex cloud (the C++
-//! shape is built by `hknpConvexHullUtil` at load time).
+//! A hull with no faces still supports AABB/support queries and reports an
+//! unknown volume. [`ConvexHullShape::try_from_points`] builds the vertex and
+//! face set from a point cloud through `base-geometry`; lower-dimensional
+//! inputs keep the no-face fallback. The C++ SDK performs this step at load
+//! time through its internal geometry-processing utilities.
 
 use core::any::Any;
 
+use base_geometry::convex_hull::{build_convex_hull, build_convex_hull_with_tolerance};
 use base_math::{Aabb, Matrix3, Quaternion, Vector4};
 use phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
+
+pub use base_geometry::convex_hull::HullError as ConvexHullBuildError;
 
 use crate::mass::{
     mass_from_aabb, matrix_add, matrix_diagonal, matrix_outer, matrix_scale, matrix_sub,
@@ -76,6 +81,48 @@ impl ConvexHullShape {
     #[inline]
     pub fn from_vertices(vertices: Vec<Vector4>) -> Self {
         Self::new(vertices, Vec::new(), DEFAULT_CONVEX_RADIUS)
+    }
+
+    /// Build a hull directly from a point cloud with the default weld tolerance.
+    ///
+    /// Returns an error for empty or non-finite input. Lower-dimensional
+    /// clouds produce a valid shape with no faces, so [`Shape::volume`] stays
+    /// `None` while AABB/support queries remain available.
+    pub fn try_from_points(
+        points: Vec<Vector4>,
+        convex_radius: f32,
+    ) -> Result<Self, ConvexHullBuildError> {
+        let hull = build_convex_hull(&points)?;
+        Ok(Self::new(
+            hull.vertices().to_vec(),
+            hull.faces().to_vec(),
+            convex_radius,
+        ))
+    }
+
+    /// Build a hull from a point cloud using an explicit weld tolerance.
+    pub fn try_from_points_with_tolerance(
+        points: Vec<Vector4>,
+        convex_radius: f32,
+        tolerance: f32,
+    ) -> Result<Self, ConvexHullBuildError> {
+        let hull = build_convex_hull_with_tolerance(&points, tolerance)?;
+        Ok(Self::new(
+            hull.vertices().to_vec(),
+            hull.faces().to_vec(),
+            convex_radius,
+        ))
+    }
+
+    /// Convenience wrapper around [`ConvexHullShape::try_from_points`].
+    ///
+    /// # Panics
+    ///
+    /// Panics when the point cloud is empty or contains non-finite coordinates.
+    #[inline]
+    pub fn from_points(points: Vec<Vector4>, convex_radius: f32) -> Self {
+        Self::try_from_points(points, convex_radius)
+            .expect("failed to build convex hull from points")
     }
 }
 
@@ -287,5 +334,35 @@ mod tests {
         let faces = vec![[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]];
         let hull = ConvexHullShape::new(vertices, faces, 0.0);
         assert!((hull.volume().unwrap() - 1.0 / 6.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn builds_cube_from_point_cloud() {
+        let mut points = cube_vertices(1.0);
+        points.extend(cube_vertices(1.0));
+        points.push(Vector4::ZERO);
+        let hull = ConvexHullShape::from_points(points, 0.0);
+        assert_eq!(hull.vertices().len(), 8);
+        assert_eq!(hull.faces().len(), 12);
+        assert!((hull.volume().unwrap() - 8.0).abs() < 1e-3);
+        assert!(hull.flags().contains(ShapeFlags::IS_CONVEX_POLYTOPE_SHAPE));
+        let mass = hull.mass_properties(MassConfig::DEFAULT).unwrap();
+        assert!((mass.volume - 8.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn point_cloud_lower_dimension_has_unknown_volume() {
+        let hull = ConvexHullShape::from_points(vec![Vector4::ZERO, Vector4::UNIT_X], 0.0);
+        assert_eq!(hull.volume(), None);
+        assert!(!hull.flags().contains(ShapeFlags::IS_CONVEX_POLYTOPE_SHAPE));
+    }
+
+    #[test]
+    fn point_cloud_errors_are_reported() {
+        assert!(ConvexHullShape::try_from_points(Vec::new(), 0.0).is_err());
+        assert!(
+            ConvexHullShape::try_from_points(vec![Vector4::new(f32::NAN, 0.0, 0.0, 0.0)], 0.0)
+                .is_err()
+        );
     }
 }

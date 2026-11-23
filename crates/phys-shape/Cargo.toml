@@ -7,5 +7,7 @@ publish.workspace = true
 description = "hknp shape hierarchy: convex/composite shapes and shape interfaces"
 
 [dependencies]
+base-geometry = { path = "../base-geometry" }
 base-math = { path = "../base-math" }
 phys-types = { path = "../phys-types" }
+

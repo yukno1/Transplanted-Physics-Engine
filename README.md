@@ -144,14 +144,14 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 
 > **命名约定（2026-11-16 已完成）**：门面 crate 改名 `proton-engine`（lib 名 `proton`，取代原 `havok`）；crate 前缀 `hk-* → base-*`、`hknp-* → phys-*`。目录、`Cargo.toml`、代码内引用（`hk_types → base_types` 等）已全部重命名，`cargo test --workspace` 全绿。
 
-| crate | 职责 | 状态（2026-11-16） |
+| crate | 职责 | 状态（2026-11-23） |
 |---|---|---|
 | `base-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
 | `base-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
 | `base-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
 | `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
-| `base-geometry` | GeometryUtilities：凸包、网格焊接 | 🚧 骨架 |
+| `base-geometry` | GeometryUtilities：确定性点云凸包（QuickHull 子集 + 低维回退）、顶点/三角形焊接与 remap | ✅ 已实现（后续子集，2026-11-23） |
 | `base-serialize` | HFF 结构化流 + `TAG0` 容器 + `TCM0` compendium + 2014 legacy binary tagfile + 类型元数据/对象重建 + 格式嗅探/结构型·函数型·type-change 版本 patching + 2014 packfile 头校验/外部转换适配 + 统一加载入口 | ✅ 已实现（Phase 10/16 + 后续子集） |
 | `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
 | `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 + 质量属性（密度/目标质量、COM、完整惯量张量、主轴、复合聚合）+ 可移植 15 位压缩惯量、`MassDistribution`、确定性 Jacobi 对角化与形状质量缓存 | ✅ 已实现（Phase 5 + 后续子集） |
@@ -259,7 +259,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 决策与偏差：
 - **Box**：本阶段为“局部轴对齐半长 + convex radius”，OBB 变换由 body/实例携带（Phase 6）；**Cylinder** 的 AABB 使用有限圆柱精确支撑公式（`h*|axis_i| + r*sqrt(1-axis_i²)`），而非保守球扫掠
 - **凸体 support 语义**：盒取方向符号角点 + `radius*dir`、胶囊取两端点中的极值点 + `radius*dir`（共线 tie 取 A/正向轴）、圆柱为轴向分量 + 径向投影；**体积按名义实体计算**（不含 convex radius），与 SDK 的“几何 + 圆角分离”一致
-- `ConvexHullShape` 未实现点云凸包构建（`hknpConvexHullUtil`），仅支持外部给定顶点 + 可选三角面；Mesh 暂不含 section/material/compressed-mesh；Compound 的 BVH 留 Phase 7
+- `ConvexHullShape` 在 Phase 5 仅支持外部给定顶点 + 可选三角面；点云凸包构建已由后续 `base-geometry` 子集通过 `try_from_points` / `from_points` 补齐（低维输入保持无面、体积未知）；Mesh 暂不含 section/material/compressed-mesh；Compound 的 BVH 留 Phase 7
 - `HeightFieldShape` 简化为 XZ 网格 + `(x,y,z)` scale，未含每 cell BVH/SDF；`hknpShapeFunctions` 的查询/GSK/face 接口留 Phase 7
 - 未纳入：`hknpCompressedMeshShape`、`hknpExternMeshShape`、`hknpBreakableCompoundShape`、LOD、decorator/masked 形状、shape tag codec、shape key mask/iterator、`hknpShapeMassProperties`
 - 验证：`fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
@@ -918,13 +918,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（CharacterControl 剩余项，2026-11-22）：`World` post-solve signal 与确定性派发、查询命中携带本地 `ShapeKey`、object/character 交互回调与可修改结果、`CharacterProxyManager` 多线程候选计算 + 串行回调/冲量提交、shape-key trigger（`Entered`/`Updated`/`Exited`）、`CharacterRigidBody` 与三入口 listener；新增集成测试 10 个，1/4 线程 `hvk-trace v1` 逐位一致
 - [x] 后续子集（CharacterControl 补齐，2026-11-22）：`phys-world` 世界级 trigger 事件（enter/exit 合并、可选 UPDATED）与 `ContactModifier` 接触编辑（Drop 同步三平行数组）；`phys-extensions` `get_character_params` RayCasting 工具与 `CharacterContactBridge`（manager attach/detach 生命周期）；新增集成测试 `character_ray_casting.rs` 5 个、`character_contact_editing.rs` 3 个、`character_trigger_events.rs` 2 个，`phys-world` 单元测试增至 88 个；1/4 线程 `hvk-trace v1` 逐位一致
 - [x] 后续子集（CharacterControl 余项，2026-11-22）：本地 `CharacterMonitorEvent` 阶段回调、`SolverDataView`/`SolverDataHook` 预求解行视图、Sphere/Box/ConvexHull 精确 raycast 法线与叶 key、世界 trigger `(body,body,key,key)` 合并与显式 keyed API；新增集成测试 `character_monitor.rs` 3 个、`character_solver_data.rs` 2 个，扩展 raycast/trigger 测试各 1 个
-- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）、Capsule/Cylinder/一般 ConvexHull 圆角表面的解析 raycast 法线，以及 mesh/height-field/compound 的 world-level trigger 叶 key 未移植；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐
+- [x] 后续子集（base-geometry 补齐，2026-11-23）：`base-geometry` 新增确定性点云凸包（焊接去重 + QuickHull 风格可见面/horizon 循环 + 点/线/面低维回退）与顶点/三角形焊接（remap、退化面与重复面移除）；`ConvexHullShape` 新增 `try_from_points`/`from_points`，保留旧构造语义；`base-geometry` 10 个单元测试、`phys-shape` 新增 3 个单元测试、新增集成测试 `convex_hull_from_points.rs` 4 个，`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿
+- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）、Capsule/Cylinder/一般 ConvexHull 圆角表面的解析 raycast 法线，以及 mesh/height-field/compound 的 world-level trigger 叶 key 未移植；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐；`hkgpConvexHull` 的随机简化/平面合并/布尔运算与内部量化坐标未移植，本子集不宣称与 C++ hull 坐标逐位一致
 
-仓库现状（2026-11-22）：
+仓库现状（2026-11-23）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；本次 CharacterControl 补齐与余项均在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；本次 base-geometry 补齐在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

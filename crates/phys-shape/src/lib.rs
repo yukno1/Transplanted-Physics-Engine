@@ -69,7 +69,7 @@ pub mod triangle;
 pub use box_shape::BoxShape;
 pub use capsule::CapsuleShape;
 pub use compound::{CompoundShape, ShapeInstance};
-pub use convex_hull::ConvexHullShape;
+pub use convex_hull::{ConvexHullBuildError, ConvexHullShape};
 pub use cylinder::CylinderShape;
 pub use height_field::HeightFieldShape;
 pub use mass::{

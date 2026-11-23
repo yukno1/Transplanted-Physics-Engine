@@ -7,5 +7,4 @@ publish.workspace = true
 description = "Havok geometry utilities: convex hull generation, triangle welding, mesh processing"
 
 [dependencies]
-base-types = { path = "../base-types" }
 base-math = { path = "../base-math" }
