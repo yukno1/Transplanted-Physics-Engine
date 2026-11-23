@@ -7,10 +7,11 @@
 //! [`TriggerStatus::Updated`] only when the caller enables it. A zero count
 //! without that flag is dropped.
 //!
-//! Shape keys are carried for API compatibility but this subset emits
-//! [`ShapeKey::INVALID`] because world contacts are currently body-pair level;
-//! leaf-level keys remain available through the query-based character trigger
-//! tracker.
+//! Shape keys are resolved through `phys-collide`'s shared leaf-key helper:
+//! convex hull faces, mesh triangles, height-field cells and compound children
+//! can produce leaf keys. Shapes without a ported subdivision still emit
+//! [`ShapeKey::INVALID`], and query-based character triggers remain a separate
+//! event stream.
 
 use std::collections::BTreeMap;
 

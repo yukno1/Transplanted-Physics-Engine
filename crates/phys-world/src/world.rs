@@ -11,11 +11,9 @@ use phys_body::{
 };
 use phys_collide::{
     BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, closest_points,
-    collide_with_tolerance, query::leaf_key,
+    collide_with_tolerance, leaf_key_at_local_point,
 };
-use phys_shape::{
-    ConvexHullShape, MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache,
-};
+use phys_shape::{MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache};
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
@@ -2773,60 +2771,47 @@ impl World {
         results.into_iter().map(|(_, manifold)| manifold).collect()
     }
 
-    /// Local leaf key closest to a witness point on a zero-radius convex hull.
-    fn hull_face_key(shape: &dyn Shape, local_point: Vector4) -> ShapeKey {
-        let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() else {
-            return ShapeKey::INVALID;
-        };
-        if hull.faces().is_empty() || hull.convex_radius().abs() > 1e-6 {
-            return ShapeKey::INVALID;
-        }
-        let vertices = hull.vertices();
-        let mut best: Option<(f32, usize)> = None;
-        for (index, face) in hull.faces().iter().enumerate() {
-            let (Some(&a), Some(&b), Some(&c)) = (
-                vertices.get(face[0] as usize),
-                vertices.get(face[1] as usize),
-                vertices.get(face[2] as usize),
-            ) else {
-                continue;
-            };
-            let centre = (a + b + c) * (1.0 / 3.0);
-            let distance = (centre - local_point).length3();
-            if best.is_none_or(|(current, _)| distance < current) {
-                best = Some((distance, index));
-            }
-        }
-        best.map_or(ShapeKey::INVALID, |(_, index)| {
-            leaf_key::new(leaf_key::CONVEX_HULL_FACE, index as u32)
-        })
-    }
-
     /// Leaf keys for one narrow-phase trigger pair.
     ///
-    /// Convex hull faces provide real leaf keys; other shapes fall back to
-    /// `ShapeKey::INVALID`, preserving the body-pair granularity of prior
-    /// releases.
+    /// Witness points are resolved through the shared `phys-collide` helper so
+    /// world-level events and query-side diagnostics use the same leaf key
+    /// encoding. Convex hulls, meshes, height fields and compounds can produce
+    /// leaf keys; shapes without ported subdivision fall back to `INVALID`.
     fn trigger_pair_keys(&self, a: BodyId, b: BodyId) -> (ShapeKey, ShapeKey) {
         let (Some(body_a), Some(body_b)) = (self.bodies.get(a), self.bodies.get(b)) else {
             return (ShapeKey::INVALID, ShapeKey::INVALID);
         };
-        let Some(result) = closest_points(
+        if let Some(result) = closest_points(
             body_a.shape.as_ref(),
             &body_a.transform,
             body_b.shape.as_ref(),
             &body_b.transform,
-        ) else {
-            return (ShapeKey::INVALID, ShapeKey::INVALID);
-        };
+        ) {
+            return (
+                leaf_key_at_local_point(
+                    body_a.shape.as_ref(),
+                    body_a.transform.inverse_transform_point(result.point_a),
+                ),
+                leaf_key_at_local_point(
+                    body_b.shape.as_ref(),
+                    body_b.transform.inverse_transform_point(result.point_b),
+                ),
+            );
+        }
+
+        // Non-convex shapes have no GJK witness. Their centres still give a
+        // deterministic local point from which the shared resolver can choose
+        // the nearest leaf for diagnostic trigger events.
+        let centre_a = body_a.transform.transform_point(Vector4::ZERO);
+        let centre_b = body_b.transform.transform_point(Vector4::ZERO);
         (
-            Self::hull_face_key(
+            leaf_key_at_local_point(
                 body_a.shape.as_ref(),
-                body_a.transform.inverse_transform_point(result.point_a),
+                body_a.transform.inverse_transform_point(centre_b),
             ),
-            Self::hull_face_key(
+            leaf_key_at_local_point(
                 body_b.shape.as_ref(),
-                body_b.transform.inverse_transform_point(result.point_b),
+                body_b.transform.inverse_transform_point(centre_a),
             ),
         )
     }
@@ -2835,9 +2820,12 @@ impl World {
     ///
     /// The detector uses broad-phase AABB pairs (canonical `(low, high)` order)
     /// so static, sleeping and non-convex trigger bodies all participate.
-    /// `DONT_COLLIDE` and the world collision filter are honoured. For convex
-    /// hull pairs a narrow-phase witness supplies face leaf keys; other shapes
-    /// fall back to `ShapeKey::INVALID`, preserving body-pair granularity.
+    /// `DONT_COLLIDE` and the world collision filter are honoured. Narrow-phase
+    /// witnesses are resolved via [`leaf_key_at_local_point`], so hull faces,
+    /// mesh triangles, height-field cells and compound children can produce
+    /// leaf keys; other shapes fall back to `ShapeKey::INVALID`. Non-convex
+    /// shapes have no GJK witness, so their body centre is projected into the
+    /// other shape's local space as a deterministic diagnostic fallback.
     fn update_trigger_events(&mut self) {
         if self.trigger_bodies.is_empty() {
             self.active_trigger_pairs.clear();

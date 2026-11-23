@@ -53,5 +53,5 @@ pub use filter::{CollisionFilter, GroupCollisionFilter, PairCollisionFilter};
 pub use gjk::{GjkResult, closest_points, intersects};
 pub use manifold::{ContactPoint, Manifold};
 pub use narrowphase::{collide, collide_with_tolerance};
-pub use query::{RayHit, point_distance, ray_aabb, raycast};
+pub use query::{RayHit, leaf_key_at_local_point, point_distance, ray_aabb, raycast};
 pub use shape_cast::{DEFAULT_SHAPE_CAST_TOLERANCE, ShapeCastHit, shape_cast};

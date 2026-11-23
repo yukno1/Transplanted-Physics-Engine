@@ -32,7 +32,8 @@ use core::any::Any;
 
 use base_math::{Aabb, Transform, Vector4};
 use phys_shape::{
-    BoxShape, CompoundShape, ConvexHullShape, HeightFieldShape, MeshShape, Shape, SphereShape,
+    BoxShape, CapsuleShape, CompoundShape, ConvexHullShape, CylinderShape, HeightFieldShape,
+    MeshShape, Shape, SphereShape,
 };
 use phys_types::{ShapeKey, ShapeType};
 
@@ -335,10 +336,25 @@ fn raycast_convex(
             });
         }
         if result.distance <= HIT_EPSILON {
+            // Keep the GJK hit distance/position; only replace the witness
+            // normal when an analytic surface normal can be derived.
+            let local_point = transform.inverse_transform_point(result.point_b);
+            let normal = refine_convex_normal(shape, local_point)
+                .map(|local| transform.rotation.rotate(local))
+                .filter(|candidate| candidate.length_squared3() > 0.5)
+                .map(|mut candidate| {
+                    candidate.normalize3();
+                    if candidate.dot3(direction) > 0.0 {
+                        -candidate
+                    } else {
+                        candidate
+                    }
+                })
+                .unwrap_or(result.normal);
             return Some(RayHit {
                 hit_fraction: fraction,
                 position: result.point_b,
-                normal: result.normal,
+                normal,
                 shape_key: ShapeKey::INVALID,
             });
         }
@@ -359,6 +375,315 @@ fn raycast_convex(
         }
     }
     None
+}
+
+/// Refine a GJK witness normal using the shape's analytic surface.
+fn refine_convex_normal(shape: &dyn Shape, local_point: Vector4) -> Option<Vector4> {
+    if let Some(capsule) = shape.as_any().downcast_ref::<CapsuleShape>() {
+        return capsule_normal(capsule, local_point);
+    }
+    if let Some(cylinder) = shape.as_any().downcast_ref::<CylinderShape>() {
+        return cylinder_normal(cylinder, local_point);
+    }
+    if let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() {
+        return hull_rounded_normal(hull, local_point);
+    }
+    None
+}
+
+fn capsule_normal(capsule: &CapsuleShape, point: Vector4) -> Option<Vector4> {
+    let segment = capsule.point_b - capsule.point_a;
+    let length_sq = segment.length_squared3();
+    let t = if length_sq <= f32::EPSILON {
+        0.0
+    } else {
+        ((point - capsule.point_a).dot3(segment) / length_sq).clamp(0.0, 1.0)
+    };
+    let closest = capsule.point_a + segment * t;
+    let normal = point - closest;
+    if normal.length_squared3() <= 1e-12 {
+        None
+    } else {
+        Some(normal.normalized3())
+    }
+}
+
+fn cylinder_normal(cylinder: &CylinderShape, point: Vector4) -> Option<Vector4> {
+    let segment = cylinder.point_b - cylinder.point_a;
+    let length_sq = segment.length_squared3();
+    let center = (cylinder.point_a + cylinder.point_b) * 0.5;
+    if length_sq <= f32::EPSILON {
+        let normal = point - cylinder.point_a;
+        return if normal.length_squared3() <= 1e-12 {
+            None
+        } else {
+            Some(normal.normalized3())
+        };
+    }
+
+    let axis = segment.normalized3();
+    let half_height = length_sq.sqrt() * 0.5;
+    let relative = point - center;
+    let axial = relative.dot3(axis);
+    let radial = relative - axis * axial;
+    let radial_length = radial.length3();
+    let radial_unit = if radial_length > 1e-6 {
+        radial / radial_length
+    } else {
+        stable_perpendicular(axis)
+    };
+    let nominal =
+        center + axis * axial.clamp(-half_height, half_height) + radial_unit * cylinder.radius;
+    let normal = point - nominal;
+    if normal.length_squared3() <= 1e-12 {
+        None
+    } else {
+        Some(normal.normalized3())
+    }
+}
+
+fn hull_rounded_normal(hull: &ConvexHullShape, point: Vector4) -> Option<Vector4> {
+    if hull.faces().is_empty() {
+        return None;
+    }
+    let vertices = hull.vertices();
+    let mut best: Option<(f32, Vector4)> = None;
+    for &face in hull.faces() {
+        let (Some(&a), Some(&b), Some(&c)) = (
+            vertices.get(face[0] as usize),
+            vertices.get(face[1] as usize),
+            vertices.get(face[2] as usize),
+        ) else {
+            continue;
+        };
+        let closest = closest_point_on_triangle(point, a, b, c);
+        let distance_sq = (point - closest).length_squared3();
+        if best.is_none_or(|(current, _)| distance_sq < current) {
+            best = Some((distance_sq, closest));
+        }
+    }
+    let normal = point - best?.1;
+    if normal.length_squared3() <= 1e-12 {
+        None
+    } else {
+        Some(normal.normalized3())
+    }
+}
+
+fn stable_perpendicular(axis: Vector4) -> Vector4 {
+    let reference = if axis.x.abs() < 0.9 {
+        Vector4::UNIT_X
+    } else {
+        Vector4::UNIT_Y
+    };
+    axis.cross(reference).normalized3()
+}
+
+/// Closest point on triangle `ABC` to `P` (Ericson's barycentric algorithm).
+fn closest_point_on_triangle(p: Vector4, a: Vector4, b: Vector4, c: Vector4) -> Vector4 {
+    let ab = b - a;
+    let ac = c - a;
+    let ap = p - a;
+    let d1 = ab.dot3(ap);
+    let d2 = ac.dot3(ap);
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let d3 = ab.dot3(bp);
+    let d4 = ac.dot3(bp);
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        let denominator = d1 - d3;
+        if denominator.abs() > f32::EPSILON {
+            return a + ab * (d1 / denominator);
+        }
+    }
+    let cp = p - c;
+    let d5 = ab.dot3(cp);
+    let d6 = ac.dot3(cp);
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        let denominator = d2 - d6;
+        if denominator.abs() > f32::EPSILON {
+            return a + ac * (d2 / denominator);
+        }
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && d4 >= d3 && d5 >= d6 {
+        let denominator = (d4 - d3) + (d5 - d6);
+        if denominator.abs() > f32::EPSILON {
+            return b + (c - b) * ((d4 - d3) / denominator);
+        }
+    }
+    let denominator = va + vb + vc;
+    if denominator <= f32::EPSILON {
+        return a;
+    }
+    let v = vb / denominator;
+    let w = vc / denominator;
+    a + ab * v + ac * w
+}
+
+/// Resolve a deterministic leaf [`ShapeKey`] from a local-space surface point.
+///
+/// Used by both query-side diagnostics and world-level trigger events so the
+/// two streams share one encoding. Returns `ShapeKey::INVALID` for shapes that
+/// have no ported leaf subdivision or when no leaf can be resolved.
+pub fn leaf_key_at_local_point(shape: &dyn Shape, local_point: Vector4) -> ShapeKey {
+    match shape.shape_type() {
+        ShapeType::Convex => {
+            if let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() {
+                return hull_face_key_at_local_point(hull, local_point);
+            }
+        }
+        ShapeType::Mesh => {
+            if let Some(mesh) = shape.as_any().downcast_ref::<MeshShape>() {
+                return mesh_leaf_key_at_local_point(mesh, local_point);
+            }
+        }
+        ShapeType::HeightField => {
+            if let Some(height_field) = shape.as_any().downcast_ref::<HeightFieldShape>() {
+                return height_field_leaf_key_at_local_point(height_field, local_point);
+            }
+        }
+        ShapeType::Compound => {
+            if let Some(compound) = shape.as_any().downcast_ref::<CompoundShape>() {
+                return compound_leaf_key_at_local_point(compound, local_point);
+            }
+        }
+        _ => {}
+    }
+    ShapeKey::INVALID
+}
+
+fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vector4) -> ShapeKey {
+    if hull.faces().is_empty() {
+        return ShapeKey::INVALID;
+    }
+    let vertices = hull.vertices();
+    let mut best: Option<(f32, u32)> = None;
+    for (index, &face) in hull.faces().iter().enumerate() {
+        let (Some(&a), Some(&b), Some(&c)) = (
+            vertices.get(face[0] as usize),
+            vertices.get(face[1] as usize),
+            vertices.get(face[2] as usize),
+        ) else {
+            continue;
+        };
+        let closest = closest_point_on_triangle(local_point, a, b, c);
+        let distance_sq = (local_point - closest).length_squared3();
+        if best.is_none_or(|(current, _)| distance_sq < current) {
+            best = Some((distance_sq, index as u32));
+        }
+    }
+    best.map_or(ShapeKey::INVALID, |(_, index)| {
+        leaf_key::new(leaf_key::CONVEX_HULL_FACE, index)
+    })
+}
+
+fn mesh_leaf_key_at_local_point(mesh: &MeshShape, local_point: Vector4) -> ShapeKey {
+    if mesh.bvh_nodes().is_empty() {
+        return ShapeKey::INVALID;
+    }
+    let mut best: Option<(f32, u32)> = None;
+    let mut stack = vec![0usize];
+    while let Some(node_index) = stack.pop() {
+        let node = mesh.bvh_nodes()[node_index];
+        let aabb_distance = node.aabb.signed_distance_to_point(local_point).1.max(0.0);
+        if best.is_some_and(|(current, _)| aabb_distance * aabb_distance > current) {
+            continue;
+        }
+        match node.children {
+            Some((left, right)) => {
+                stack.push(right as usize);
+                stack.push(left as usize);
+            }
+            None => {
+                for &triangle_index in mesh.node_triangles(node_index) {
+                    let triangle = mesh.triangles()[triangle_index as usize];
+                    let a = mesh.vertices()[triangle[0] as usize];
+                    let b = mesh.vertices()[triangle[1] as usize];
+                    let c = mesh.vertices()[triangle[2] as usize];
+                    let closest = closest_point_on_triangle(local_point, a, b, c);
+                    let distance_sq = (local_point - closest).length_squared3();
+                    if best.is_none_or(|(current, _)| distance_sq < current) {
+                        best = Some((distance_sq, triangle_index));
+                    }
+                }
+            }
+        }
+    }
+    best.map_or(ShapeKey::INVALID, |(_, index)| {
+        leaf_key::new(leaf_key::MESH, index)
+    })
+}
+
+fn height_field_leaf_key_at_local_point(
+    height_field: &HeightFieldShape,
+    local_point: Vector4,
+) -> ShapeKey {
+    let size_x = height_field.int_size_x();
+    let size_z = height_field.int_size_z();
+    if size_x < 2 || size_z < 2 {
+        return ShapeKey::INVALID;
+    }
+    let scale = height_field.scale();
+    let cell_x = (local_point.x / scale.x).floor().max(0.0) as usize;
+    let cell_z = (local_point.z / scale.z).floor().max(0.0) as usize;
+    let cell_x = cell_x.min(size_x - 2);
+    let cell_z = cell_z.min(size_z - 2);
+
+    let p00 = height_field.vertex(cell_x, cell_z);
+    let p10 = height_field.vertex(cell_x + 1, cell_z);
+    let p01 = height_field.vertex(cell_x, cell_z + 1);
+    let p11 = height_field.vertex(cell_x + 1, cell_z + 1);
+    let mut best: Option<(f32, usize)> = None;
+    for (points, sub_triangle) in [([p00, p10, p11], 0usize), ([p00, p11, p01], 1usize)] {
+        let closest = closest_point_on_triangle(local_point, points[0], points[1], points[2]);
+        let distance_sq = (local_point - closest).length_squared3();
+        if best.is_none_or(|(current, _)| distance_sq < current) {
+            best = Some((distance_sq, sub_triangle));
+        }
+    }
+    best.map_or(ShapeKey::INVALID, |(_, sub_triangle)| {
+        leaf_key::height_field(cell_z, cell_x, sub_triangle)
+    })
+}
+
+fn compound_leaf_key_at_local_point(compound: &CompoundShape, local_point: Vector4) -> ShapeKey {
+    let mut best: Option<(f32, usize, ShapeKey)> = None;
+    for (child_index, child) in compound.children().iter().enumerate() {
+        let child_point = child.transform.inverse_transform_point(local_point);
+        let distance = closest_points(
+            &PointShape(child_point),
+            &Transform::IDENTITY,
+            child.shape.as_ref(),
+            &Transform::IDENTITY,
+        )
+        .map(|result| result.distance.max(0.0))
+        .unwrap_or_else(|| {
+            child
+                .shape
+                .aabb()
+                .signed_distance_to_point(child_point)
+                .1
+                .max(0.0)
+        });
+        if best.is_none_or(|(current, _, _)| distance < current) {
+            let inner = leaf_key_at_local_point(child.shape.as_ref(), child_point);
+            best = Some((distance, child_index, inner));
+        }
+    }
+    best.map_or(ShapeKey::INVALID, |(_, child_index, inner)| {
+        leaf_key::compound_child(child_index, inner)
+    })
 }
 
 /// Traverse a mesh's BVH and test its leaf triangles.
@@ -678,7 +1003,7 @@ impl Shape for PointShape {
 mod tests {
     use super::*;
     use base_math::Quaternion;
-    use phys_shape::{BoxShape, CapsuleShape, ConvexHullShape, SphereShape};
+    use phys_shape::{BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape};
     use std::sync::Arc;
 
     fn sphere(radius: f32, center: Vector4) -> Arc<dyn Shape> {
@@ -795,6 +1120,80 @@ mod tests {
             (hit.hit_fraction - (10.0 - 2.5)).abs() < 1e-2,
             "fraction {}",
             hit.hit_fraction
+        );
+    }
+
+    #[test]
+    fn capsule_side_normal_is_radial() {
+        let shape: Arc<dyn Shape> = Arc::new(CapsuleShape::new(
+            Vector4::from_xyz(0.0, 0.0, 0.0),
+            Vector4::from_xyz(0.0, 2.0, 0.0),
+            0.5,
+        ));
+        let hit = raycast(
+            shape.as_ref(),
+            &Transform::IDENTITY,
+            Vector4::from_xyz(5.0, 1.0, 0.0),
+            -Vector4::UNIT_X,
+            10.0,
+        )
+        .expect("ray must hit the capsule side");
+        assert!(
+            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            "normal {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
+    fn cylinder_side_normal_is_radial() {
+        let shape: Arc<dyn Shape> = Arc::new(CylinderShape::with_params(
+            Vector4::from_xyz(0.0, -1.0, 0.0),
+            Vector4::from_xyz(0.0, 1.0, 0.0),
+            1.0,
+            16,
+            0.0,
+        ));
+        let hit = raycast(
+            shape.as_ref(),
+            &Transform::IDENTITY,
+            Vector4::from_xyz(5.0, 0.0, 0.0),
+            -Vector4::UNIT_X,
+            10.0,
+        )
+        .expect("ray must hit the cylinder side");
+        assert!(
+            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            "normal {:?}",
+            hit.normal
+        );
+    }
+
+    #[test]
+    fn rounded_hull_face_normal_is_analytic() {
+        let points = vec![
+            Vector4::from_xyz(-1.0, -1.0, -1.0),
+            Vector4::from_xyz(1.0, -1.0, -1.0),
+            Vector4::from_xyz(1.0, 1.0, -1.0),
+            Vector4::from_xyz(-1.0, 1.0, -1.0),
+            Vector4::from_xyz(-1.0, -1.0, 1.0),
+            Vector4::from_xyz(1.0, -1.0, 1.0),
+            Vector4::from_xyz(1.0, 1.0, 1.0),
+            Vector4::from_xyz(-1.0, 1.0, 1.0),
+        ];
+        let shape: Arc<dyn Shape> = Arc::new(ConvexHullShape::from_points(points, 0.2));
+        let hit = raycast(
+            shape.as_ref(),
+            &Transform::IDENTITY,
+            Vector4::from_xyz(5.0, 0.0, 0.0),
+            -Vector4::UNIT_X,
+            10.0,
+        )
+        .expect("ray must hit the rounded hull");
+        assert!(
+            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            "normal {:?}",
+            hit.normal
         );
     }
 
@@ -1067,6 +1466,45 @@ mod tests {
                 3.0,
             )
             .is_none()
+        );
+    }
+
+    #[test]
+    fn leaf_key_resolver_covers_hull_mesh_height_field_and_compound() {
+        let hull = ConvexHullShape::new(
+            vec![Vector4::ZERO, Vector4::UNIT_X, Vector4::UNIT_Y],
+            vec![[0, 1, 2]],
+            0.0,
+        );
+        let face_center = (Vector4::ZERO + Vector4::UNIT_X + Vector4::UNIT_Y) * (1.0 / 3.0);
+        assert_eq!(
+            leaf_key_at_local_point(&hull, face_center),
+            leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0)
+        );
+
+        let mesh = quad_mesh(2.0);
+        assert_eq!(
+            leaf_key_at_local_point(mesh.as_ref(), Vector4::from_xyz(1.5, 0.0, -1.5)),
+            leaf_key::new(leaf_key::MESH, 0)
+        );
+
+        let heightfield = HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).unwrap();
+        assert_eq!(
+            leaf_key_at_local_point(&heightfield, Vector4::from_xyz(1.5, 0.0, 1.5)),
+            leaf_key::height_field(1, 1, 0)
+        );
+
+        use phys_shape::ShapeInstance;
+        let compound = CompoundShape::new(vec![
+            ShapeInstance::new(Transform::IDENTITY, sphere(1.0, Vector4::ZERO)),
+            ShapeInstance::new(
+                Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(5.0, 0.0, 0.0)),
+                sphere(1.0, Vector4::ZERO),
+            ),
+        ]);
+        assert_eq!(
+            leaf_key_at_local_point(&compound, Vector4::from_xyz(1.0, 0.0, 0.0)),
+            leaf_key::compound_child(0, ShapeKey::INVALID)
         );
     }
 }
