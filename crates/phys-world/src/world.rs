@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use base_math::{Matrix3, Quaternion, Transform, Vector4};
+use base_math::{Matrix3, PreciseTransform, Quaternion, Transform, Vector4, Vector4d};
 use phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
     inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
@@ -97,6 +97,9 @@ struct ContactCandidate {
 pub struct World {
     cinfo: WorldCinfo,
     gravity: Vector4,
+    /// f64 world origin for large-world coordinates; body/motion transforms stay
+    /// small f32 values relative to it.
+    world_origin: Vector4d,
     bodies: BodyManager,
     motions: MotionManager,
     broad_phase: BroadPhase,
@@ -205,6 +208,7 @@ impl World {
             solver_data_hooks: SolverDataHookRegistry::default(),
             cinfo,
             gravity,
+            world_origin: Vector4d::ZERO,
             step_count: 0,
             last_delta_time: 0.0,
             last_manifold_count: 0,
@@ -831,6 +835,11 @@ impl World {
         self.rebuild_body_mass_properties_inner(body_id, MassChangeReason::MotionRebuilt)
     }
 
+    /// Cached mass properties of one body, when available.
+    pub fn body_mass_properties(&self, body_id: BodyId) -> Option<MassProperties> {
+        self.bodies.get(body_id)?.mass_properties
+    }
+
     /// Mass distribution of one body (`hknpMassDistribution` diagnostic API).
     pub fn body_mass_distribution(&self, body_id: BodyId) -> Option<MassDistribution> {
         let body = self.bodies.get(body_id)?;
@@ -847,6 +856,60 @@ impl World {
         config: MassConfig,
     ) -> Result<MassDistribution, phys_shape::MassError> {
         MassDistribution::from_shapes(shapes, config)
+    }
+
+    /// Apply a mass distribution to a body (`hknpBodyManager` distribution path).
+    ///
+    /// A negative `configured_mass` derives the mass from the body's current
+    /// shape-derived properties, matching the SDK's `m_mass < 0` rule. The
+    /// resulting inertia is scaled by `mass / 1.0` and pushed into the motion
+    /// for dynamic bodies.
+    pub fn set_body_mass_distribution(
+        &mut self,
+        body_id: BodyId,
+        distribution: MassDistribution,
+        configured_mass: f32,
+    ) -> bool {
+        let fallback = self.bodies.get(body_id).and_then(|body| {
+            body.mass_properties
+                .or_else(|| body.shape.mass_properties(body.mass_config).ok())
+        });
+        let Ok(properties) = distribution.apply_with_mass(configured_mass, fallback) else {
+            return false;
+        };
+        let old = self.body_mass_summary(body_id);
+        let motion_id = {
+            let Some(body) = self.bodies.get(body_id) else {
+                return false;
+            };
+            body.motion_id
+        };
+        let dynamic = self
+            .motions
+            .get(motion_id)
+            .is_some_and(|motion| motion.motion_type.is_dynamic());
+        if dynamic {
+            let matrix = world_inverse_inertia_from_mass_properties(
+                &properties,
+                &self.bodies.get(body_id).unwrap().transform,
+            );
+            if let Some(motion) = self.motions.get_mut(motion_id) {
+                motion.mass = properties.mass;
+                motion.set_inverse_inertia_world(matrix);
+            }
+        }
+        if let Some(body) = self.bodies.get_mut(body_id) {
+            body.mass_properties = Some(properties);
+            body.mass = properties.mass;
+            body.derive_mass_from_shape = false;
+            if let Some(motion) = self.motions.get(motion_id) {
+                body.inverse_inertia = motion.inverse_inertia;
+                body.inverse_inertia_world = motion.inverse_inertia_world;
+            }
+            body.mass_version = body.mass_version.wrapping_add(1);
+        }
+        self.emit_mass_change(body_id, MassChangeReason::MassConfigChanged, old);
+        true
     }
 
     /// Subscribe to post-rebuild mass-property change notifications.
@@ -1999,6 +2062,69 @@ impl World {
         };
         let rotation = body.transform.rotation_quaternion();
         self.set_body_transform(body_id, Transform::from_quaternion(rotation, position))
+    }
+
+    /// Current f64 world origin (`hkWorldShiftUtil` origin subset).
+    #[inline]
+    pub fn world_origin(&self) -> Vector4d {
+        self.world_origin
+    }
+
+    /// Precise world transform of a body (origin + small f32 local transform).
+    pub fn body_precise_transform(&self, body_id: BodyId) -> Option<PreciseTransform> {
+        let body = self.bodies.get(body_id)?;
+        let local = Vector4d::new(
+            body.transform.translation.x as f64,
+            body.transform.translation.y as f64,
+            body.transform.translation.z as f64,
+            1.0,
+        );
+        Some(PreciseTransform::from_translation_d(
+            body.transform.rotation,
+            self.world_origin + local,
+        ))
+    }
+
+    /// Set a body's precise world position, converting to a small local f32
+    /// offset relative to [`Self::world_origin`].
+    pub fn set_body_precise_position(&mut self, body_id: BodyId, position: Vector4d) -> bool {
+        if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
+            return false;
+        }
+        let Some(body) = self.bodies.get(body_id) else {
+            return false;
+        };
+        let rotation = body.transform.rotation_quaternion();
+        let local = Vector4::from_xyz(
+            (position.x - self.world_origin.x) as f32,
+            (position.y - self.world_origin.y) as f32,
+            (position.z - self.world_origin.z) as f32,
+        );
+        self.set_body_transform(body_id, Transform::from_quaternion(rotation, local))
+    }
+
+    /// Move the world origin by `offset`, keeping body/motion transforms small.
+    ///
+    /// The offset is applied to the f64 origin and subtracted from every f32
+    /// body/motion translation. Offsets exactly representable in f32 preserve
+    /// precise world positions; sub-f32 remainders stay in `world_origin`.
+    pub fn shift_origin(&mut self, offset: Vector4d) -> bool {
+        if !offset.x.is_finite() || !offset.y.is_finite() || !offset.z.is_finite() {
+            return false;
+        }
+        let shift = Vector4::from_xyz(-(offset.x as f32), -(offset.y as f32), -(offset.z as f32));
+        self.world_origin += offset;
+        let motion_ids: Vec<_> = self.motions.iter().map(|(id, _)| id).collect();
+        for id in motion_ids {
+            if let Some(motion) = self.motions.get_mut(id) {
+                motion.position += shift;
+            }
+        }
+        for body in self.bodies.iter_mut() {
+            body.transform.translation += shift;
+            body.refresh_aabb();
+        }
+        true
     }
 
     /// Set a body's linear velocity (dynamic/keyframed motions only).

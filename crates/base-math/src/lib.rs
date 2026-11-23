@@ -12,6 +12,7 @@
 //! | [`Quaternion`] | `hkQuaternionf` | unit quaternion `(x, y, z, w)`, Hamilton product |
 //! | [`Matrix3`] | `hkMatrix3`, `hkRotationf` | 3×3 column-major rotation matrix (columns are `Vector4`) |
 //! | [`Transform`] | `hkTransformf` | rotation matrix + translation |
+//! | [`PreciseTransform`] | `hkPreciseTransform` | rotation matrix + double-float translation |
 //! | [`QTransform`] | `hkQTransformf` | quaternion + translation |
 //! | [`QsTransform`] | `hkQsTransformf` | translation + quaternion + scale |
 //! | [`Aabb`] | `hkAabb` | axis-aligned bounding box, `min`/`max` as `Vector4` |
@@ -37,6 +38,7 @@
 //! * [`quaternion`] — `Quaternion`.
 //! * [`matrix3`] — `Matrix3` (rotation matrices).
 //! * [`transform`] — `Transform` (matrix + translation).
+//! * [`precise_transform`] — `PreciseTransform` (matrix + double-float translation).
 //! * [`qtransform`] — `QTransform` (quaternion + translation).
 //! * [`qstransform`] — `QsTransform` (quaternion + translation + scale).
 //! * [`aabb`] — `Aabb`.
@@ -45,6 +47,7 @@
 pub mod aabb;
 pub mod half;
 pub mod matrix3;
+pub mod precise_transform;
 pub mod qstransform;
 pub mod qtransform;
 pub mod quaternion;
@@ -54,6 +57,7 @@ pub mod vector;
 pub use aabb::Aabb;
 pub use half::Half;
 pub use matrix3::Matrix3;
+pub use precise_transform::PreciseTransform;
 pub use qstransform::QsTransform;
 pub use qtransform::QTransform;
 pub use quaternion::Quaternion;

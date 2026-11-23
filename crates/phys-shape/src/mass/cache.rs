@@ -5,6 +5,8 @@ use std::sync::Arc;
 use crate::{CompressedMassProperties, MassConfig, MassError, MassProperties, Shape};
 
 const GROUP_SIZE: usize = 4;
+/// `hknpMassPropertiesTree::GROUPS_PER_WORD`: 8 four-child groups per word.
+const GROUPS_PER_WORD: usize = 8;
 
 /// Shape-identity key used by [`ShapeMassCache`].
 ///
@@ -79,13 +81,15 @@ impl ShapeMassCache {
     }
 }
 
-/// Deterministic 4-child aggregate cache (`hknpMassPropertiesTree` subset).
+/// Deterministic hierarchical mass cache (`hknpMassPropertiesTree` subset).
 ///
-/// Full groups of four are compressed immediately; partial groups are kept at
-/// full precision until [`Self::finish`]. Insertion order is preserved and no
-/// hash-container iteration participates in the result.
+/// Four children form a compressed group; eight groups (32 children) form a
+/// compressed word. Full words are cached with the SDK-compatible packed word
+/// layout, while partial groups remain at full precision until [`Self::finish`].
+/// Insertion order is preserved and no hash-container iteration participates.
 #[derive(Clone, Debug, Default)]
 pub struct MassPropertiesTree {
+    words: Vec<CompressedMassProperties>,
     groups: Vec<CompressedMassProperties>,
     pending: Vec<MassProperties>,
 }
@@ -94,27 +98,51 @@ impl MassPropertiesTree {
     /// Add one child's world-space mass properties.
     pub fn add(&mut self, properties: MassProperties) -> Result<(), MassError> {
         self.pending.push(properties);
-        if self.pending.len() == GROUP_SIZE {
-            let group = MassProperties::combine_all(std::mem::take(&mut self.pending));
-            self.groups.push(CompressedMassProperties::pack(&group)?);
+        if self.pending.len() != GROUP_SIZE {
+            return Ok(());
+        }
+        let group = MassProperties::combine_all(std::mem::take(&mut self.pending));
+        self.groups.push(CompressedMassProperties::pack(&group)?);
+        if self.groups.len() % GROUPS_PER_WORD == 0 {
+            let start = self.groups.len() - GROUPS_PER_WORD;
+            let members: Vec<MassProperties> = self.groups[start..]
+                .iter()
+                .map(|group| group.unpack())
+                .collect();
+            let word = MassProperties::combine_all(members);
+            self.words.push(CompressedMassProperties::pack_sdk(&word)?);
         }
         Ok(())
     }
 
-    /// Combine cached groups and the final partial group.
+    /// Combine cached words, leftover groups and the final partial group.
     pub fn finish(self) -> Result<MassProperties, MassError> {
-        let mut groups: Vec<MassProperties> = self
-            .groups
-            .into_iter()
-            .map(|group| group.unpack())
-            .collect();
-        groups.extend(self.pending);
-        Ok(MassProperties::combine_all(groups))
+        let mut combined: Vec<MassProperties> =
+            self.words.iter().map(|word| word.unpack_sdk()).collect();
+        let grouped_in_words = self.words.len() * GROUPS_PER_WORD;
+        combined.extend(
+            self.groups
+                .into_iter()
+                .skip(grouped_in_words)
+                .map(|g| g.unpack()),
+        );
+        combined.extend(self.pending);
+        Ok(MassProperties::combine_all(combined))
     }
 
-    /// Number of compressed full groups.
+    /// Number of compressed full groups (including those folded into words).
     pub fn group_count(&self) -> usize {
         self.groups.len()
+    }
+
+    /// Number of compressed 32-child words.
+    pub fn word_count(&self) -> usize {
+        self.words.len()
+    }
+
+    /// Explicit SDK-layout bytes for each cached word.
+    pub fn word_bytes(&self) -> Vec<[u8; 32]> {
+        self.words.iter().map(|word| word.to_bytes()).collect()
     }
 
     /// Number of full-precision children not yet grouped.
@@ -159,6 +187,25 @@ mod tests {
         }
         assert_eq!(first.group_count(), 1);
         assert_eq!(first.pending_count(), 2);
+        assert_eq!(first.finish().unwrap(), second.finish().unwrap());
+    }
+
+    #[test]
+    fn mass_tree_caches_32_child_words_deterministically() {
+        let sphere = Arc::new(SphereShape::new(base_math::Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+        let properties = sphere
+            .mass_properties(MassConfig::from_density(1.0))
+            .unwrap();
+        let mut first = MassPropertiesTree::default();
+        let mut second = MassPropertiesTree::default();
+        for _ in 0..40 {
+            first.add(properties).unwrap();
+            second.add(properties).unwrap();
+        }
+        assert_eq!(first.group_count(), 10);
+        assert_eq!(first.word_count(), 1);
+        assert_eq!(first.pending_count(), 0);
+        assert_eq!(first.word_bytes(), second.word_bytes());
         assert_eq!(first.finish().unwrap(), second.finish().unwrap());
     }
 }

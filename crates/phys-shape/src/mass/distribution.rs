@@ -108,6 +108,30 @@ impl MassDistribution {
         })
     }
 
+    /// Apply the distribution with a configured mass (`hknpBodyManager` path).
+    ///
+    /// `configured_mass >= 0` overrides the unit-mass distribution directly.
+    /// A negative value derives the mass from `shape_fallback`, matching the SDK
+    /// rule where `m_mass < 0` means "use shape mass". The resulting inertia is
+    /// scaled by `mass / 1.0` through [`MassProperties::with_mass`].
+    pub fn apply_with_mass(
+        self,
+        configured_mass: f32,
+        shape_fallback: Option<MassProperties>,
+    ) -> Result<MassProperties, MassError> {
+        let unit = self.to_mass_properties(1.0)?;
+        let mass = if configured_mass >= 0.0 {
+            configured_mass
+        } else {
+            let fallback = shape_fallback.ok_or(MassError::InvalidConfig)?;
+            if fallback.mass < 0.0 {
+                return Err(MassError::InvalidGeometry);
+            }
+            fallback.mass
+        };
+        unit.with_mass(mass)
+    }
+
     /// Whether all stored components are finite.
     pub fn is_valid(self) -> bool {
         vector3_is_finite(self.center_of_mass_and_volume)
@@ -187,5 +211,35 @@ mod tests {
         let properties = distribution.to_mass_properties(3.0).unwrap();
         assert_eq!(properties.inertia_tensor.element(0, 0), 0.0);
         assert!((properties.inertia_tensor.element(1, 1) - 3.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn apply_chain_handles_explicit_and_shape_derived_mass() {
+        let shape = BoxShape::with_convex_radius(Vector4::from_xyz(1.0, 1.0, 1.0), 0.0);
+        let shape_properties = shape
+            .mass_properties(MassConfig::from_density(2.0))
+            .unwrap();
+        let distribution = MassDistribution::from_mass_properties(&shape_properties).unwrap();
+
+        let explicit = distribution.apply_with_mass(4.0, None).unwrap();
+        assert!((explicit.mass - 4.0).abs() < 1e-6);
+        let scale = explicit.mass / shape_properties.mass;
+        assert!(
+            (explicit.inertia_tensor.element(0, 0)
+                - shape_properties.inertia_tensor.element(0, 0) * scale)
+                .abs()
+                < 1e-3
+        );
+
+        let derived = distribution
+            .apply_with_mass(-1.0, Some(shape_properties))
+            .unwrap();
+        assert!((derived.mass - shape_properties.mass).abs() < 1e-6);
+        assert_eq!(
+            derived,
+            distribution
+                .apply_with_mass(shape_properties.mass, None)
+                .unwrap()
+        );
     }
 }
