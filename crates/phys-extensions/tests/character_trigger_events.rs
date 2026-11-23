@@ -4,7 +4,8 @@ use std::sync::{Arc, Mutex};
 
 use base_math::Vector4 as V4;
 use phys_body::BodyCinfo;
-use phys_extensions::{TriggerTracker, WorldTriggerStatus};
+use phys_collide::query::leaf_key;
+use phys_extensions::{TriggerTracker, WorldTriggerEvent, WorldTriggerStatus};
 use phys_shape::{BoxShape, Shape};
 use phys_types::MotionType;
 use phys_world::{QueryFilter, World, WorldCinfo};
@@ -75,4 +76,29 @@ fn world_and_query_trigger_streams_do_not_dispatch_each_other() {
     assert_eq!(*world_events.lock().unwrap(), 1);
     assert_eq!(query_events.len(), 2);
     assert!(world.is_body_trigger(trigger));
+}
+
+#[test]
+fn explicit_transitions_carry_leaf_shape_keys_and_canonicalise_bodies() {
+    let mut world = World::new(WorldCinfo::new());
+    let low = box_body(&mut world, V4::from_xyz(0.0, 0.0, 0.0));
+    let high = box_body(&mut world, V4::from_xyz(8.0, 0.0, 0.0));
+    assert!(low < high);
+    let low_key = leaf_key::new(leaf_key::CONVEX_HULL_FACE, 2);
+    let high_key = leaf_key::new(leaf_key::CONVEX_HULL_FACE, 5);
+
+    let events: Arc<Mutex<Vec<WorldTriggerEvent>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&events);
+    world.subscribe_trigger_events(move |event| sink.lock().unwrap().push(*event));
+
+    // Pass bodies in reverse order: keys must be swapped with them.
+    assert!(world.record_trigger_transition_with_keys(high, low, high_key, low_key, true));
+    world.step(0.0);
+    let recorded = events.lock().unwrap().clone();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(recorded[0].body_a, low);
+    assert_eq!(recorded[0].body_b, high);
+    assert_eq!(recorded[0].shape_key_a, low_key);
+    assert_eq!(recorded[0].shape_key_b, high_key);
+    assert_eq!(recorded[0].status, WorldTriggerStatus::Entered);
 }

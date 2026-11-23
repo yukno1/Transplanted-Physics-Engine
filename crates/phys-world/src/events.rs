@@ -36,9 +36,9 @@ pub struct TriggerEvent {
     pub body_a: BodyId,
     /// Second body of the event pair.
     pub body_b: BodyId,
-    /// Leaf shape key on body A (`INVALID` in this subset).
+    /// Leaf shape key on body A (`INVALID` for non-hull pairs).
     pub shape_key_a: ShapeKey,
-    /// Leaf shape key on body B (`INVALID` in this subset).
+    /// Leaf shape key on body B (`INVALID` for non-hull pairs).
     pub shape_key_b: ShapeKey,
     /// Merged status for this step.
     pub status: TriggerStatus,

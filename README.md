@@ -760,6 +760,27 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - `CharacterRigidBody` 的 listener 改存 `Arc<Mutex<Box<dyn Listener>>>` 共享槽：既有 `Box<dyn Listener>` 设置 API 不变，管理器可复用同一监听器接入世界钩子；query 级 post-collide 与世界级 post-collide 是两个独立来源，均按设计派发。
 - 验证：raycast 平地/台阶/bump/陡坡/确定性，接触编辑 Drop/摩擦改写/桥接生命周期/1 与 4 线程 `hvk-trace v1` 逐位一致，世界 trigger Entered/Exited/Updated 与 query trigger 独立；`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿。
 
+### 后续子集：CharacterControl 余项（✅ 已完成，2026-11-22）
+
+交付（新增集成测试 `character_monitor.rs` 3 个、`character_solver_data.rs` 2 个；扩展 `character_ray_casting.rs` 与 `character_trigger_events.rs` 各 1 个）：
+
+| 模块 | 内容 |
+|---|---|
+| `phys-extensions/character/monitor.rs` | `CharacterMonitorPhase` / `CharacterMonitorEvent` / `CharacterMonitorSpan`：本地诊断快照（步数、阶段、body、位置/速度、接触数）；`CharacterProxyListener` / `CharacterRigidBodyListener` 新增默认 no-op `monitor` 回调，现有 listener 零改动兼容 |
+| `phys-world/solver_data.rs` | `SolverDataView` / `SolverDataHook` / `SolverDataHookRegistry`：预求解 Jacobian-like 行视图（normal/tangent/penetration/friction + 三个累积冲量）与确定性有序注册表；`EditableContact` 扩展切向基与冲量字段，`Solver::solve*` 签名不变 |
+| `phys-extensions/character/contact_editing.rs`、`manager.rs` | `CharacterContactBridge` 同时实现 `ContactModifier` 与 `SolverDataHook`，按 body id 把行视图路由给共享 listener 槽的 `modify_solver_data`；manager `attach`/`detach` 同步注册/注销 hook，`contact_connection_count()` 覆盖 modifier+hook+post-collide |
+| `phys-collide/query.rs` | 凸体 raycast 精确法线：球体解析求交与径向法线、Box slab 面法线（convex radius 扩张名义半长）、零半径 `ConvexHullShape` 用已有 `faces()` + `ray_triangle()` 做面级测试并写 `leaf_key::CONVEX_HULL_FACE`；无面/带圆角/其他凸体保留 GJK witness 回退 |
+| `phys-world/world.rs`、`events.rs` | `active_trigger_pairs` 升级为 `(body_a, body_b, key_a, key_b)`；AABB 粗筛后对凸体跑 `closest_points`，用 witness 最近面生成 hull 叶 key，其他形状回退 `ShapeKey::INVALID`；新增 `record_trigger_transition_with_keys`（body 与 key 同步规范化），复用现有 `TriggerEventMerger` 的 Entered/Exited/Updated 合并 |
+| 派发点 | proxy `integrate` 前后 + manager post-solve，rigid-body `step` 前后 + post-collide + post-solve；同一 proxy 的 standalone/manager 两条路径互斥，不重复触发 |
+
+决策与偏差：
+
+- VDB monitor 依赖 `hkMonitorStream`（编译期 `HK_CONFIG_MONITORS`）与 `hkDebugDisplayHandler`（Visualize/DLL）；本阶段只做本地回调快照，不接入流、socket、绘制或真实 VDB 等价。
+- `hknpSolverData` 的 block-stream/Jacobian 内存布局未移植；`SolverDataView` 覆盖的是“读行、改摩擦/法线/冲量”的可验证子集，hook 在 ContactModifier 之后、建岛之前按注册序执行，最终法线重算切向基并做盒式摩擦锥钳制。
+- 凸体精确法线是 Rust 侧几何实现：hull face key 为可诊断迁移编码，不宣称与 SDK 二进制 `hknpShapeKey` 逐位一致；球体/盒体解析路径对圆角只取最近面法线，物理表面仍由 support 函数决定。
+- 世界 trigger 自动检测仍是 AABB 粗筛 + 凸体窄相 witness；mesh/height-field/compound 叶 key 继续由角色 query tracker 提供，两条流互斥不双发。`record_trigger_transition_with_keys` 允许调用方显式注入叶级事件。
+- 验证：monitor 阶段顺序/默认 no-op、solver-data 改摩擦与 1/4 线程逐位一致、hull 面法线与 key、叶级 trigger 显式转换与 canonical 化；`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿。
+
 ---
 
 ## 5. 关键技术难点与对策
@@ -787,6 +808,10 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | vehicle 扩展层 | 显式 `VehicleInstance::step` 代替 Action 管线：raycast 轮碰撞（`hit_fraction` 为世界单位距离，悬挂长度 = 距离 − 半径；closing speed 压缩为负）→ engine/transmission 扭矩曲线直译 → 悬挂弹簧-阻尼（单位质量参数、力非负）→ bullet 风格摩擦冲量（前向驱动/刹车不过冲、侧向锁滑移、摩擦圆钳制）→ 经 `set_body_*` 写回（自动唤醒）；接触式悬挂要求场景满足 `μ·g·h/L < 静轴载`，否则空载轴离地弹跳 |
 | CharacterControl Climbing/trigger | 原版无 ladder 查询工具，`m_atLadder` 与梯面 normal 由应用提供；Climbing 在梯面坐标系用 `calculate_movement`，desired=(inputUD·10, inputLR·10, −0.1)、gain=1、maxDelta=100，跳跃沿梯面法线加 `|gravity|` 速度；trigger 用 AABB 重叠差分按 `BodyId` 产出 Entered/Exited（按 id 排序），不模拟 material trigger 与 shape key |
 | CharacterControl listener/phantom | 本地 listener 按注册逆序派发，add 时立即 shape_changed；contact add/remove 用 public 调用前后 manifold 差分批量派发（removed→added），`character_callback` 在 `integrate` 末尾触发一次；phantom 由 `BodyCinfo` 创建为 keyframed + `DONT_COLLIDE`，经 `QueryFilter::ignore_body` 排除自身并在每次 integrate 后同步 transform |
+| 本地 monitor | `hkMonitorStream`/VDB 流与绘制不可用时，listener 默认 no-op `monitor` 接收可复制快照；proxy 在 integrate 前后（manager 托管额外 post-solve）、rigid-body 在 step/post-collide/post-solve 派发，逆注册序且不改世界状态 |
+| SolverData 行视图 | `SolverDataView` 在 ContactModifier 之后暴露 normal/tangent/penetration/friction 与 warm-start 冲量，hook 按注册序改行；最终 normal 重算确定性切向基、盒式摩擦锥钳制后再建岛，`Solver::solve*` 不可变切片签名不变 |
+| 凸体 raycast 法线/key | Sphere 解析径向法线、Box slab 面法线（convex radius 扩张半长）、零半径 ConvexHull 面三角交点法线 + `CONVEX_HULL_FACE` key；无面/带圆角/其他凸体保持 GJK witness 与 INVALID key，不宣称与 SDK 二进制 key 等价 |
+| 叶级 trigger | 自动检测仍用 AABB 粗筛保留静态/非凸覆盖；凸体对用 `closest_points` witness 的最近 hull 面作为 key，其他形状 INVALID；`active_trigger_pairs` 与显式 `record_trigger_transition_with_keys` 均按 `(body,body,key,key)` 规范化并复用原合并器 |
 | 世界 trigger 事件 | AABB 宽相重叠按 `(body,body)` 规范化，跨步差集产生 enter/exit；`TriggerEventMerger` 同键 +1/-1 累加，正/负/零分别映射 Entered/Exited/Updated（零默认丢弃）；`BTreeMap` + 订阅序保证跨线程确定性，叶级 key 由 query trigger 独立维护 |
 | 接触编辑 | `ContactModifier` 按注册序在 `build_contact_rows` 改法线/位置/穿透/摩擦或 `Drop`；三平行数组（rows/keys/impulses）同步删行，warm-start 按实际行重建；`step`/`step_with_threads` 共用建行 helper，`Solver::solve*` 签名不变 |
 | RayCasting 角色工具 | 无 `hknpCharacterRaycastRigidBody` 类，只有 8 方向 + 中心向下的 `getCharacterParams` 工具；`raycast_filtered` 排除自身，`cast_shape` 只在 `minDistance > maxStepHeight` 时兜底；`min/next-to-min/max` 与 ups/downs 计数照抄 SDK（含 0.01 容差与 `HK_FLOAT_MIN` 初始化），输出 displacement/bump/easing/support/climb |
@@ -892,13 +917,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（质量属性后续边界，2026-11-22）：新增可移植 15 位 `CompressedMassProperties`/`PackedVector3`/`PackedUnitVector4`、固定轮数 Jacobi 主轴对角化、`MassDistribution` 单位质量分布与 `MassPropertiesTree` 四子形状压缩聚合；`ShapeMassCache`、`Body` 质量来源/版本与 `World` 线程安全 `MassChangeEvent` 信号接入形状替换、质量配置、逆惯量设置与共享运动重建；新增集成测试 `mass_compression.rs` 3 个、`mass_distribution.rs` 2 个、`mass_property_signals.rs` 4 个，`mass_properties.rs` 增补缓存测试；`fmt`/`clippy -D warnings`/`test`/`release build`/严格 `doc`/`bench --quick` 全绿
 - [x] 后续子集（CharacterControl 剩余项，2026-11-22）：`World` post-solve signal 与确定性派发、查询命中携带本地 `ShapeKey`、object/character 交互回调与可修改结果、`CharacterProxyManager` 多线程候选计算 + 串行回调/冲量提交、shape-key trigger（`Entered`/`Updated`/`Exited`）、`CharacterRigidBody` 与三入口 listener；新增集成测试 10 个，1/4 线程 `hvk-trace v1` 逐位一致
 - [x] 后续子集（CharacterControl 补齐，2026-11-22）：`phys-world` 世界级 trigger 事件（enter/exit 合并、可选 UPDATED）与 `ContactModifier` 接触编辑（Drop 同步三平行数组）；`phys-extensions` `get_character_params` RayCasting 工具与 `CharacterContactBridge`（manager attach/detach 生命周期）；新增集成测试 `character_ray_casting.rs` 5 个、`character_contact_editing.rs` 3 个、`character_trigger_events.rs` 2 个，`phys-world` 单元测试增至 88 个；1/4 线程 `hvk-trace v1` 逐位一致
-- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；VDB monitor、原始 `hknpSolverData`/Jacobian 直写与 `RayCasting` 独立刚体路线（SDK 无此类）未移植；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐
+- [x] 后续子集（CharacterControl 余项，2026-11-22）：本地 `CharacterMonitorEvent` 阶段回调、`SolverDataView`/`SolverDataHook` 预求解行视图、Sphere/Box/ConvexHull 精确 raycast 法线与叶 key、世界 trigger `(body,body,key,key)` 合并与显式 keyed API；新增集成测试 `character_monitor.rs` 3 个、`character_solver_data.rs` 2 个，扩展 raycast/trigger 测试各 1 个
+- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）、Capsule/Cylinder/一般 ConvexHull 圆角表面的解析 raycast 法线，以及 mesh/height-field/compound 的 world-level trigger 叶 key 未移植；SDK 浮点位压缩字节、`hknpMassPropertiesTree` 的 32 子字缓存、形状质量属性附加信号与完整 `hknpMassDistribution` 应用链仍未逐位对齐
 
 仓库现状（2026-11-22）：
 
 - 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；本次 CharacterControl 补齐在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；本次 CharacterControl 补齐与余项均在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

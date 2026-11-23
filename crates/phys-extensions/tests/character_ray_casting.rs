@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use base_math::Vector4 as V4;
 use phys_body::BodyCinfo;
+use phys_collide::query::leaf_key;
 use phys_extensions::{RayCastingCharacterCinfo, get_character_params};
-use phys_shape::{BoxShape, MeshShape, Shape, SphereShape};
+use phys_shape::{BoxShape, ConvexHullShape, MeshShape, Shape, SphereShape};
 use phys_types::MotionType;
 use phys_world::{World, WorldCinfo};
 
@@ -95,6 +96,32 @@ fn steep_slope_is_reported_as_unclimbable() {
     let param = get_character_params(&world, body, &info, V4::UNIT_X);
     assert!(!param.can_climb, "steep cast result: {param:?}");
     let _ = DT;
+}
+
+#[test]
+fn world_raycast_reports_hull_face_normal_and_leaf_key() {
+    let mut world = World::new(WorldCinfo::new());
+    let vertices = vec![
+        V4::from_xyz(-1.0, 1.0, -1.0),
+        V4::from_xyz(1.0, 1.0, -1.0),
+        V4::from_xyz(1.0, 1.0, 1.0),
+        V4::from_xyz(-1.0, 1.0, 1.0),
+        V4::from_xyz(-1.0, -1.0, -1.0),
+        V4::from_xyz(1.0, -1.0, -1.0),
+        V4::from_xyz(1.0, -1.0, 1.0),
+        V4::from_xyz(-1.0, -1.0, 1.0),
+    ];
+    let hull = Arc::new(ConvexHullShape::new(
+        vertices,
+        vec![[0, 1, 2], [0, 2, 3]],
+        0.0,
+    )) as Arc<dyn Shape>;
+    world.create_body(&BodyCinfo::new(hull));
+    let hit = world
+        .raycast(V4::from_xyz(0.0, 5.0, 0.0), -V4::UNIT_Y, 10.0)
+        .expect("hull must be hit");
+    assert!(hit.normal.dot3(V4::UNIT_Y) > 0.999);
+    assert_eq!(hit.shape_key, leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0));
 }
 
 #[test]

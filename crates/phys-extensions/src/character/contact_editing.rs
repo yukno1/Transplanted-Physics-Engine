@@ -10,9 +10,14 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use base_math::Vector4;
 use phys_types::BodyId;
-use phys_world::{ContactEditAction, ContactModifier, EditableContact, PostCollideEvent};
+use phys_world::{
+    ContactEditAction, ContactModifier, EditableContact, PostCollideEvent, SolverDataHook,
+    SolverDataView,
+};
 
+use super::monitor::{CharacterMonitorEvent, CharacterMonitorPhase};
 use super::rigid_body::RigidBodyListenerCell;
 use super::rigid_body_listener::{CharacterRigidBodyListener, ContactPointInfo};
 
@@ -125,6 +130,14 @@ impl CharacterContactBridge {
                 .collect();
             let mut listener = listener.lock().unwrap_or_else(|error| error.into_inner());
             listener.on_post_collide(&points);
+            listener.monitor(&CharacterMonitorEvent {
+                step_count: event.step_count,
+                phase: CharacterMonitorPhase::PostCollide,
+                body: character,
+                position: points.first().map_or(Vector4::ZERO, |point| point.position),
+                linear_velocity: Vector4::ZERO,
+                contact_count: points.len(),
+            });
         }
     }
 }
@@ -160,5 +173,19 @@ impl ContactModifier for CharacterContactBridge {
             return ContactEditAction::Keep;
         }
         ContactEditAction::Keep
+    }
+}
+
+impl SolverDataHook for CharacterContactBridge {
+    fn modify(&self, data: &mut SolverDataView<'_>) {
+        let mut bodies = [data.body_a, data.body_b];
+        bodies.sort_unstable();
+        for character in bodies {
+            let Some(listener) = self.listener_for(character) else {
+                continue;
+            };
+            let mut listener = listener.lock().unwrap_or_else(|error| error.into_inner());
+            listener.modify_solver_data(data);
+        }
     }
 }

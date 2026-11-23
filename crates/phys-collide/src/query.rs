@@ -31,7 +31,9 @@
 use core::any::Any;
 
 use base_math::{Aabb, Transform, Vector4};
-use phys_shape::{CompoundShape, HeightFieldShape, MeshShape, Shape};
+use phys_shape::{
+    BoxShape, CompoundShape, ConvexHullShape, HeightFieldShape, MeshShape, Shape, SphereShape,
+};
 use phys_types::{ShapeKey, ShapeType};
 
 use crate::gjk::{GjkResult, closest_points};
@@ -51,6 +53,8 @@ pub mod leaf_key {
     pub const HEIGHT_FIELD: u32 = 2;
     /// Compound child (combined with its nested leaf key).
     pub const COMPOUND: u32 = 3;
+    /// A face of a zero-radius convex hull (index is the face index).
+    pub const CONVEX_HULL_FACE: u32 = 4;
 
     /// Encode a leaf kind and index into a stable [`ShapeKey`].
     pub fn new(kind: u32, index: u32) -> ShapeKey {
@@ -86,7 +90,8 @@ pub struct RayHit {
     pub position: Vector4,
     /// Outward surface normal at the hit.
     pub normal: Vector4,
-    /// Leaf shape key (invalid for a direct convex hit).
+    /// Leaf shape key (face index for a zero-radius convex hull, otherwise
+    /// invalid for direct convex hits).
     pub shape_key: ShapeKey,
 }
 
@@ -137,8 +142,170 @@ pub fn raycast(
             direction,
             max_length,
         ),
+        ShapeType::Convex => {
+            if let Some(sphere) = shape.as_any().downcast_ref::<SphereShape>() {
+                if let Some(hit) = raycast_sphere(sphere, transform, origin, direction, max_length)
+                {
+                    return Some(hit);
+                }
+            }
+            if let Some(box_shape) = shape.as_any().downcast_ref::<BoxShape>() {
+                if let Some(hit) = raycast_box(box_shape, transform, origin, direction, max_length)
+                {
+                    return Some(hit);
+                }
+            }
+            if let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() {
+                if let Some(hit) =
+                    raycast_convex_hull_faces(hull, transform, origin, direction, max_length)
+                {
+                    return Some(hit);
+                }
+            }
+            raycast_convex(shape, transform, origin, direction, max_length)
+        }
         _ => raycast_convex(shape, transform, origin, direction, max_length),
     }
+}
+
+/// Analytic sphere ray cast (radial surface normal).
+fn raycast_sphere(
+    sphere: &SphereShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    let local_origin = transform.inverse_transform_point(origin);
+    let local_direction = transform.rotation.rotate_inverse(direction);
+    let offset = local_origin - sphere.center;
+    let b = offset.dot3(local_direction);
+    let c = offset.dot3(offset) - sphere.radius * sphere.radius;
+    let discriminant = b * b - c;
+    if discriminant < 0.0 {
+        return None;
+    }
+    let root = discriminant.sqrt();
+    let near = -b - root;
+    // An origin inside the sphere is reported by the generic GJK path.
+    if near < 0.0 || near > max_length {
+        return None;
+    }
+    let local_point = local_origin + local_direction * near;
+    let local_normal = (local_point - sphere.center).normalized3();
+    Some(RayHit {
+        hit_fraction: near,
+        position: transform.transform_point(local_point),
+        normal: transform.rotation.rotate(local_normal),
+        shape_key: ShapeKey::INVALID,
+    })
+}
+
+/// Analytic box ray cast (slab test with face normals).
+///
+/// The convex radius inflates the nominal half extents; rounded edges are
+/// approximated by the closest face normal.
+fn raycast_box(
+    box_shape: &BoxShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    let local_origin = transform.inverse_transform_point(origin);
+    let local_direction = transform.rotation.rotate_inverse(direction);
+    let radius = box_shape.convex_radius.max(0.0);
+    let half = box_shape.half_extents + Vector4::splat(radius);
+    let mut entry = f32::NEG_INFINITY;
+    let mut exit = f32::INFINITY;
+    let mut axis = 0;
+    let mut sign = 1.0f32;
+    for index in 0..3 {
+        let origin_component = local_origin.component(index);
+        let direction_component = local_direction.component(index);
+        let extent = half.component(index);
+        if direction_component.abs() <= 1e-12 {
+            if origin_component.abs() > extent {
+                return None;
+            }
+            continue;
+        }
+        let (mut first, mut second) = (
+            (-extent - origin_component) / direction_component,
+            (extent - origin_component) / direction_component,
+        );
+        let face_sign = if first > second { -1.0 } else { 1.0 };
+        if first > second {
+            core::mem::swap(&mut first, &mut second);
+        }
+        if first > entry {
+            entry = first;
+            axis = index;
+            sign = face_sign;
+        }
+        exit = exit.min(second);
+    }
+    if entry < 0.0 || entry > exit || entry > max_length {
+        return None;
+    }
+    let local_point = local_origin + local_direction * entry;
+    let local_normal = match axis {
+        0 => Vector4::UNIT_X * sign,
+        1 => Vector4::UNIT_Y * sign,
+        _ => Vector4::UNIT_Z * sign,
+    };
+    Some(RayHit {
+        hit_fraction: entry,
+        position: transform.transform_point(local_point),
+        normal: transform.rotation.rotate(local_normal),
+        shape_key: ShapeKey::INVALID,
+    })
+}
+
+/// Exact face-level ray cast for a zero-radius convex hull.
+///
+/// Falls back to `None` when the hull has no face information or carries a
+/// convex radius (the triangle faces describe the nominal polyhedron, not the
+/// rounded support surface). Callers then use the generic GJK path.
+fn raycast_convex_hull_faces(
+    hull: &ConvexHullShape,
+    transform: &Transform,
+    origin: Vector4,
+    direction: Vector4,
+    max_length: f32,
+) -> Option<RayHit> {
+    if hull.faces().is_empty() || hull.convex_radius().abs() > 1e-6 {
+        return None;
+    }
+    let local_origin = transform.inverse_transform_point(origin);
+    let local_direction = transform.rotation.rotate_inverse(direction);
+    let vertices = hull.vertices();
+    let mut best: Option<(f32, usize, Vector4)> = None;
+    for (index, face) in hull.faces().iter().enumerate() {
+        let (Some(&a), Some(&b), Some(&c)) = (
+            vertices.get(face[0] as usize),
+            vertices.get(face[1] as usize),
+            vertices.get(face[2] as usize),
+        ) else {
+            continue;
+        };
+        let Some((fraction, normal)) = ray_triangle(local_origin, local_direction, a, b, c) else {
+            continue;
+        };
+        if fraction > max_length {
+            continue;
+        }
+        let better = best.is_none_or(|(current, _, _)| fraction < current);
+        if better {
+            best = Some((fraction, index, normal));
+        }
+    }
+    best.map(|(fraction, index, local_normal)| RayHit {
+        hit_fraction: fraction,
+        position: transform.transform_point(local_origin + local_direction * fraction),
+        normal: transform.rotation.rotate(local_normal),
+        shape_key: leaf_key::new(leaf_key::CONVEX_HULL_FACE, index as u32),
+    })
 }
 
 /// Cast a ray against a convex shape.
@@ -656,6 +823,33 @@ mod tests {
             "fraction {}",
             hit.hit_fraction
         );
+    }
+
+    #[test]
+    fn hull_face_raycast_returns_exact_normal_and_face_key() {
+        let vertices = vec![
+            Vector4::from_xyz(-1.0, 1.0, -1.0),
+            Vector4::from_xyz(1.0, 1.0, -1.0),
+            Vector4::from_xyz(1.0, 1.0, 1.0),
+            Vector4::from_xyz(-1.0, 1.0, 1.0),
+            Vector4::from_xyz(-1.0, -1.0, -1.0),
+            Vector4::from_xyz(1.0, -1.0, -1.0),
+            Vector4::from_xyz(1.0, -1.0, 1.0),
+            Vector4::from_xyz(-1.0, -1.0, 1.0),
+        ];
+        let faces = vec![[0, 1, 2], [0, 2, 3]];
+        let shape = ConvexHullShape::new(vertices, faces, 0.0);
+        let hit = raycast(
+            &shape,
+            &Transform::IDENTITY,
+            Vector4::from_xyz(0.0, 5.0, 0.0),
+            -Vector4::UNIT_Y,
+            10.0,
+        )
+        .expect("ray must hit the hull face");
+        assert!((hit.hit_fraction - 4.0).abs() < 1e-5);
+        assert!(hit.normal.dot3(Vector4::UNIT_Y) > 0.999);
+        assert_eq!(hit.shape_key, leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0));
     }
 
     #[test]

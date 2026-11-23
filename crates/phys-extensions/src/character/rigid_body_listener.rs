@@ -2,11 +2,14 @@
 //! (`hknpCharacterRigidBodyListener` subset).
 //!
 //! The SDK passes `hknpSolverData` to `onPostCollide`; this port exposes a
-//! local, copyable contact summary instead. There is no Jacobian access and
-//! no VDB monitor callback.
+//! local, copyable contact summary and a pre-solve row view instead. VDB
+//! streams are replaced by the local [`super::monitor`] callback.
 
 use base_math::Vector4;
 use phys_types::BodyId;
+use phys_world::SolverDataView;
+
+use super::monitor::CharacterMonitorEvent;
 
 /// One contact point visible to the rigid-body character listener.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -48,4 +51,11 @@ pub trait CharacterRigidBodyListener: Send {
 
     /// Once after the world step, intended for control logic.
     fn on_post_solve(&mut self, _state: &CharacterRigidBodyState) {}
+
+    /// Local monitor-style diagnostic snapshot (default no-op).
+    fn monitor(&mut self, _event: &CharacterMonitorEvent) {}
+
+    /// Edit the pre-solve Jacobian-like row view for a contact involving this
+    /// character. Runs after `filter_contact_point` in registration order.
+    fn modify_solver_data(&mut self, _view: &mut SolverDataView<'_>) {}
 }

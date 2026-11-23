@@ -70,9 +70,11 @@
 //!
 //! Bodies flagged with [`World::set_body_trigger`] emit deterministic
 //! [`TriggerEvent`]s from broad-phase AABB overlaps; same-step enter/exit pairs
-//! collapse into `Updated` only when enabled in [`WorldCinfo`]. Trigger events
-//! carry `ShapeKey::INVALID` (body-pair granularity), while leaf shape keys are
-//! provided by query-based character trigger tracking.
+//! collapse into `Updated` only when enabled in [`WorldCinfo`]. Convex-hull
+//! pairs use a narrow-phase witness to supply face leaf keys; other shapes
+//! carry `ShapeKey::INVALID` (body-pair granularity). Explicit keyed
+//! transitions are available through
+//! [`World::record_trigger_transition_with_keys`].
 //!
 //! Material libraries, restitution, broad-phase layers, command queues and
 //! general event modifiers remain future work.
@@ -103,6 +105,7 @@ pub mod events;
 mod island;
 pub mod query;
 pub mod signals;
+pub mod solver_data;
 pub mod world;
 
 pub use cinfo::WorldCinfo;
@@ -127,6 +130,7 @@ pub use signals::{
     PostCollideConnectionId, PostCollideSignal, PostSolveConnectionId, PostSolveEvent,
     PostSolveSignal, TriggerConnectionId, TriggerSignal,
 };
+pub use solver_data::{SolverDataHook, SolverDataHookId, SolverDataHookRegistry, SolverDataView};
 pub use world::{MotionMassUpdateMode, World};
 
 /// Deterministic per-body state captured by [`World::snapshot`].

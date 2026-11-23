@@ -56,6 +56,7 @@ use super::listener::{
     CharacterInteractionInfo, CharacterObjectInteractionEvent, CharacterObjectInteractionResult,
     CharacterProxyListener, CharacterProxyState,
 };
+use super::monitor::{CharacterMonitorEvent, CharacterMonitorPhase};
 use super::simplex_solver::{SimplexSolverInput, SurfaceConstraint, solve};
 use super::surface::{SupportedState, SurfaceInfo};
 use super::triggers::TriggerEvent;
@@ -317,6 +318,7 @@ pub struct CharacterProxy {
     phantom: Option<BodyId>,
     id: u64,
     post_solve_callback: bool,
+    monitor_step_count: u64,
     deferred_interactions: Vec<DeferredInteraction>,
 }
 
@@ -359,6 +361,7 @@ impl CharacterProxy {
             phantom: None,
             id: 0,
             post_solve_callback: false,
+            monitor_step_count: 0,
             deferred_interactions: Vec::new(),
         }
     }
@@ -547,6 +550,21 @@ impl CharacterProxy {
         }
     }
 
+    fn fire_monitor(&mut self, phase: CharacterMonitorPhase) {
+        let state = self.state();
+        let event = CharacterMonitorEvent {
+            step_count: self.monitor_step_count,
+            phase,
+            body: BodyId::INVALID,
+            position: state.position,
+            linear_velocity: state.velocity,
+            contact_count: state.contact_count,
+        };
+        for (_, listener) in self.listeners.iter_mut().rev() {
+            listener.monitor(&event);
+        }
+    }
+
     fn fire_character_callback(&mut self) {
         if self.post_solve_callback {
             return;
@@ -566,6 +584,7 @@ impl CharacterProxy {
         for (_, listener) in self.listeners.iter_mut().rev() {
             listener.character_callback(&state);
         }
+        self.fire_monitor(CharacterMonitorPhase::PostSolve);
     }
 
     /// Dispatch a character↔character interaction in reverse listener order.
@@ -1064,6 +1083,8 @@ impl CharacterProxy {
     /// `delta_time` must exceed `HK_REAL_EPSILON`.
     pub fn integrate(&mut self, world: &mut World, delta_time: f32, surface_info: &SurfaceInfo) {
         self.deferred_interactions.clear();
+        self.monitor_step_count += 1;
+        self.fire_monitor(CharacterMonitorPhase::IntegrateBegin);
         let before = self.manifold.clone();
         let mut remaining_time = delta_time;
         debug_assert!(
@@ -1216,6 +1237,7 @@ impl CharacterProxy {
             world.set_body_transform(phantom, self.transform);
         }
         self.dispatch_manifold_events(&before);
+        self.fire_monitor(CharacterMonitorPhase::IntegrateEnd);
         self.fire_character_callback();
     }
 

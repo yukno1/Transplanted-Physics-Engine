@@ -15,6 +15,7 @@
 //!   object/character interaction callbacks.
 //! * [`manager`] — world post-solve bridge, batched stepping and serial
 //!   deferred interaction application.
+//! * [`monitor`] — local monitor-style diagnostic snapshots (no VDB stream).
 //! * [`contact_editing`] — world contact-modifier / post-collide bridge for the
 //!   rigid-body route (deterministic contact filtering without Jacobian access).
 //! * [`rigid_body`] / [`rigid_body_listener`] — rigid-body character route and
@@ -23,8 +24,9 @@
 //!   with the four wired default states (OnGround / Jumping / InAir / Climbing).
 //! * [`triggers`] — per-frame trigger enter/exit events by AABB overlap diff.
 //!
-//! The VDB monitor and raw Jacobian editing remain unported. Contact filtering
-//! for the rigid-body route is available through [`contact_editing`], and
+//! VDB streams and raw block-stream Jacobian editing remain unported. Local
+//! monitor snapshots are available through [`monitor`], contact filtering and
+//! pre-solve row views through [`contact_editing`], and
 //! [`ray_casting`] supplies height/displacement parameters without requiring a
 //! dedicated ray-cast rigid-body class (the SDK has only the utility).
 //! A typical frame:
@@ -41,6 +43,7 @@
 pub mod contact_editing;
 pub mod listener;
 pub mod manager;
+pub mod monitor;
 pub mod proxy;
 pub mod ray_casting;
 pub mod rigid_body;
@@ -56,6 +59,7 @@ pub use listener::{
     CharacterProxyListener, CharacterProxyState,
 };
 pub use manager::CharacterProxyManager;
+pub use monitor::{CharacterMonitorEvent, CharacterMonitorPhase, CharacterMonitorSpan};
 pub use proxy::{CharacterProxy, CharacterProxyCinfo, Contact, DeferredInteraction};
 pub use ray_casting::{
     CharacterParam, RayCastingCharacterCinfo, get_character_params, shape_cast_from_body,

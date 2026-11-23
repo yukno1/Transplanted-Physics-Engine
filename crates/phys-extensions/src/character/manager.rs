@@ -12,7 +12,8 @@ use std::sync::{Arc, Mutex};
 use base_math::Aabb;
 use base_thread::parallel::parallel_for_chunks;
 use phys_world::{
-    ContactModifier, ContactModifierId, PostCollideConnectionId, PostSolveConnectionId, World,
+    ContactModifier, ContactModifierId, PostCollideConnectionId, PostSolveConnectionId,
+    SolverDataHook, SolverDataHookId, World,
 };
 
 use super::contact_editing::CharacterContactBridge;
@@ -45,6 +46,7 @@ pub struct CharacterProxyManager {
     connections: Arc<Mutex<Vec<PostSolveConnectionId>>>,
     contact_bridge: CharacterContactBridge,
     contact_modifiers: Arc<Mutex<Vec<ContactModifierId>>>,
+    solver_data_hooks: Arc<Mutex<Vec<SolverDataHookId>>>,
     post_collide_connections: Arc<Mutex<Vec<PostCollideConnectionId>>>,
 }
 
@@ -188,6 +190,13 @@ impl CharacterProxyManager {
             .expect("character manager lock poisoned")
             .push(modifier_id);
 
+        let hook = Arc::new(self.contact_bridge.clone()) as Arc<dyn SolverDataHook>;
+        let hook_id = world.register_solver_data_hook(hook);
+        self.solver_data_hooks
+            .lock()
+            .expect("character manager lock poisoned")
+            .push(hook_id);
+
         let bridge = self.contact_bridge.clone();
         let post_collide =
             world.subscribe_post_collide(move |event| bridge.dispatch_post_collide(event));
@@ -281,6 +290,15 @@ impl CharacterProxyManager {
         }
         drop(modifiers);
 
+        let mut hooks = self
+            .solver_data_hooks
+            .lock()
+            .expect("character manager lock poisoned");
+        for hook in hooks.drain(..) {
+            world.unregister_solver_data_hook(hook);
+        }
+        drop(hooks);
+
         let mut post_collide = self
             .post_collide_connections
             .lock()
@@ -298,10 +316,15 @@ impl CharacterProxyManager {
             .len()
     }
 
-    /// Number of live contact-edit / post-collide connections.
+    /// Number of live contact-edit / solver-data / post-collide connections.
     pub fn contact_connection_count(&self) -> usize {
         let modifiers = self
             .contact_modifiers
+            .lock()
+            .expect("character manager lock poisoned")
+            .len();
+        let hooks = self
+            .solver_data_hooks
             .lock()
             .expect("character manager lock poisoned")
             .len();
@@ -310,7 +333,7 @@ impl CharacterProxyManager {
             .lock()
             .expect("character manager lock poisoned")
             .len();
-        modifiers + post_collide
+        modifiers + hooks + post_collide
     }
 
     /// Step all registered characters and apply their deferred pushes.

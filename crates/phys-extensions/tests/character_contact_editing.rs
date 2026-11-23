@@ -81,7 +81,7 @@ fn managed_listener_drops_solver_contacts_and_sees_post_collide() {
     });
     manager.attach(&world);
     assert_eq!(world.contact_modifier_count(), 1);
-    assert_eq!(manager.contact_connection_count(), 2);
+    assert_eq!(manager.contact_connection_count(), 3);
 
     for _ in 0..20 {
         manager.step_rigid_bodies(&mut world, DT, &[]);

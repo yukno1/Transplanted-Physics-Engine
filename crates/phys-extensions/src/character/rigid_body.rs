@@ -7,7 +7,8 @@
 //! post-solve. When managed by [`super::manager::CharacterProxyManager`], the
 //! listener is also wired to the world's deterministic contact modifier and
 //! post-collide signal, so `filter_contact_point` can drop real solver contacts.
-//! Raw Jacobian editing and VDB monitor callbacks remain out of scope.
+//! Pre-solve row editing uses the shared listener slot; VDB streams are replaced
+//! by the local [`super::monitor`] callback.
 
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +19,7 @@ use phys_shape::Shape;
 use phys_types::{BodyId, MotionType};
 use phys_world::{QueryFilter, World};
 
+use super::monitor::{CharacterMonitorEvent, CharacterMonitorPhase};
 use super::rigid_body_listener::{
     CharacterRigidBodyListener, CharacterRigidBodyState, ContactPointInfo,
 };
@@ -109,6 +111,7 @@ pub struct CharacterRigidBody {
     cached_position: Vector4,
     cached_velocity: Vector4,
     listener_slot: RigidBodyListenerCell,
+    monitor_step_count: u64,
 }
 
 impl CharacterRigidBody {
@@ -142,6 +145,7 @@ impl CharacterRigidBody {
             cached_position: info.position,
             cached_velocity: Vector4::ZERO,
             listener_slot: Arc::new(Mutex::new(None)),
+            monitor_step_count: 0,
         }
     }
 
@@ -241,7 +245,16 @@ impl CharacterRigidBody {
     /// delivered by [`CharacterProxyManager`](super::manager::CharacterProxyManager)
     /// after the world step.
     pub fn step(&mut self, world: &mut World, delta_time: f32, surface: &SurfaceInfo) {
+        self.monitor_step_count += 1;
+        let begin_position = self.position(world);
+        let begin_velocity = self.linear_velocity(world);
         let mut points = self.collect_contacts(world);
+        self.fire_monitor(
+            CharacterMonitorPhase::IntegrateBegin,
+            begin_position,
+            begin_velocity,
+            points.len(),
+        );
         self.with_listener(|listener| {
             points.retain(|point| {
                 let mut point = *point;
@@ -269,6 +282,12 @@ impl CharacterRigidBody {
         let _ = world.set_body_linear_velocity(self.body, velocity);
         self.cached_position = self.position(world);
         self.cached_velocity = self.linear_velocity(world);
+        self.fire_monitor(
+            CharacterMonitorPhase::IntegrateEnd,
+            self.cached_position,
+            self.cached_velocity,
+            points.len(),
+        );
     }
 
     /// Dispatch the post-solve listener from the state cached by [`Self::step`].
@@ -280,6 +299,30 @@ impl CharacterRigidBody {
             supported: self.supported,
         };
         self.with_listener(|listener| listener.on_post_solve(&state));
+        self.fire_monitor(
+            CharacterMonitorPhase::PostSolve,
+            state.position,
+            state.velocity,
+            0,
+        );
+    }
+
+    fn fire_monitor(
+        &self,
+        phase: CharacterMonitorPhase,
+        position: Vector4,
+        linear_velocity: Vector4,
+        contact_count: usize,
+    ) {
+        let event = CharacterMonitorEvent {
+            step_count: self.monitor_step_count,
+            phase,
+            body: self.body,
+            position,
+            linear_velocity,
+            contact_count,
+        };
+        self.with_listener(|listener| listener.monitor(&event));
     }
 
     fn with_listener<R>(

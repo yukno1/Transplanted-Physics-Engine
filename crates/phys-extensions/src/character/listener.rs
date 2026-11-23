@@ -6,12 +6,14 @@
 //! Listeners dispatch in reverse registration order, like the SDK's `fire*`
 //! helpers.
 //!
-//! Constraint filtering, VDB monitor callbacks and the rigid-body route's
-//! listener are out of scope for this trait (see `rigid_body_listener`).
+//! Constraint filtering and the rigid-body route's listener are out of scope
+//! for this trait (see `rigid_body_listener`). VDB-style diagnostics are
+//! available as the local [`super::monitor`] callback on this trait.
 
 use base_math::Vector4;
 use phys_types::BodyId;
 
+use super::monitor::CharacterMonitorEvent;
 use super::proxy::Contact;
 use super::triggers::TriggerEvent;
 
@@ -112,4 +114,10 @@ pub trait CharacterProxyListener: Send {
         _result: &mut CharacterObjectInteractionResult,
     ) {
     }
+
+    /// Local monitor-style diagnostic snapshot.
+    ///
+    /// Default no-op so existing listeners remain source compatible. Events
+    /// arrive in reverse registration order, like all proxy callbacks.
+    fn monitor(&mut self, _event: &CharacterMonitorEvent) {}
 }

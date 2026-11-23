@@ -16,10 +16,11 @@
 //! # Blocked extension systems
 //!
 //! The SDK has no ray-casting rigid-body class; the `RayCasting` utility is
-//! available as [`character::get_character_params`], and VDB monitor callbacks
-//! are not ported. Solver-level contact *filtering* for the rigid-body route is
-//! available through [`character::CharacterContactBridge`] (no raw Jacobian
-//! access). Ragdoll easing now covers
+//! available as [`character::get_character_params`]. VDB streams and raw
+//! block-stream Jacobian memory are not ported; local monitor snapshots and
+//! pre-solve row views are available through
+//! [`character::CharacterContactBridge`] / [`character::CharacterMonitorEvent`].
+//! Ragdoll easing now covers
 //! the limited-hinge and 6DOF limit sets and the state manager accepts ten
 //! user-defined states, optional ragdoll plane-angle and 6DOF per-axis
 //! translation limits, and shared-motion mass merges. The `ActionManager`
@@ -39,13 +40,16 @@ pub mod world_hash;
 /// query-based character [`TriggerEvent`] / [`TriggerStatus`] pair.
 pub use phys_world::{
     ContactEditAction, ContactModifier, ContactModifierId, ContactModifierRegistry,
-    EditableContact, PostCollideEvent as WorldPostCollideEvent, TriggerEvent as WorldTriggerEvent,
+    EditableContact, PostCollideEvent as WorldPostCollideEvent,
+    SolverDataHook as WorldSolverDataHook, SolverDataHookId as WorldSolverDataHookId,
+    SolverDataView as WorldSolverDataView, TriggerEvent as WorldTriggerEvent,
     TriggerEventMerger as WorldTriggerEventMerger, TriggerSignal as WorldTriggerSignal,
     TriggerStatus as WorldTriggerStatus,
 };
 
 pub use character::{
     CharacterContactBridge, CharacterContext, CharacterInput, CharacterInteractionInfo,
+    CharacterMonitorEvent, CharacterMonitorPhase, CharacterMonitorSpan,
     CharacterObjectInteractionEvent, CharacterObjectInteractionResult, CharacterOutput,
     CharacterParam, CharacterProxy, CharacterProxyCinfo, CharacterProxyListener,
     CharacterProxyManager, CharacterProxyState, CharacterRigidBody, CharacterRigidBodyCinfo,

@@ -33,7 +33,8 @@ pub struct RayCastHit {
     pub position: Vector4,
     /// Outward surface normal at the hit.
     pub normal: Vector4,
-    /// Leaf shape key (invalid for a direct convex hit).
+    /// Leaf shape key (convex-hull face or composite leaf; invalid for other
+    /// direct convex hits).
     pub shape_key: ShapeKey,
 }
 

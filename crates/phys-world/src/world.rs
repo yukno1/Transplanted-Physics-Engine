@@ -10,14 +10,17 @@ use phys_body::{
     inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
 };
 use phys_collide::{
-    BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, collide_with_tolerance,
+    BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, closest_points,
+    collide_with_tolerance, query::leaf_key,
 };
-use phys_shape::{MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache};
+use phys_shape::{
+    ConvexHullShape, MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache,
+};
 use phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
     RagdollJoint, SixDofJoint, Solver, SolverBody, SolverSettings, SpringJoint, WheelDrive,
-    WheelJoint, WheelSuspension,
+    WheelJoint, WheelSuspension, contact_tangents,
 };
 use phys_types::{BodyId, CollisionFlags, ConstraintId, MotionId, MotionType, ShapeKey};
 
@@ -37,6 +40,9 @@ use crate::signals::{
     MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
     PostCollideConnectionId, PostCollideSignal, PostSolveConnectionId, PostSolveEvent,
     PostSolveSignal, TriggerConnectionId, TriggerSignal,
+};
+use crate::solver_data::{
+    SolverDataHook, SolverDataHookId, SolverDataHookRegistry, SolverDataView,
 };
 use crate::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
@@ -70,6 +76,8 @@ struct MotionGroup {
     motion_id: MotionId,
     members: Vec<BodyId>,
 }
+
+type TriggerPairKey = (BodyId, BodyId, ShapeKey, ShapeKey);
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
 #[derive(Clone)]
@@ -116,7 +124,7 @@ pub struct World {
     /// Bodies flagged as trigger volumes (`hknpCollisionFlags::IS_TRIGGER` subset).
     trigger_bodies: BTreeSet<BodyId>,
     /// Trigger pairs that overlapped at the end of the previous step.
-    active_trigger_pairs: BTreeSet<(BodyId, BodyId)>,
+    active_trigger_pairs: BTreeSet<TriggerPairKey>,
     /// Per-step trigger enter/exit accumulator (`hknpEventMergeAndDispatcher`).
     trigger_merge: TriggerEventMerger,
     /// World trigger event dispatch.
@@ -125,6 +133,8 @@ pub struct World {
     post_collide_signal: PostCollideSignal,
     /// Deterministic contact-row editors applied before islands are built.
     contact_modifiers: ContactModifierRegistry,
+    /// Deterministic Jacobian-like row viewers applied after contact editors.
+    solver_data_hooks: SolverDataHookRegistry,
     step_count: u64,
     last_delta_time: f32,
     last_manifold_count: usize,
@@ -154,6 +164,7 @@ impl fmt::Debug for World {
             .field("trigger_signal", &self.trigger_signal)
             .field("post_collide_signal", &self.post_collide_signal)
             .field("contact_modifiers", &self.contact_modifiers)
+            .field("solver_data_hooks", &self.solver_data_hooks)
             .field("step_count", &self.step_count)
             .field("last_delta_time", &self.last_delta_time)
             .field("last_manifold_count", &self.last_manifold_count)
@@ -193,6 +204,7 @@ impl World {
             trigger_signal: TriggerSignal::default(),
             post_collide_signal: PostCollideSignal::default(),
             contact_modifiers: ContactModifierRegistry::default(),
+            solver_data_hooks: SolverDataHookRegistry::default(),
             cinfo,
             gravity,
             step_count: 0,
@@ -893,7 +905,7 @@ impl World {
         } else {
             self.trigger_bodies.remove(&body_id);
             self.active_trigger_pairs
-                .retain(|&(a, b)| a != body_id && b != body_id);
+                .retain(|&(a, b, _, _)| a != body_id && b != body_id);
         }
         true
     }
@@ -925,6 +937,36 @@ impl World {
         } else {
             self.trigger_merge
                 .exit(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+        }
+        true
+    }
+
+    /// Record a trigger transition with explicit leaf shape keys.
+    ///
+    /// Body ids are canonicalized together with their keys, so callers may pass
+    /// either ordering. Returns `false` if either body is not live.
+    pub fn record_trigger_transition_with_keys(
+        &mut self,
+        a: BodyId,
+        b: BodyId,
+        key_a: ShapeKey,
+        key_b: ShapeKey,
+        entered: bool,
+    ) -> bool {
+        if self.bodies.get(a).is_none() || self.bodies.get(b).is_none() {
+            return false;
+        }
+        let (body_a, body_b, first_key, second_key) = if a < b {
+            (a, b, key_a, key_b)
+        } else {
+            (b, a, key_b, key_a)
+        };
+        if entered {
+            self.trigger_merge
+                .enter(body_a, body_b, first_key, second_key);
+        } else {
+            self.trigger_merge
+                .exit(body_a, body_b, first_key, second_key);
         }
         true
     }
@@ -994,6 +1036,30 @@ impl World {
         self.contact_modifiers.len()
     }
 
+    /// Register a pre-solve Jacobian-like row hook.
+    ///
+    /// Hooks run after all [`ContactModifier`] callbacks and before islands are
+    /// built, in registration order. They observe the row's cached impulse and
+    /// can edit the normal, tangent basis, penetration, friction or impulse.
+    pub fn register_solver_data_hook(&self, hook: Arc<dyn SolverDataHook>) -> SolverDataHookId {
+        self.solver_data_hooks.register(hook)
+    }
+
+    /// Remove a registered solver-data hook.
+    pub fn unregister_solver_data_hook(&self, id: SolverDataHookId) -> bool {
+        self.solver_data_hooks.unregister(id)
+    }
+
+    /// Remove all registered solver-data hooks.
+    pub fn clear_solver_data_hooks(&self) {
+        self.solver_data_hooks.clear();
+    }
+
+    /// Number of registered solver-data hooks.
+    pub fn solver_data_hook_count(&self) -> usize {
+        self.solver_data_hooks.len()
+    }
+
     /// Destroy a body and its motion (`destroyBodies`).
     pub fn destroy_body(&mut self, body_id: BodyId) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
@@ -1013,7 +1079,7 @@ impl World {
             self.sleep_states.remove(&body_id);
             self.trigger_bodies.remove(&body_id);
             self.active_trigger_pairs
-                .retain(|&(a, b)| a != body_id && b != body_id);
+                .retain(|&(a, b, _, _)| a != body_id && b != body_id);
         }
         destroyed
     }
@@ -2107,6 +2173,7 @@ impl World {
         contacts: &[ContactManifold],
         index_map: &HashMap<BodyId, usize>,
         modifiers: &[Arc<dyn ContactModifier>],
+        hooks: &[Arc<dyn SolverDataHook>],
         step_number: u64,
         delta_time: f32,
     ) -> (
@@ -2139,13 +2206,20 @@ impl World {
             let mut points = Vec::with_capacity(contact.manifold.points.len());
             let mut dropped = 0usize;
             for point in &contact.manifold.points {
+                let initial_normal = contact.manifold.normal;
+                let (initial_tangent_1, initial_tangent_2) = contact_tangents(initial_normal);
                 let mut editable = EditableContact {
                     body_a: contact.body_a,
                     body_b: contact.body_b,
-                    normal: contact.manifold.normal,
+                    normal: initial_normal,
                     position: point.position,
                     penetration: (-point.distance).max(0.0),
                     friction: 0.5,
+                    tangent_1: initial_tangent_1,
+                    tangent_2: initial_tangent_2,
+                    normal_impulse: 0.0,
+                    tangent_impulse_1: 0.0,
+                    tangent_impulse_2: 0.0,
                 };
                 let mut keep = true;
                 for modifier in modifiers {
@@ -2158,6 +2232,50 @@ impl World {
                     dropped += 1;
                     continue;
                 }
+
+                let lookup_key = ContactKey {
+                    body_a: contact.body_a,
+                    body_b: contact.body_b,
+                    local_point_b: transform_b.inverse_transform_point(editable.position),
+                    normal: editable.normal,
+                };
+                let cached = if self.cinfo.enable_warm_starting {
+                    self.contact_cache.match_impulse(lookup_key)
+                } else {
+                    ContactImpulse::default()
+                };
+                editable.normal_impulse = cached.normal;
+                editable.tangent_impulse_1 = cached.tangent_1;
+                editable.tangent_impulse_2 = cached.tangent_2;
+
+                if !hooks.is_empty() {
+                    let mut view = SolverDataView {
+                        body_a: contact.body_a,
+                        body_b: contact.body_b,
+                        normal: &mut editable.normal,
+                        tangent_1: &mut editable.tangent_1,
+                        tangent_2: &mut editable.tangent_2,
+                        penetration: &mut editable.penetration,
+                        friction: &mut editable.friction,
+                        normal_impulse: &mut editable.normal_impulse,
+                        tangent_impulse_1: &mut editable.tangent_impulse_1,
+                        tangent_impulse_2: &mut editable.tangent_impulse_2,
+                    };
+                    for hook in hooks {
+                        hook.modify(&mut view);
+                    }
+                }
+
+                if editable.normal.length3() > 1e-10 {
+                    editable.normal = editable.normal.normalized3();
+                }
+                let (tangent_1, tangent_2) = contact_tangents(editable.normal);
+                editable.tangent_1 = tangent_1;
+                editable.tangent_2 = tangent_2;
+                editable.normal_impulse = editable.normal_impulse.max(0.0);
+                let limit = editable.friction.max(0.0) * editable.normal_impulse;
+                editable.tangent_impulse_1 = editable.tangent_impulse_1.clamp(-limit, limit);
+                editable.tangent_impulse_2 = editable.tangent_impulse_2.clamp(-limit, limit);
 
                 let penetration = editable.penetration.max(0.0);
                 let constraint_point = editable.position - editable.normal * (penetration * 0.5);
@@ -2175,10 +2293,10 @@ impl World {
                     local_point_b: transform_b.inverse_transform_point(editable.position),
                     normal: editable.normal,
                 };
-                contact_impulses.push(if self.cinfo.enable_warm_starting {
-                    self.contact_cache.match_impulse(key)
-                } else {
-                    ContactImpulse::default()
+                contact_impulses.push(ContactImpulse {
+                    normal: editable.normal_impulse,
+                    tangent_1: editable.tangent_impulse_1,
+                    tangent_2: editable.tangent_impulse_2,
                 });
                 contact_keys.push(key);
                 points.push(PostCollideContactPoint {
@@ -2296,11 +2414,13 @@ impl World {
         // Contact rows are shared by both step paths; modifiers run once per
         // step over a snapshot so parallel workers cannot see partial edits.
         let modifier_snapshot = self.contact_modifiers.snapshot();
+        let hook_snapshot = self.solver_data_hooks.snapshot();
         let (constraints, contact_keys, mut contact_impulses, post_collide_events) = self
             .build_contact_rows(
                 &contacts,
                 &index_map,
                 &modifier_snapshot,
+                &hook_snapshot,
                 self.step_count + 1,
                 delta_time,
             );
@@ -2653,13 +2773,71 @@ impl World {
         results.into_iter().map(|(_, manifold)| manifold).collect()
     }
 
+    /// Local leaf key closest to a witness point on a zero-radius convex hull.
+    fn hull_face_key(shape: &dyn Shape, local_point: Vector4) -> ShapeKey {
+        let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() else {
+            return ShapeKey::INVALID;
+        };
+        if hull.faces().is_empty() || hull.convex_radius().abs() > 1e-6 {
+            return ShapeKey::INVALID;
+        }
+        let vertices = hull.vertices();
+        let mut best: Option<(f32, usize)> = None;
+        for (index, face) in hull.faces().iter().enumerate() {
+            let (Some(&a), Some(&b), Some(&c)) = (
+                vertices.get(face[0] as usize),
+                vertices.get(face[1] as usize),
+                vertices.get(face[2] as usize),
+            ) else {
+                continue;
+            };
+            let centre = (a + b + c) * (1.0 / 3.0);
+            let distance = (centre - local_point).length3();
+            if best.is_none_or(|(current, _)| distance < current) {
+                best = Some((distance, index));
+            }
+        }
+        best.map_or(ShapeKey::INVALID, |(_, index)| {
+            leaf_key::new(leaf_key::CONVEX_HULL_FACE, index as u32)
+        })
+    }
+
+    /// Leaf keys for one narrow-phase trigger pair.
+    ///
+    /// Convex hull faces provide real leaf keys; other shapes fall back to
+    /// `ShapeKey::INVALID`, preserving the body-pair granularity of prior
+    /// releases.
+    fn trigger_pair_keys(&self, a: BodyId, b: BodyId) -> (ShapeKey, ShapeKey) {
+        let (Some(body_a), Some(body_b)) = (self.bodies.get(a), self.bodies.get(b)) else {
+            return (ShapeKey::INVALID, ShapeKey::INVALID);
+        };
+        let Some(result) = closest_points(
+            body_a.shape.as_ref(),
+            &body_a.transform,
+            body_b.shape.as_ref(),
+            &body_b.transform,
+        ) else {
+            return (ShapeKey::INVALID, ShapeKey::INVALID);
+        };
+        (
+            Self::hull_face_key(
+                body_a.shape.as_ref(),
+                body_a.transform.inverse_transform_point(result.point_a),
+            ),
+            Self::hull_face_key(
+                body_b.shape.as_ref(),
+                body_b.transform.inverse_transform_point(result.point_b),
+            ),
+        )
+    }
+
     /// Refresh trigger overlaps and dispatch merged events for this step.
     ///
     /// The detector uses broad-phase AABB pairs (canonical `(low, high)` order)
-    /// rather than narrow-phase manifolds, so static, sleeping and non-convex
-    /// trigger bodies all participate. `DONT_COLLIDE` and the world collision
-    /// filter are honoured. Shape keys are `INVALID` because contacts are
-    /// body-pair level; leaf-level events stay in the character query tracker.
+    /// so static, sleeping and non-convex trigger bodies all participate.
+    /// `DONT_COLLIDE` and the world collision filter are honoured. For convex
+    /// hull pairs a narrow-phase witness supplies face leaf keys; other shapes
+    /// fall back to `ShapeKey::INVALID`, preserving body-pair granularity.
     fn update_trigger_events(&mut self) {
         if self.trigger_bodies.is_empty() {
             self.active_trigger_pairs.clear();
@@ -2699,27 +2877,29 @@ impl World {
                         continue;
                     }
                 }
-                current.insert((low, high));
+                let (mut key_low, mut key_high) = self.trigger_pair_keys(pair.a, pair.b);
+                if pair.a != low {
+                    core::mem::swap(&mut key_low, &mut key_high);
+                }
+                current.insert((low, high, key_low, key_high));
             }
 
-            let enters: Vec<(BodyId, BodyId)> = current
+            let enters: Vec<TriggerPairKey> = current
                 .iter()
                 .copied()
                 .filter(|pair| !self.active_trigger_pairs.contains(pair))
                 .collect();
-            let exits: Vec<(BodyId, BodyId)> = self
+            let exits: Vec<TriggerPairKey> = self
                 .active_trigger_pairs
                 .iter()
                 .copied()
                 .filter(|pair| !current.contains(pair))
                 .collect();
-            for (body_a, body_b) in enters {
-                self.trigger_merge
-                    .enter(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+            for (body_a, body_b, key_a, key_b) in enters {
+                self.trigger_merge.enter(body_a, body_b, key_a, key_b);
             }
-            for (body_a, body_b) in exits {
-                self.trigger_merge
-                    .exit(body_a, body_b, ShapeKey::INVALID, ShapeKey::INVALID);
+            for (body_a, body_b, key_a, key_b) in exits {
+                self.trigger_merge.exit(body_a, body_b, key_a, key_b);
             }
             self.active_trigger_pairs = current;
         }

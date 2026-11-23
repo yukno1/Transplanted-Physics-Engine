@@ -46,6 +46,16 @@ pub struct EditableContact {
     pub penetration: f32,
     /// Coulomb friction coefficient (default 0.5).
     pub friction: f32,
+    /// Deterministic first tangent of `normal` (solver friction basis).
+    pub tangent_1: Vector4,
+    /// Deterministic second tangent of `normal`.
+    pub tangent_2: Vector4,
+    /// Cached normal impulse exposed by solver-data hooks.
+    pub normal_impulse: f32,
+    /// Cached first tangent impulse exposed by solver-data hooks.
+    pub tangent_impulse_1: f32,
+    /// Cached second tangent impulse exposed by solver-data hooks.
+    pub tangent_impulse_2: f32,
 }
 
 /// Deterministic contact-row editor.
@@ -159,6 +169,11 @@ mod tests {
             position: Vector4::ZERO,
             penetration: 0.1,
             friction: 0.5,
+            tangent_1: Vector4::UNIT_X,
+            tangent_2: Vector4::UNIT_Z,
+            normal_impulse: 0.0,
+            tangent_impulse_1: 0.0,
+            tangent_impulse_2: 0.0,
         }
     }
 
