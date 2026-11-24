@@ -9,6 +9,14 @@ use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo, WorldSnapshot};
 
+const GOLDEN_TRACE_30: &str = "\
+# hvk-trace v1
+step 30
+body 8000000000000000 p 00000000 bf000000 00000000 q 00000000 00000000 00000000 3f800000 v 00000000 00000000 00000000 w 00000000 00000000 00000000
+body 8000000000000001 p 00000000 3f3b9dae 00000000 q 00000000 00000000 00000000 3f800000 v 00000000 c09cf5c3 00000000 w 00000000 00000000 00000000
+body 8000000000000002 p 3fc00000 3fddced6 00000000 q 00000000 00000000 3e190650 3f7d201a v 00000000 c09cf5c3 00000000 w 00000000 00000000 00000000
+";
+
 fn sphere(radius: f32) -> Arc<dyn Shape> {
     Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
 }
@@ -103,6 +111,10 @@ fn s10_snapshot_trace_text_is_stable() {
     let first = snapshot.to_text();
     let second = snapshot.to_text();
     assert_eq!(first, second, "trace rendering must be deterministic");
+    assert_eq!(
+        first, GOLDEN_TRACE_30,
+        "world trace drifted from scalar baseline"
+    );
     assert!(first.starts_with("# hvk-trace v1\n"));
     assert!(first.contains(&format!("step {}", snapshot.step_count)));
     assert_eq!(first.lines().count(), snapshot.bodies.len() + 2);

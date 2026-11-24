@@ -106,6 +106,10 @@ impl Aabb {
     }
 
     /// `hkAabb::includePoint`.
+    ///
+    /// `min`/`max` and comparison masks stay scalar here: SSE `minps` follows
+    /// different NaN rules, and routing these comparisons through the SIMD
+    /// helper regressed this hot path in the benchmark.
     #[inline]
     pub fn include_point(&mut self, point: Vector4) {
         self.min = self.min.min(point);

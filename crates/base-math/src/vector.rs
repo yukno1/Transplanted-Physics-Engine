@@ -261,47 +261,45 @@ macro_rules! define_vector {
             /// `hkVector4f::setAdd` — `self = a + b`.
             #[inline]
             pub fn set_add(&mut self, a: Self, b: Self) {
-                *self = Self::new(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
+                *self = Self::from_array(crate::simd::add(a.to_array(), b.to_array()));
             }
 
             /// `hkVector4f::setSub` — `self = a - b`.
             #[inline]
             pub fn set_sub(&mut self, a: Self, b: Self) {
-                *self = Self::new(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
+                *self = Self::from_array(crate::simd::sub(a.to_array(), b.to_array()));
             }
 
             /// `hkVector4f::setMul` — `self = a * b` (component-wise).
             #[inline]
             pub fn set_mul(&mut self, a: Self, b: Self) {
-                *self = Self::new(a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w);
+                *self = Self::from_array(crate::simd::mul(a.to_array(), b.to_array()));
             }
 
             /// `hkVector4f::setDiv` — `self = a / b` (component-wise, no checks).
             #[inline]
             pub fn set_div(&mut self, a: Self, b: Self) {
-                *self = Self::new(a.x / b.x, a.y / b.y, a.z / b.z, a.w / b.w);
+                *self = Self::from_array(crate::simd::div(a.to_array(), b.to_array()));
             }
 
             /// `hkVector4f::setAddMul` — `self = a + b * c`.
             #[inline]
             pub fn set_add_mul(&mut self, a: Self, b: Self, c: Self) {
-                *self = Self::new(
-                    a.x + b.x * c.x,
-                    a.y + b.y * c.y,
-                    a.z + b.z * c.z,
-                    a.w + b.w * c.w,
-                );
+                *self = Self::from_array(crate::simd::add_mul(
+                    a.to_array(),
+                    b.to_array(),
+                    c.to_array(),
+                ));
             }
 
             /// `hkVector4f::setSubMul` — `self = a - b * c`.
             #[inline]
             pub fn set_sub_mul(&mut self, a: Self, b: Self, c: Self) {
-                *self = Self::new(
-                    a.x - b.x * c.x,
-                    a.y - b.y * c.y,
-                    a.z - b.z * c.z,
-                    a.w - b.w * c.w,
-                );
+                *self = Self::from_array(crate::simd::sub_mul(
+                    a.to_array(),
+                    b.to_array(),
+                    c.to_array(),
+                ));
             }
 
             /// `hkVector4f::setCross` — 3-component cross product; `w` follows the
@@ -413,10 +411,14 @@ macro_rules! define_vector {
             /// `hkVector4f::absolute` / `setAbs`.
             #[inline]
             pub fn abs(self) -> Self {
-                Self::new(self.x.abs(), self.y.abs(), self.z.abs(), self.w.abs())
+                Self::from_array(crate::simd::abs(self.to_array()))
             }
 
             /// `hkVector4f::setMin` — component-wise minimum.
+            ///
+            /// Kept scalar: SSE `minps` has different NaN/equal-value rules from
+            /// Rust's `f32::min`, and routing through the SIMD helper regressed
+            /// AABB hot paths without a numerical benefit.
             #[inline]
             pub fn min(self, other: Self) -> Self {
                 Self::new(
@@ -442,12 +444,7 @@ macro_rules! define_vector {
             /// (`hkVector4f::setFlipSign(v, vSign)`).
             #[inline]
             pub fn flip_sign(self, sign: Self) -> Self {
-                Self::new(
-                    if sign.x < 0.0 { -self.x } else { self.x },
-                    if sign.y < 0.0 { -self.y } else { self.y },
-                    if sign.z < 0.0 { -self.z } else { self.z },
-                    if sign.w < 0.0 { -self.w } else { self.w },
-                )
+                Self::from_array(crate::simd::flip_sign(self.to_array(), sign.to_array()))
             }
 
             /// `hkVector4f::horizontalAdd<3>` — `x + y + z`.
@@ -463,6 +460,9 @@ macro_rules! define_vector {
             }
 
             /// `hkVector4f::less`.
+            ///
+            /// Comparisons stay scalar: routing them through the SSE2 helper
+            /// regressed AABB containment hot paths by ~3x in `bench --quick`.
             #[inline]
             pub fn less(self, other: Self) -> $mask {
                 $mask::from_bits(
@@ -587,12 +587,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn add(self, other: Self) -> Self {
-                Self::new(
-                    self.x + other.x,
-                    self.y + other.y,
-                    self.z + other.z,
-                    self.w + other.w,
-                )
+                Self::from_array(crate::simd::add(self.to_array(), other.to_array()))
             }
         }
 
@@ -601,12 +596,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn sub(self, other: Self) -> Self {
-                Self::new(
-                    self.x - other.x,
-                    self.y - other.y,
-                    self.z - other.z,
-                    self.w - other.w,
-                )
+                Self::from_array(crate::simd::sub(self.to_array(), other.to_array()))
             }
         }
 
@@ -615,12 +605,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn mul(self, other: Self) -> Self {
-                Self::new(
-                    self.x * other.x,
-                    self.y * other.y,
-                    self.z * other.z,
-                    self.w * other.w,
-                )
+                Self::from_array(crate::simd::mul(self.to_array(), other.to_array()))
             }
         }
 
@@ -629,12 +614,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn div(self, other: Self) -> Self {
-                Self::new(
-                    self.x / other.x,
-                    self.y / other.y,
-                    self.z / other.z,
-                    self.w / other.w,
-                )
+                Self::from_array(crate::simd::div(self.to_array(), other.to_array()))
             }
         }
 
@@ -643,12 +623,10 @@ macro_rules! define_vector {
 
             #[inline]
             fn mul(self, scalar: $ty) -> Self {
-                Self::new(
-                    self.x * scalar,
-                    self.y * scalar,
-                    self.z * scalar,
-                    self.w * scalar,
-                )
+                Self::from_array(crate::simd::mul(
+                    self.to_array(),
+                    crate::simd::splat(scalar),
+                ))
             }
         }
 
@@ -666,12 +644,10 @@ macro_rules! define_vector {
 
             #[inline]
             fn div(self, scalar: $ty) -> Self {
-                Self::new(
-                    self.x / scalar,
-                    self.y / scalar,
-                    self.z / scalar,
-                    self.w / scalar,
-                )
+                Self::from_array(crate::simd::div(
+                    self.to_array(),
+                    crate::simd::splat(scalar),
+                ))
             }
         }
 
@@ -680,7 +656,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn neg(self) -> Self {
-                Self::new(-self.x, -self.y, -self.z, -self.w)
+                Self::from_array(crate::simd::neg(self.to_array()))
             }
         }
 

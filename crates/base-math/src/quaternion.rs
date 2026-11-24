@@ -164,6 +164,11 @@ impl Quaternion {
     ///
     /// Operation order follows the expansion documented in the C++ inline
     /// implementation.
+    ///
+    /// Kept scalar: the SIMD phase only vectorized component-wise `Vector4`
+    /// arithmetic; quaternion multiplication is dominated by cross terms whose
+    /// horizontal ordering cannot be changed without breaking bit parity, and
+    /// the micro-benchmark showed no reliable gain from a SIMD rewrite.
     #[allow(clippy::should_implement_trait)] // also exposed through `impl Mul`
     #[inline]
     pub fn mul(self, other: Self) -> Self {

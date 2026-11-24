@@ -43,6 +43,12 @@
 //! * [`qstransform`] — `QsTransform` (quaternion + translation + scale).
 //! * [`aabb`] — `Aabb`.
 //! * [`half`] — `Half` 16-bit float.
+//!
+//! On `x86_64`, component-wise `f32` operations use a zero-dependency SSE2 helper
+//! in the private `simd` module. Reductions, `min`/`max`, comparison masks and
+//! `select` stay scalar to preserve addition order, Rust's NaN/signed-zero
+//! semantics and AABB hot-path performance. Other targets and `f64` use the
+//! scalar reference path. Public signatures are unchanged.
 
 pub mod aabb;
 pub mod half;
@@ -51,6 +57,7 @@ pub mod precise_transform;
 pub mod qstransform;
 pub mod qtransform;
 pub mod quaternion;
+pub(crate) mod simd;
 pub mod transform;
 pub mod vector;
 

@@ -111,6 +111,9 @@ impl Matrix3 {
 
     /// `hkMatrix3f::multiplyVector` — `self * v`, using the C++ operation order
     /// (`v.x * col0 + v.y * col1 + v.z * col2`).
+    ///
+    /// The three column additions stay scalar to keep the reduction order;
+    /// SIMD only accelerates the component-wise scalar multiplies inside them.
     #[inline]
     pub fn mul_vec(&self, v: Vector4) -> Vector4 {
         let mut result = self.col0 * v.x;

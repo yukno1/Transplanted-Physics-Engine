@@ -105,27 +105,27 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | S23 | 查询 filter / closest points / AABB | L3 | ignore body、motion-type 开关、重叠负距离、槽序 AABB 结果 | `phys-world` 单元 + 集成 |
 | S24 | 关节场景逐位一致 | L6 | 含 ball-socket/hinge/prismatic 的 180 步双 world snapshot 逐位相等 | `constraints_and_queries.rs` |
 
-## 4. 基准场景（`cargo bench -p havok --bench simulation`）
+## 4. 基准场景（`cargo bench -p proton-engine --bench simulation`）
 
 无 criterion（crates.io 不可达）；使用 `harness = false` + `std::time::Instant` 的自研 harness。参数：
 
 - `--quick`：小规模冒烟（CI/本地验证）；
-- `--bodies N`：覆盖 body 规模；
-- `--steps N`：覆盖积分步数；
-- 输出 `name<TAB>value<TAB>unit`，便于脚本解析。
+- 输出 `name<TAB>value<TAB>unit<TAB>detail`，便于脚本解析；
+- 场景类指标用 `ms/iter` / `ms/step`，数学微基准用 `us/iter`（见 `docs/performance-baseline.md`）。
 
 | 基准 | 规模（默认） | 指标 | 目的 |
 |---|---|---|---|
-| `broadphase_grid` | 256 个 AABB | ms/iter + pair 数 | 网格宽相扩展性 |
-| `gjk_sphere_pair` | 1000 次 | µs/pair | GJK 光滑形状开销 |
-| `gjk_box_pair` | 1000 次 | µs/pair | GJK 多面体开销 |
-| `narrowphase_box_pairs` | 1000 次 | µs/pair | GJK+EPA+流形整链 |
-| `solver_100_contacts` | 100 body/100 约束 | ms/solve | 求解器迭代成本 |
-| `world_fall_n` | 64 个动态球 + 地面，60 步 | ms/step + contacts | 完整 step 管线 |
+| `math_vector4_add` / `math_vector4_mul` | 2,000,000 次 | us/iter | 分量算术 SIMD 微基准 |
+| `math_vector4_dot3` / `math_vector4_normalize3` | 2,000,000 次 | us/iter | 归约与归一化顺序基线 |
+| `math_quaternion_mul` / `math_matrix3_mul_vec` / `math_aabb_include_point` | 2,000,000 次 | us/iter | 四元数/矩阵/AABB 热点判定 |
+| `broadphase_grid` | 512 个 AABB | ms/iter + pair 数 | 网格宽相扩展性 |
+| `gjk_sphere_pair` / `gjk_box_pair` | 2000 次 | ms/iter | GJK 距离开销 |
+| `narrowphase_box_pairs` | 2000 次 | ms/iter | GJK+EPA+流形整链 |
+| `solver_contact_pair` | 2 body/1 contact | ms/iter | 求解器单接触成本 |
+| `world_fall_n` / `world_fall_n_parallel` | 64 动态球，60 步 | ms/step + contacts | 单线程/4 线程 step 管线 |
 | `world_stack_10` | 10 个盒子，120 步 | ms/step + contacts | 堆叠稳定性/成本 |
-| `raycast_world` | 17 个 body，2000 次 | ms/iter | 世界 raycast（AABB 粗测 + 形状求交） |
-| `shape_cast_world` | 1 地面，2000 次球 cast | ms/iter | 世界 shape cast（conservative advancement） |
-| `joint_chain_ragdoll` | 24 个 ragdoll 链接，60 步 | ms/step | 关节求解/重建成本 |
+| `raycast_world` / `shape_cast_world` | 2000 次 | ms/iter | 世界查询 |
+| `joint_chain_ragdoll` | 24 个链接，60 步 | ms/step | 关节求解/重建成本 |
 
 基准只记录本机数值，不设置跨机器硬阈值；README 记录运行命令，Phase 9 验收以“harness 能稳定运行并输出指标”为准。
 
@@ -137,6 +137,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 2. 定义 `hvk-trace v1` 文本格式（浮点用 `to_bits()` 十六进制，避免文本格式化漂移）；
 3. Rust 侧先做**同场景两次运行逐位一致**（S9）和 trace 稳定性（S10）；
 4. C++ 黄金基准需要：生成/配置原版解决方案 → 构建 Physics + UnitTest → 跑固定场景导出 `hvk-trace v1` → 与 Rust 输出逐行比较。该步骤在 `../original` 当前状态下不可执行，列为外部阻塞项，不做“已逐位对齐”的虚假声明。
+5. 2026-11-24 起，任何数学后端改动还须通过 `crates/base-math/tests/simd_parity.rs`（`-0.0`、denormal、NaN/Inf、比较掩码、归约、AABB）和 `tests/determinism.rs::GOLDEN_TRACE_30`；性能验收见 `docs/performance-baseline.md`，只宣称与 Rust 标量路径逐位一致。
 
 ### `hvk-trace v1` 格式
 
@@ -153,7 +154,8 @@ body <BodyId hex u64> p <f32 bits> <f32 bits> <f32 bits> q <f32 bits> <f32 bits>
 ## 6. 验收标准
 
 - `cargo test --workspace` 全绿，新增集成测试 ≥ 10 个；
-- `cargo bench -p havok --bench simulation -- --quick` 正常退出并打印全部指标；
+- `cargo bench -p proton-engine --bench simulation -- --quick` 正常退出并打印全部指标；
+- `crates/base-math/tests/simd_parity.rs` 与固定 `GOLDEN_TRACE_30` 全绿（数学后端改动必需）；
 - `cargo fmt/clippy/doc/release` 全绿；
 - README Phase 9 段如实记录 Ported/Partial/Blocked 数量与 C++ 基准阻塞项；
 - 不新增外部依赖。

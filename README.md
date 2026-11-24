@@ -147,7 +147,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 | crate | 职责 | 状态（2026-11-23） |
 |---|---|---|
 | `base-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
-| `base-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（标量后端，Phase 2；SIMD 待优化） |
+| `base-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（Phase 2 标量路径 + 2026-11-24 x86_64 SSE2 分量算术后端） |
 | `base-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
 | `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
@@ -212,6 +212,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 决策与偏差：
 - **先标量后端**：直接按 C++ 标量（Fpu）公式书写运算顺序，暂不引入 SSE/AVX；公开 API 不暴露平台类型，后续替换后端无需改签名
 - SIMD 优化推迟到 Phase 9 基准之后：SSE2 为基线，AVX/NEON 可选；每个后端必须跑同一组 bit-exact 用例（`-0.0`、denormal、round-to-nearest），并与标量后端对齐
+- 2026-11-24 已交付 x86_64 SSE2 分量算术后端（`add/sub/mul/div/neg/add_mul/sub_mul/abs/flip_sign`）；归约、`min/max`、比较掩码、`select`、四元数/矩阵/AABB 热点保持标量，详见 `docs/performance-baseline.md` §7
 - `sqrt`/`sin`/`cos` 来自 Rust 标准库：`+ - * /` 与比较逐位等价，超越函数仅保证容差（C++ 端同样依赖平台 libm；最终以 Phase 9 黄金轨迹为准）
 - 未纳入本阶段：`hkVector2f/d`、`hkIntVector`、`hkPackedVector3`、`hkMatrix4f`、`hkMatrix6f/d`、`hkMathFuncs`、独立 `hkSimdFloat32/d` 包装
 
@@ -921,13 +922,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（base-geometry 补齐，2026-11-23）：`base-geometry` 新增确定性点云凸包（焊接去重 + QuickHull 风格可见面/horizon 循环 + 点/线/面低维回退）与顶点/三角形焊接（remap、退化面与重复面移除）；`ConvexHullShape` 新增 `try_from_points`/`from_points`，保留旧构造语义；`base-geometry` 10 个单元测试、`phys-shape` 新增 3 个单元测试、新增集成测试 `convex_hull_from_points.rs` 4 个，`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿
 - [x] 后续子集（查询精度补齐，2026-11-23）：`phys-collide` 在 GJK 命中后按 Capsule 线段径向、Cylinder 名义侧/端盖/圆角面、带圆角 ConvexHull 最近名义面精修法线，命中距离与位置不变；新增共享 `leaf_key_at_local_point`，覆盖 ConvexHull/Mesh/HeightField/Compound；`phys-world` trigger 改用共享解析器并对非凸形状提供确定性中心投影回退；`phys-collide` 新增 4 个单元测试，新增集成测试 `query_precision.rs` 5 个，`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿
 - [x] 后续子集（大世界与位级对齐，2026-11-23）：`base-math` 新增 `PreciseTransform`（f32 rotation + double-float translation、f64 转换、补偿加法、relative_to）；`World` 新增 f64 origin、`body_precise_transform`、`set_body_precise_position`、`shift_origin`，默认 f32 路径与 `hvk-trace v1` 不变；`CompressedMassProperties` 新增 SDK float-bit 打包与 32 字节序列化，`MassPropertiesTree` 新增 8 组/32 子 word 缓存，`MassDistribution` 补齐显式/负质量应用链并接入 `World::set_body_mass_distribution`；新增集成测试 `large_world_mass_bit_alignment.rs` 4 个
-- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）仍未移植；形状质量属性附加信号与完整 `hknpMassDistribution` 在未提交工作区之外仍缺真实资产 golden 校验；SDK 二进制 `hknpShapeKey` 位布局、GSK 内部实现与 `hkgpConvexHull` 随机简化/布尔运算未移植，本子集不宣称与 C++ 或真实资产逐位等价
+- [x] 性能阶段（x86_64 SSE2 分量算术后端，2026-11-24）：`base-math` 新增零依赖内部 helper，`Vector4` 分量算术走 SSE2（非 x86_64 与 `f64` 仍走标量）；归约、`min/max`、比较掩码、`select` 与四元数/矩阵/AABB 热点保持标量，避免改变加法顺序或引入 AABB 回归；`benches/simulation.rs` 新增数学微基准并修正包名注释，`tests/determinism.rs` 新增固定 `GOLDEN_TRACE_30`，`crates/base-math/tests/simd_parity.rs` 6 个逐位对照测试通过；详见 `docs/performance-baseline.md`
+- [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）仍未移植；形状质量属性附加信号与完整 `hknpMassDistribution` 在未提交工作区之外仍缺真实资产 golden 校验；SDK 二进制 `hknpShapeKey` 位布局、GSK 内部实现与 `hkgpConvexHull` 随机简化/布尔运算未移植；AVX2/NEON 后端与 C++ 黄金轨迹仍未验证，本子集不宣称与 C++ 或真实资产逐位等价
 
-仓库现状（2026-11-23）：
+仓库现状（2026-11-24）：
 
-- 工具链：`rustc 1.101.0-nightly`；workspace `rust-version = "1.85"`、`edition = "2024"`
+- 工具链：`rustc 1.102.0-nightly`（性能基线采集版本；README 快速开始仍以 MSRV 1.85 为准）；workspace `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；base-geometry 补齐已提交（`ae4a916`）；查询精度补齐已提交（`0e54310`）；本次大世界与位级对齐在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；base-geometry 补齐已提交（`ae4a916`）；查询精度补齐已提交（`0e54310`）；大世界与位级对齐已提交（`84421d0`）；本次 SIMD 阶段在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

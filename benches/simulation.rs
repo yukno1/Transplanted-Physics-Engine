@@ -2,8 +2,8 @@
 //! workspace). Run:
 //!
 //! ```text
-//! cargo bench -p proton --bench simulation -- --quick
-//! cargo bench -p proton --bench simulation
+//! cargo bench -p proton-engine --bench simulation -- --quick
+//! cargo bench -p proton-engine --bench simulation
 //! ```
 
 use std::env;
@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use proton::body::BodyCinfo;
 use proton::collide::{BodyAabb, BroadPhase, BroadPhaseConfig, closest_points, collide};
-use proton::math::{Aabb, Quaternion, Transform, Vector4};
+use proton::math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::solver::{ContactConstraint, Solver, SolverBody};
@@ -33,10 +33,12 @@ fn main() {
     let query_iterations = if quick { 200 } else { 2000 };
     let joint_bodies = if quick { 8 } else { 24 };
     let joint_steps = if quick { 10 } else { 60 };
+    let math_iterations = if quick { 100_000 } else { 2_000_000 };
 
     println!("# hvk-bench v1 quick={quick}");
     println!("# name\tvalue\tunit\tdetail");
 
+    benchmark_math_micro(math_iterations);
     benchmark_broadphase(broadphase_count, broadphase_iterations);
     benchmark_gjk(gjk_iterations);
     benchmark_narrowphase(narrowphase_iterations);
@@ -47,6 +49,111 @@ fn main() {
     benchmark_raycast_world(query_iterations);
     benchmark_shape_cast_world(query_iterations);
     benchmark_joint_chain(joint_bodies, joint_steps);
+}
+
+fn benchmark_math_micro(iterations: u32) {
+    let mut counter = 0u32;
+    macro_rules! inputs {
+        () => {{
+            counter = counter.wrapping_add(1);
+            let jitter = (counter & 0xff) as f32 * 1e-4;
+            (
+                black_box(Vector4::from_xyz(1.25 + jitter, -2.5, 0.75)),
+                black_box(Vector4::from_xyz(3.5 - jitter, 0.125, -4.0)),
+            )
+        }};
+    }
+
+    let elapsed = measure(iterations, || {
+        let (lhs, rhs) = inputs!();
+        let result = lhs + rhs;
+        black_box(result.x.to_bits() as usize)
+    });
+    report_us(
+        "math_vector4_add",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let elapsed = measure(iterations, || {
+        let (lhs, rhs) = inputs!();
+        let result = lhs * rhs;
+        black_box(result.z.to_bits() as usize)
+    });
+    report_us(
+        "math_vector4_mul",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let elapsed = measure(iterations, || {
+        let (lhs, rhs) = inputs!();
+        black_box(lhs.dot3(rhs).to_bits() as usize)
+    });
+    report_us(
+        "math_vector4_dot3",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let elapsed = measure(iterations, || {
+        let (lhs, _) = inputs!();
+        let result = lhs.normalized3();
+        black_box(result.x.to_bits() as usize)
+    });
+    report_us(
+        "math_vector4_normalize3",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let matrix = black_box(Matrix3::from_cols(
+        Vector4::from_xyz(1.0, 0.25, -0.5),
+        Vector4::from_xyz(-0.25, 1.0, 0.125),
+        Vector4::from_xyz(0.5, -0.125, 1.0),
+    ));
+    let elapsed = measure(iterations, || {
+        let (lhs, _) = inputs!();
+        let q0 = Quaternion::new(lhs.x * 0.1, lhs.y * 0.1, lhs.z * 0.1, 0.9);
+        let q1 = Quaternion::new(-0.4, 0.5, 0.2, 0.8);
+        let result = q0.mul(black_box(q1));
+        black_box(result.w.to_bits() as usize)
+    });
+    report_us(
+        "math_quaternion_mul",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let elapsed = measure(iterations, || {
+        let (lhs, _) = inputs!();
+        let result = matrix.mul_vec(lhs);
+        black_box(result.y.to_bits() as usize)
+    });
+    report_us(
+        "math_matrix3_mul_vec",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
+
+    let elapsed = measure(iterations, || {
+        let (lhs, rhs) = inputs!();
+        let mut aabb = Aabb::new(Vector4::splat(-1.0), Vector4::splat(1.0));
+        aabb.include_point(lhs);
+        black_box(aabb.contains_point(rhs) as usize)
+    });
+    report_us(
+        "math_aabb_include_point",
+        elapsed,
+        iterations,
+        format!("iterations={iterations}"),
+    );
 }
 
 fn benchmark_broadphase(count: usize, iterations: u32) {
@@ -364,4 +471,9 @@ fn measure(iterations: u32, mut function: impl FnMut() -> usize) -> std::time::D
 fn report(name: &str, elapsed: std::time::Duration, units: u32, unit: &str, detail: String) {
     let per_unit = elapsed.as_secs_f64() * 1000.0 / f64::from(units.max(1));
     println!("{name}\t{per_unit:.3}\t{unit}\t{detail}");
+}
+
+fn report_us(name: &str, elapsed: std::time::Duration, units: u32, detail: String) {
+    let per_unit = elapsed.as_secs_f64() * 1_000_000.0 / f64::from(units.max(1));
+    println!("{name}\t{per_unit:.4}\tus/iter\t{detail}");
 }
