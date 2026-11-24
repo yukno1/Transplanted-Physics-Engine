@@ -214,3 +214,72 @@ joint_chain_ragdoll	0.041	ms/step	bodies=25 joints=24
 - 整场景指标在噪声范围内波动（`broadphase_grid` 0.387 → 0.243 ms/iter 与早期 0.244 基线同量级），不把单次差值归因为 SIMD。
 - 确定性门禁：`src/base_math/tests/simd_parity.rs` 6 个测试逐位比较特殊浮点值、比较掩码、归约与 AABB；`tests/determinism.rs` 的 `GOLDEN_TRACE_30` 固定 trace 未漂移；`cargo clippy --all-targets -- -D warnings` 通过。
 - 结论：保留 x86_64 SSE2 分量算术路径作为后端骨架；本阶段只宣称“与 Rust 标量路径逐位一致”，不宣称与 C++ 或真实 `.hkx` 资产逐位等价。
+
+## 8. 持久池 + 确定性任务图阶段（2026-11-24）
+
+### 8.1 落地范围
+
+- `World` 持有可选 `Arc<ThreadPool>`：`set_thread_pool` / `clear_thread_pool` / `thread_pool`；`step_with_threads(dt, n)` 在 `n > 1` 时惰性创建（或按需扩容到至少 `n` 个 worker）并复用同一池，`step(dt)` 不创建也不使用池。
+- `src/phys_world/tasks.rs` 用 `TaskGraph` 表达两个计算阶段：窄相候选分块、按岛求解分块。每个 chunk 写入带索引的结果槽，依赖的 merge task 按候选/岛索引排序后回写；同阶段任务只读取不可变快照，结果归并始终在调用线程完成。
+- 保持串行：重力、trigger/post-collide/post-solve 事件派发、接触行构建与修改器、warm-start 回写、速度回写、休眠计时、积分。共享 motion 的积分仍只执行一次，避免借用与顺序变化。
+- 保留小场景阈值：候选 `<32` 走串行窄相，岛数 `<2` 走串行岛求解；`collect_contacts_parallel` 公共 API 仍使用 scoped 分块，便于对比。
+- `benches/simulation.rs` 新增 `world_fall_n_persistent_pool`（显式预建 4 线程池），输出格式仍为 `# hvk-bench v1`。
+
+### 8.2 最终 quick 输出
+
+```text
+# hvk-bench v1 quick=true
+# name	value	unit	detail
+math_vector4_add	0.0012	us/iter	iterations=100000
+math_vector4_mul	0.0011	us/iter	iterations=100000
+math_vector4_dot3	0.0013	us/iter	iterations=100000
+math_vector4_normalize3	0.0015	us/iter	iterations=100000
+math_quaternion_mul	0.0084	us/iter	iterations=100000
+math_matrix3_mul_vec	0.0013	us/iter	iterations=100000
+math_aabb_include_point	0.0025	us/iter	iterations=100000
+broadphase_grid	0.020	ms/iter	bodies=64 pairs=156
+gjk_sphere_pair	0.000	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.030	ms/step	bodies=16 contacts=15
+world_fall_n_parallel	0.038	ms/step	bodies=16 contacts=15
+world_fall_n_persistent_pool	0.025	ms/step	bodies=16 contacts=15 threads=4 task-graph
+world_stack_10	0.010	ms/step	bodies=10 contacts=3
+raycast_world	0.003	ms/iter	bodies=17 hits=201
+shape_cast_world	0.001	ms/iter	bodies=1 hits=201
+joint_chain_ragdoll	0.017	ms/step	bodies=9 joints=8
+```
+
+### 8.3 最终 full 输出
+
+```text
+# hvk-bench v1 quick=false
+# name	value	unit	detail
+math_vector4_add	0.0011	us/iter	iterations=2000000
+math_vector4_mul	0.0010	us/iter	iterations=2000000
+math_vector4_dot3	0.0013	us/iter	iterations=2000000
+math_vector4_normalize3	0.0014	us/iter	iterations=2000000
+math_quaternion_mul	0.0077	us/iter	iterations=2000000
+math_matrix3_mul_vec	0.0014	us/iter	iterations=2000000
+math_aabb_include_point	0.0027	us/iter	iterations=2000000
+broadphase_grid	0.219	ms/iter	bodies=512 pairs=1906
+gjk_sphere_pair	0.000	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.076	ms/step	bodies=64 contacts=24
+world_fall_n_parallel	0.104	ms/step	bodies=64 contacts=24
+world_fall_n_persistent_pool	0.082	ms/step	bodies=64 contacts=24 threads=4 task-graph
+world_stack_10	0.016	ms/step	bodies=10 contacts=8
+raycast_world	0.003	ms/iter	bodies=17 hits=2001
+shape_cast_world	0.001	ms/iter	bodies=1 hits=2001
+joint_chain_ragdoll	0.039	ms/step	bodies=25 joints=24
+```
+
+### 8.4 对比与结论
+
+- 与 §7.3 的 `world_fall_n_parallel` 相比，full 从 0.182 降到 0.104（惰性池） / 0.082 ms/step（显式预建池）；quick 从 0.019 升到 0.038 / 0.025 ms/step。整场景计时噪声较大，不把单次差值单独归因于任务图；可确认的是每步不再创建 scoped worker。
+- 任务图本身有提交和两次 barrier 的开销，小场景（`world_stack_10`、`joint_chain_ragdoll`）不追求加速；保留 `<32` 候选与 `<2` 岛的串行阈值。
+- 确定性门禁：`tests/sleeping_and_parallel_solving.rs` 的 `explicit_persistent_pool_matches_single_threaded` 在 36 球场景比较 120 步 `hvk-trace v1`；`thread_pool_is_lazy_and_grows_with_requested_threads` 覆盖池生命周期；`tests/determinism.rs::pooled_task_graph_trace_matches_scalar_golden` 断言 30 步输出等于 `GOLDEN_TRACE_30`。原 `parallel_island_solving_matches_single_threaded` / `parallel_solving_with_warm_starting_and_joints_is_bitwise_identical` 与 `phys-world` 单元 `step_with_threads_matches_single_threaded` 仍全绿。
+- 结论：保留持久池 + 确定性任务图作为后续完整物理任务图的调度骨架；本阶段只宣称“与 Rust 单线程路径逐位一致”，不宣称与 C++、真实 `.hkx` 资产或真实 VDB 轨迹逐位等价。

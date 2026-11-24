@@ -40,9 +40,12 @@
 //! [`World::query_aabb`]) run against the current cached poses and never
 //! modify the world.
 //!
-//! The pipeline is deliberately single-threaded and deterministic: bodies are
-//! visited in slot order, contacts in canonical broad-phase pair order, and the
-//! solver sweeps contacts in insertion order.
+//! The default [`World::step`] pipeline is single-threaded and deterministic:
+//! bodies are visited in slot order, contacts in canonical broad-phase pair
+//! order, and the solver sweeps contacts in insertion order.
+//! [`World::step_with_threads`] keeps every arithmetic order but submits
+//! independent narrow-phase and island chunks through a deterministic task
+//! graph on a reusable pool.
 //!
 //! # Scope limits
 //!
@@ -65,8 +68,9 @@
 //! narrow-phase contacts are skipped and gravity no longer applies, until an
 //! active or keyframed body touches it (wake propagation through the island)
 //! or [`World::wake_body`] is called. Islands are disjoint in dynamic solver
-//! bodies, so [`World::step_with_threads`] can solve island groups in parallel
-//! and merge the per-island results with bit-identical velocities.
+//! bodies, so [`World::step_with_threads`] can solve island groups on a
+//! reusable [`crate::thread::ThreadPool`] with a deterministic task graph and
+//! merge per-island results by stable index with bit-identical velocities.
 //!
 //! Bodies flagged with [`World::set_body_trigger`] emit deterministic
 //! [`TriggerEvent`]s from broad-phase AABB overlaps; same-step enter/exit pairs
@@ -106,6 +110,7 @@ mod island;
 pub mod query;
 pub mod signals;
 pub mod solver_data;
+pub(crate) mod tasks;
 pub mod world;
 
 pub use cinfo::WorldCinfo;

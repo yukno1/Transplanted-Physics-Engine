@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use crate::base_math::{Matrix3, PreciseTransform, Quaternion, Transform, Vector4, Vector4d};
+use crate::base_thread::ThreadPool;
 use crate::phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
     inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
@@ -44,6 +45,10 @@ use crate::phys_world::signals::{
 use crate::phys_world::solver_data::{
     SolverDataHook, SolverDataHookId, SolverDataHookRegistry, SolverDataView,
 };
+use crate::phys_world::tasks::{
+    ParallelDispatch, collect_contacts as collect_contacts_with_dispatch,
+    solve_islands as solve_islands_with_dispatch,
+};
 use crate::phys_world::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
 
 /// Per-body deactivation state (the world's deactivation-manager subset).
@@ -81,7 +86,7 @@ type TriggerPairKey = (BodyId, BodyId, ShapeKey, ShapeKey);
 
 /// Immutable narrow-phase candidate (body pair plus shape/transform copies).
 #[derive(Clone)]
-struct ContactCandidate {
+pub(crate) struct ContactCandidate {
     body_a: BodyId,
     body_b: BodyId,
     shape_a: Arc<dyn Shape>,
@@ -108,6 +113,8 @@ pub struct World {
     joints: Vec<Option<JointSlot>>,
     joint_count: usize,
     solver: Solver,
+    /// Reusable worker pool for pooled `step_with_threads`, created lazily.
+    thread_pool: Option<Arc<ThreadPool>>,
     contact_cache: ContactImpulseCache,
     sleep_states: HashMap<BodyId, SleepState>,
     last_islands: Vec<IslandInfo>,
@@ -155,6 +162,10 @@ impl fmt::Debug for World {
             .field("joints", &self.joints)
             .field("joint_count", &self.joint_count)
             .field("solver", &self.solver)
+            .field(
+                "thread_pool",
+                &self.thread_pool.as_ref().map(|pool| pool.num_threads()),
+            )
             .field("contact_cache", &self.contact_cache)
             .field("sleep_states", &self.sleep_states)
             .field("last_islands", &self.last_islands)
@@ -192,6 +203,7 @@ impl World {
             joints: Vec::new(),
             joint_count: 0,
             solver: Solver::new(solver_settings),
+            thread_pool: None,
             contact_cache: ContactImpulseCache::default(),
             sleep_states: HashMap::new(),
             last_islands: Vec::new(),
@@ -221,6 +233,40 @@ impl World {
     /// The construction info used to create this world.
     pub fn cinfo(&self) -> &WorldCinfo {
         &self.cinfo
+    }
+
+    /// Attach a reusable worker pool for [`World::step_with_threads`].
+    ///
+    /// The world stays `Send + Sync`: the pool is shared through `Arc` and only
+    /// submits `'static` task-graph jobs. Passing a pool avoids creating scoped
+    /// workers on every step; [`World::step`] never uses it.
+    pub fn set_thread_pool(&mut self, pool: Arc<ThreadPool>) {
+        self.thread_pool = Some(pool);
+    }
+
+    /// Detach the reusable pool. Later multi-threaded steps create a new one.
+    pub fn clear_thread_pool(&mut self) {
+        self.thread_pool = None;
+    }
+
+    /// The attached reusable pool, if any.
+    pub fn thread_pool(&self) -> Option<&ThreadPool> {
+        self.thread_pool.as_deref()
+    }
+
+    /// Return a pool with at least `threads` workers, creating or replacing the
+    /// attached pool when necessary. Existing larger pools are reused as-is;
+    /// chunk counts remain caller-controlled so smaller requests only occupy a
+    /// subset of the workers.
+    fn ensure_thread_pool(&mut self, threads: usize) -> Arc<ThreadPool> {
+        if let Some(pool) = &self.thread_pool {
+            if pool.num_threads() >= threads {
+                return Arc::clone(pool);
+            }
+        }
+        let pool = Arc::new(ThreadPool::with_name("hk-step", threads));
+        self.thread_pool = Some(Arc::clone(&pool));
+        pool
     }
 
     /// Current gravity (`getGravity`).
@@ -2457,25 +2503,34 @@ impl World {
     }
 
     /// Advance the world by `delta_time`, parallelizing narrow-phase contact
-    /// generation over `threads` workers.
+    /// generation and per-island solving over `threads` workers.
     ///
     /// The pipeline remains gravity → broad phase → narrow phase → solve →
     /// integrate. Broad phase and the sequential-impulse solver are unchanged;
-    /// each broad-phase candidate is evaluated independently and the per-chunk
-    /// results are re-sorted by candidate index, so the contact/manifold order
-    /// (and therefore the solver impulse order) is identical to the
-    /// single-threaded path.
+    /// independent compute stages are submitted as deterministic task-graph
+    /// chunks to a reusable worker pool and their results are re-sorted by
+    /// candidate / island index. Gravity, events, warm-start write-back,
+    /// sleeping and integration stay on the calling thread in the original
+    /// order, so the contact/manifold order and `hvk-trace v1` are identical to
+    /// the single-threaded path.
     pub fn step_with_threads(&mut self, delta_time: f32, threads: usize) {
         debug_assert!(
             delta_time >= 0.0 && delta_time.is_finite(),
             "invalid step delta time"
         );
 
-        let contacts = if threads > 1 {
-            self.collect_contacts_parallel(threads)
+        let thread_pool = if threads > 1 {
+            Some(self.ensure_thread_pool(threads))
         } else {
-            self.collect_contacts()
+            None
         };
+        let dispatch = match &thread_pool {
+            Some(pool) => ParallelDispatch::Pooled(pool, threads),
+            None => ParallelDispatch::Scoped(threads),
+        };
+        let candidates = self.contact_candidates();
+        let contacts =
+            collect_contacts_with_dispatch(&candidates, self.cinfo.collision_tolerance, dispatch);
         // Trigger overlap transitions are collected from broad-phase AABBs and
         // emitted before contact rows are built; subscribers cannot mutate the
         // world, so ordering relative to the solver is stable.
@@ -2647,53 +2702,31 @@ impl World {
         }
 
         // Islands are disjoint in solver-body space (static/keyframed members
-        // never change), so solving island groups in parallel and merging the
-        // per-island results yields exactly the sequential impulses.
-        if threads > 1 && islands.len() >= MIN_PARALLEL_ISLANDS {
-            let results = solve_islands_parallel(
-                &self.solver,
-                &IslandSolveBuffers {
-                    solver_bodies: &solver_bodies,
-                    constraints: &constraints,
-                    contact_impulses: &contact_impulses,
-                    solver_joints: &solver_joints,
-                    joint_impulses: &joint_impulses,
-                },
-                &islands,
-                delta_time,
-                threads,
-            );
-            for result in results {
-                for (index, body) in result.bodies {
-                    solver_bodies[index] = body;
-                }
-                for (index, impulse) in result.contacts {
-                    contact_impulses[index] = impulse;
-                }
-                for (index, impulse) in result.joints {
-                    joint_impulses[index] = impulse;
-                }
+        // never change), so solving island chunks and merging by island index
+        // yields exactly the sequential impulses. Small island counts fall back
+        // to the serial sweep inside the scheduler.
+        let results = solve_islands_with_dispatch(
+            &self.solver,
+            &IslandSolveBuffers {
+                solver_bodies: &solver_bodies,
+                constraints: &constraints,
+                contact_impulses: &contact_impulses,
+                solver_joints: &solver_joints,
+                joint_impulses: &joint_impulses,
+            },
+            &islands,
+            delta_time,
+            dispatch,
+        );
+        for result in results {
+            for (index, body) in result.bodies {
+                solver_bodies[index] = body;
             }
-        } else {
-            for island in &islands {
-                if !island.contacts.is_empty() {
-                    self.solver.solve_contacts_subset(
-                        &mut solver_bodies,
-                        &constraints,
-                        &island.contacts,
-                        &mut contact_impulses,
-                        delta_time,
-                    );
-                }
-                if !island.joints.is_empty() {
-                    self.solver.solve_joints_subset_with_impulses(
-                        &mut solver_bodies,
-                        &solver_joints,
-                        &island.joints,
-                        &mut joint_impulses,
-                        delta_time,
-                    );
-                }
+            for (index, impulse) in result.contacts {
+                contact_impulses[index] = impulse;
+            }
+            for (index, impulse) in result.joints {
+                joint_impulses[index] = impulse;
             }
         }
 
@@ -2871,39 +2904,11 @@ impl World {
     /// broad-phase pair order before returning.
     pub fn collect_contacts_parallel(&self, threads: usize) -> Vec<ContactManifold> {
         let candidates = self.contact_candidates();
-        // Spawning scoped workers per step costs more than a small narrow phase;
-        // below this threshold the sequential path is used.
-        const MIN_PARALLEL_CANDIDATES: usize = 32;
-        if candidates.len() < MIN_PARALLEL_CANDIDATES || threads <= 1 {
-            return contacts_from_candidates(&candidates, self.cinfo.collision_tolerance);
-        }
-
-        let results: Mutex<Vec<(usize, ContactManifold)>> = Mutex::new(Vec::new());
-        let tolerance = self.cinfo.collision_tolerance;
-        crate::base_thread::parallel::parallel_for_chunks(
-            candidates.len(),
-            threads,
-            |start, end| {
-                let mut local = Vec::new();
-                for (index, candidate) in candidates.iter().enumerate().take(end).skip(start) {
-                    if let Some(manifold) = collide_candidate(candidate, tolerance) {
-                        local.push((index, manifold));
-                    }
-                }
-                if !local.is_empty() {
-                    results
-                        .lock()
-                        .expect("parallel contact worker panicked")
-                        .extend(local);
-                }
-            },
-        );
-
-        let mut results = results
-            .into_inner()
-            .expect("parallel contact worker panicked");
-        results.sort_unstable_by_key(|(index, _)| *index);
-        results.into_iter().map(|(_, manifold)| manifold).collect()
+        collect_contacts_with_dispatch(
+            &candidates,
+            self.cinfo.collision_tolerance,
+            ParallelDispatch::Scoped(threads),
+        )
     }
 
     /// Leaf keys for one narrow-phase trigger pair.
@@ -3163,7 +3168,7 @@ impl World {
     }
 }
 
-fn contacts_from_candidates(
+pub(crate) fn contacts_from_candidates(
     candidates: &[ContactCandidate],
     tolerance: f32,
 ) -> Vec<ContactManifold> {
@@ -3173,82 +3178,22 @@ fn contacts_from_candidates(
         .collect()
 }
 
-/// Minimum island count for the parallel per-island solver to kick in; below
-/// it the sequential path avoids per-step thread spawn overhead.
-const MIN_PARALLEL_ISLANDS: usize = 2;
-
 /// Solved state of one island, extracted from a worker's private buffers.
-struct IslandSolveResult {
-    bodies: Vec<(usize, SolverBody)>,
-    contacts: Vec<(usize, ContactImpulse)>,
-    joints: Vec<(usize, JointImpulse)>,
+pub(crate) struct IslandSolveResult {
+    /// Stable island index used to restore deterministic merge order.
+    pub(crate) index: usize,
+    pub(crate) bodies: Vec<(usize, SolverBody)>,
+    pub(crate) contacts: Vec<(usize, ContactImpulse)>,
+    pub(crate) joints: Vec<(usize, JointImpulse)>,
 }
 
-/// The step's solver buffers handed to [`solve_islands_parallel`].
-struct IslandSolveBuffers<'a> {
-    solver_bodies: &'a [SolverBody],
-    constraints: &'a [ContactConstraint],
-    contact_impulses: &'a [ContactImpulse],
-    solver_joints: &'a [JointConstraint],
-    joint_impulses: &'a [JointImpulse],
-}
-
-/// Solve the islands in parallel over deterministic contiguous chunks.
-///
-/// Each worker clones the solver buffers, solves its islands sequentially (in
-/// ascending island order) and returns the per-island state. Islands are
-/// disjoint in dynamic solver bodies, so merging is order-independent; static
-/// members are copied back unchanged.
-fn solve_islands_parallel(
-    solver: &Solver,
-    buffers: &IslandSolveBuffers<'_>,
-    islands: &[crate::phys_world::island::Island],
-    delta_time: f32,
-    threads: usize,
-) -> Vec<IslandSolveResult> {
-    let results: Mutex<Vec<IslandSolveResult>> = Mutex::new(Vec::new());
-    crate::base_thread::parallel::parallel_for_chunks(islands.len(), threads, |start, end| {
-        let mut bodies = buffers.solver_bodies.to_vec();
-        let mut contacts = buffers.contact_impulses.to_vec();
-        let mut joints = buffers.joint_impulses.to_vec();
-        for island in &islands[start..end] {
-            if !island.contacts.is_empty() {
-                solver.solve_contacts_subset(
-                    &mut bodies,
-                    buffers.constraints,
-                    &island.contacts,
-                    &mut contacts,
-                    delta_time,
-                );
-            }
-            if !island.joints.is_empty() {
-                solver.solve_joints_subset_with_impulses(
-                    &mut bodies,
-                    buffers.solver_joints,
-                    &island.joints,
-                    &mut joints,
-                    delta_time,
-                );
-            }
-        }
-        let mut local = Vec::with_capacity(end - start);
-        for island in &islands[start..end] {
-            local.push(IslandSolveResult {
-                bodies: island.bodies.iter().map(|&i| (i, bodies[i])).collect(),
-                contacts: island.contacts.iter().map(|&i| (i, contacts[i])).collect(),
-                joints: island.joints.iter().map(|&i| (i, joints[i])).collect(),
-            });
-        }
-        if !local.is_empty() {
-            results
-                .lock()
-                .expect("parallel island worker panicked")
-                .extend(local);
-        }
-    });
-    results
-        .into_inner()
-        .expect("parallel island worker panicked")
+/// Immutable solver inputs snapshot for one step's island schedule.
+pub(crate) struct IslandSolveBuffers<'a> {
+    pub(crate) solver_bodies: &'a [SolverBody],
+    pub(crate) constraints: &'a [ContactConstraint],
+    pub(crate) contact_impulses: &'a [ContactImpulse],
+    pub(crate) solver_joints: &'a [JointConstraint],
+    pub(crate) joint_impulses: &'a [JointImpulse],
 }
 
 /// Signed angle between the reference (twist) axes about the hinge axis.
@@ -3310,7 +3255,10 @@ fn perpendicular_reference(axis: Vector4, reference: Vector4) -> Vector4 {
     unit_vector(axis.cross(helper))
 }
 
-fn collide_candidate(candidate: &ContactCandidate, tolerance: f32) -> Option<ContactManifold> {
+pub(crate) fn collide_candidate(
+    candidate: &ContactCandidate,
+    tolerance: f32,
+) -> Option<ContactManifold> {
     collide_with_tolerance(
         candidate.shape_a.as_ref(),
         &candidate.transform_a,
@@ -3336,7 +3284,7 @@ mod tests {
         PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo,
     };
     use std::f32::consts::FRAC_PI_2;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
         Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
@@ -3618,6 +3566,12 @@ mod tests {
                 sleeping_body_count: 0,
             }
         );
+    }
+
+    #[test]
+    fn world_is_send_sync_with_pool() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<World>();
     }
 
     #[test]

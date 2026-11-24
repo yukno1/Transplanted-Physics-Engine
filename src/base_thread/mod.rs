@@ -34,9 +34,10 @@
 //! * `hkWorkerThreadContext`, the job-type/priority queues and work stealing of
 //!   `hkJobQueue`, `hkSemaphore*`, readers/writer locks, `hkCriticalSection`
 //!   (std `Mutex` covers the port's needs so far).
-//! * `hknpMultithreadedSimulation` / `hknpTaskGraph` (physics scheduling) — the
-//!   single-threaded simulation is assembled in Phases 6/8, parallel scheduling
-//!   is Phase 10.
+//! * Complete `hknpMultithreadedSimulation` / `hknpTaskGraph` behaviour (work
+//!   stealing, priority queues, solver/transform task graphs). The physics
+//!   world uses a deterministic subset here: reusable [`ThreadPool`] plus a
+//!   per-step [`TaskGraph`] over narrow-phase and island chunks.
 //! * Task multiplicity (`addTaskWithMultiplicity`) and reference-counted
 //!   `hkReferencedTask` nodes; graph merging (`hkTaskGraph::append`).
 //!

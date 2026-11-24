@@ -11,6 +11,7 @@ use proton::body::BodyCinfo;
 use proton::math::Vector4;
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
+use proton::thread::ThreadPool;
 use proton::world::{World, WorldCinfo};
 
 fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
@@ -176,4 +177,62 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
         sequential.snapshot().to_text(),
         parallel.snapshot().to_text()
     );
+}
+
+fn many_bodies_scene() -> World {
+    let mut world = World::new(WorldCinfo::new());
+    ground(&mut world, Vector4::from_xyz(6.0, 0.5, 6.0));
+    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    for index in 0..36 {
+        let x = (index % 6) as f32 * 1.2 - 3.0;
+        let z = (index / 6) as f32 * 1.2 - 3.0;
+        world.create_body(
+            &dynamic(BodyCinfo::new(Arc::clone(&sphere)))
+                .with_position(Vector4::from_xyz(x, 4.0, z)),
+        );
+    }
+    world
+}
+
+#[test]
+fn explicit_persistent_pool_matches_single_threaded() {
+    let mut sequential = many_bodies_scene();
+    let mut pooled = many_bodies_scene();
+    pooled.set_thread_pool(Arc::new(ThreadPool::with_name("hk-test-pool", 4)));
+    assert_eq!(pooled.thread_pool().map(ThreadPool::num_threads), Some(4));
+
+    for _ in 0..120 {
+        sequential.step(1.0 / 60.0);
+        pooled.step_with_threads(1.0 / 60.0, 4);
+    }
+    assert!(
+        sequential.last_manifold_count() >= 32,
+        "scene must exercise the parallel narrow-phase path"
+    );
+    assert_eq!(sequential.snapshot().to_text(), pooled.snapshot().to_text());
+}
+
+#[test]
+fn thread_pool_is_lazy_and_grows_with_requested_threads() {
+    let mut world = World::new(WorldCinfo::new());
+    assert!(world.thread_pool().is_none());
+
+    world.step(1.0 / 60.0);
+    assert!(
+        world.thread_pool().is_none(),
+        "serial step must stay pool-free"
+    );
+
+    world.step_with_threads(1.0 / 60.0, 2);
+    assert_eq!(world.thread_pool().map(ThreadPool::num_threads), Some(2));
+
+    world.step_with_threads(1.0 / 60.0, 4);
+    assert_eq!(world.thread_pool().map(ThreadPool::num_threads), Some(4));
+
+    world.set_thread_pool(Arc::new(ThreadPool::new(8)));
+    world.step_with_threads(1.0 / 60.0, 2);
+    assert_eq!(world.thread_pool().map(ThreadPool::num_threads), Some(8));
+
+    world.clear_thread_pool();
+    assert!(world.thread_pool().is_none());
 }

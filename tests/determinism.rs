@@ -7,6 +7,7 @@ use proton::body::BodyCinfo;
 use proton::math::{Quaternion, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
+use proton::thread::ThreadPool;
 use proton::world::{World, WorldCinfo, WorldSnapshot};
 
 const GOLDEN_TRACE_30: &str = "\
@@ -136,4 +137,18 @@ fn np_world_snapshot_test_partial() {
             assert_eq!(body_snapshot.linear_velocity, Vector4::ZERO);
         }
     }
+}
+
+#[test]
+fn pooled_task_graph_trace_matches_scalar_golden() {
+    let mut world = build_scene();
+    world.set_thread_pool(Arc::new(ThreadPool::with_name("hk-trace-pool", 4)));
+    for _ in 0..30 {
+        world.step_with_threads(1.0 / 60.0, 4);
+    }
+    assert_eq!(
+        world.snapshot().to_text(),
+        GOLDEN_TRACE_30,
+        "pooled task graph must not change the scalar 30-step trace"
+    );
 }

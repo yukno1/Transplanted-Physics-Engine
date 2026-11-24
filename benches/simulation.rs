@@ -17,6 +17,7 @@ use proton::math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::solver::{ContactConstraint, Solver, SolverBody};
+use proton::thread::ThreadPool;
 use proton::world::{World, WorldCinfo};
 
 fn main() {
@@ -45,6 +46,7 @@ fn main() {
     benchmark_solver(solver_iterations);
     benchmark_world_fall(fall_bodies, fall_steps, 1, "world_fall_n");
     benchmark_world_fall(fall_bodies, fall_steps, 4, "world_fall_n_parallel");
+    benchmark_world_fall_persistent_pool(fall_bodies, fall_steps, 4);
     benchmark_world_stack(stack_steps);
     benchmark_raycast_world(query_iterations);
     benchmark_shape_cast_world(query_iterations);
@@ -272,7 +274,7 @@ fn benchmark_solver(iterations: u32) {
     );
 }
 
-fn benchmark_world_fall(body_count: usize, steps: usize, threads: usize, name: &str) {
+fn build_fall_world(body_count: usize) -> World {
     let mut world = World::new(WorldCinfo::new());
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
         Vector4::from_xyz(6.0, 0.5, 6.0),
@@ -292,6 +294,11 @@ fn benchmark_world_fall(body_count: usize, steps: usize, threads: usize, name: &
                 .with_position(Vector4::from_xyz(x, 5.0, z)),
         );
     }
+    world
+}
+
+fn benchmark_world_fall(body_count: usize, steps: usize, threads: usize, name: &str) {
+    let mut world = build_fall_world(body_count);
     let start = Instant::now();
     for _ in 0..steps {
         if threads > 1 {
@@ -308,6 +315,24 @@ fn benchmark_world_fall(body_count: usize, steps: usize, threads: usize, name: &
         steps as u32,
         "ms/step",
         format!("bodies={body_count} contacts={contacts}"),
+    );
+}
+
+fn benchmark_world_fall_persistent_pool(body_count: usize, steps: usize, threads: usize) {
+    let mut world = build_fall_world(body_count);
+    world.set_thread_pool(Arc::new(ThreadPool::with_name("hk-bench", threads)));
+    let start = Instant::now();
+    for _ in 0..steps {
+        world.step_with_threads(1.0 / 60.0, threads);
+    }
+    let elapsed = start.elapsed();
+    let contacts = world.last_contact_count();
+    report(
+        "world_fall_n_persistent_pool",
+        elapsed,
+        steps as u32,
+        "ms/step",
+        format!("bodies={body_count} contacts={contacts} threads={threads} task-graph"),
     );
 }
 
