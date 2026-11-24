@@ -80,7 +80,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 
 | ID | 场景 | 层 | 主要断言 | 文件 |
 |---|---|---|---|---|
-| S1 | 自由落体解析解 | L5 | `y(n) = y0 - g·dt²·n(n+1)/2`，速度 `-g·dt·n`，容差 1e-4 | `crates/havok/tests/simulation_scenarios.rs` |
+| S1 | 自由落体解析解 | L5 | `y(n) = y0 - g·dt²·n(n+1)/2`，速度 `-g·dt·n`，容差 1e-4 | `tests/simulation_scenarios.rs` |
 | S2 | 球落静态盒并静止 | L5 | 最终 y∈[0.35,0.75]、`|vy|<0.2`、最后一步 manifold/contact>0 | 同上 |
 | S3 | 三盒堆叠 | L5 | 三盒垂直顺序保持、无穿透地面、速度收敛 | 同上 |
 | S4 | 摩擦滑动 | L5 | 水平速度衰减、位移小于无摩擦上界 | 同上 |
@@ -88,10 +88,10 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | S6 | 圆柱落地 | L5 | 圆柱稳定、不穿地 | 同上 |
 | S7 | 流形约定 | L3 | normal 单位化、`position+normal*distance=point_on_a`、负距离=穿透 | 同上 |
 | S8 | 宽相确定性 | L3 | 输入乱序 → 输出 `(a,b)` 排序去重一致；空 AABB 忽略 | 同上 |
-| S9 | 双 world 逐位一致 | L6 | 同场景 180 步，每个 body 的 pos/orientation/vel 的 `to_bits` 完全相同 | `crates/havok/tests/determinism.rs` |
+| S9 | 双 world 逐位一致 | L6 | 同场景 180 步，每个 body 的 pos/orientation/vel 的 `to_bits` 完全相同 | `tests/determinism.rs` |
 | S10 | snapshot/trace 稳定 | L6 | 重复运行 trace 文本相同、头部 `# hvk-trace v1`、含 step/body 行 | 同上 |
-| S11 | body 生命周期 | L2 | 复用槽后旧 BodyId 失效、新 id serial 不同 | `crates/havok/tests/original_unit_tests.rs` |
-| S12 | 原版结构性映射 | L1/L2 | 6 个 Ported + 5 个 Partial 的最小断言 | `crates/havok/tests/original_unit_tests.rs` |
+| S11 | body 生命周期 | L2 | 复用槽后旧 BodyId 失效、新 id serial 不同 | `tests/original_unit_tests.rs` |
+| S12 | 原版结构性映射 | L1/L2 | 6 个 Ported + 5 个 Partial 的最小断言 | `tests/original_unit_tests.rs` |
 | S13 | ball-socket 摆锤 | L4/L5 | 世界 pivot 与锚点始终接近（<0.4）、约束随 body 销毁 | `constraints_and_queries.rs` |
 | S14 | hinge 角度 limits | L4/L5 | 越过上限后角度被拉回窗口内；初始越界 −0.1 rad 以上 | 同上 |
 | S15 | hinge 速度 motor | L4/L5 | 60 步后绕轴角速度追踪目标（±0.2）、关闭后不制动 | 同上 |
@@ -137,7 +137,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 2. 定义 `hvk-trace v1` 文本格式（浮点用 `to_bits()` 十六进制，避免文本格式化漂移）；
 3. Rust 侧先做**同场景两次运行逐位一致**（S9）和 trace 稳定性（S10）；
 4. C++ 黄金基准需要：生成/配置原版解决方案 → 构建 Physics + UnitTest → 跑固定场景导出 `hvk-trace v1` → 与 Rust 输出逐行比较。该步骤在 `../original` 当前状态下不可执行，列为外部阻塞项，不做“已逐位对齐”的虚假声明。
-5. 2026-11-24 起，任何数学后端改动还须通过 `crates/base-math/tests/simd_parity.rs`（`-0.0`、denormal、NaN/Inf、比较掩码、归约、AABB）和 `tests/determinism.rs::GOLDEN_TRACE_30`；性能验收见 `docs/performance-baseline.md`，只宣称与 Rust 标量路径逐位一致。
+5. 2026-11-24 起，任何数学后端改动还须通过 `src/base_math/tests/simd_parity.rs`（`-0.0`、denormal、NaN/Inf、比较掩码、归约、AABB）和 `tests/determinism.rs::GOLDEN_TRACE_30`；性能验收见 `docs/performance-baseline.md`，只宣称与 Rust 标量路径逐位一致。
 
 ### `hvk-trace v1` 格式
 
@@ -153,9 +153,9 @@ body <BodyId hex u64> p <f32 bits> <f32 bits> <f32 bits> q <f32 bits> <f32 bits>
 
 ## 6. 验收标准
 
-- `cargo test --workspace` 全绿，新增集成测试 ≥ 10 个；
-- `cargo bench -p proton-engine --bench simulation -- --quick` 正常退出并打印全部指标；
-- `crates/base-math/tests/simd_parity.rs` 与固定 `GOLDEN_TRACE_30` 全绿（数学后端改动必需）；
+- `cargo test` 全绿，新增集成测试 ≥ 10 个；
+- `cargo bench --bench simulation -- --quick` 正常退出并打印全部指标；
+- `src/base_math/tests/simd_parity.rs` 与固定 `GOLDEN_TRACE_30` 全绿（数学后端改动必需）；
 - `cargo fmt/clippy/doc/release` 全绿；
 - README Phase 9 段如实记录 Ported/Partial/Blocked 数量与 C++ 基准阻塞项；
 - 不新增外部依赖。

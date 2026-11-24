@@ -1,51 +1,21 @@
-# Havok Physics 2021.2 — Rust workspace (virtual manifest)
+# Havok Physics 2021.2 — Rust 单 crate 工程
 #
-# Migration plan: see README.md at the repository root.
-# Crate layout: crates/*, dependency direction is strictly one-way
-# (types -> math -> memory -> container -> ... -> world -> extensions).
+# 原 workspace 成员已退化为 crates/* 下的普通模块文件夹；根 crate 的名称为
+# proton-engine（lib 名 proton），通过模块路径统一暴露全部 API。
+# 迁移计划与“惯用 Rust、非 1:1 C++ 复刻”准则见 README.md。
 
-[workspace]
-resolver = "3"
-members = ["crates/*"]
-
-[workspace.package]
+[package]
+name = "proton-engine"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-# Source derived from proprietary Havok code: never publish to crates.io.
 publish = false
-
-[package]
-name = "proton-engine"            # package 名必须与子 crate 的 "havok" 区分
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-publish.workspace = true
-description = "Umbrella library bundling the whole Havok Rust port behind one crate"
+description = "Single-crate Rust port of the Havok Physics 2021.2 runtime"
 
 [lib]
-name = "proton"                   # 使用者写 use proton::world::World;
+name = "proton"
 path = "src/lib.rs"
-# 需要 C ABI 动态库时再打开:
-# crate-type = ["rlib", "cdylib"]
 
-[dependencies]
-base-types        = { path = "crates/base-types" }
-base-math         = { path = "crates/base-math" }
-base-memory       = { path = "crates/base-memory" }
-base-container    = { path = "crates/base-container" }
-base-thread       = { path = "crates/base-thread" }
-base-geometry     = { path = "crates/base-geometry" }
-base-serialize    = { path = "crates/base-serialize" }
-phys-types      = { path = "crates/phys-types" }
-phys-shape      = { path = "crates/phys-shape" }
-phys-collide    = { path = "crates/phys-collide" }
-phys-body       = { path = "crates/phys-body" }
-phys-solver     = { path = "crates/phys-solver" }
-phys-world      = { path = "crates/phys-world" }
-phys-extensions = { path = "crates/phys-extensions" }
-
-# benches/simulation.rs 使用 harness = false，搬过来后必须显式声明
 [[bench]]
 name = "simulation"
 harness = false
@@ -56,8 +26,6 @@ harness = false
 # enable fast-math style optimizations (FMA contraction, reassociation) in
 # math or solver code, and validate against the C++ golden traces (Phase 9).
 #
-# External dependencies are introduced per phase (see README):
-#   Phase 2+: none planned for base-math (hand-ported for determinism)
-#   Phase 4+: rayon (candidate for the multithreaded simulation)
-#   Phase 3+: bytemuck, hashbrown
-#   Phase 1+: thiserror
+# 设计准则：不要求 1:1 复刻 C++ 结构，优先使用 Rust 语言特性（enum/Option/
+# Result/trait/迭代器/RAII）；确定性约束只保留在数值热点与既有 golden trace。
+# 当前零外部依赖；按阶段引入依赖时在此处声明。

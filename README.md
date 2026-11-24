@@ -4,11 +4,11 @@
 
 **目录边界**
 
-- `havok/`（本仓库）：Rust 目标工程（workspace）。
+- `havok/`（本仓库）：Rust 目标工程（单 crate，原 workspace 成员已退化为模块文件夹）。
 - `../original/`（同级目录，**不纳入本仓库 / git**）：原始 C++ SDK 源码（约 5861 个文件）。
 
 > **快速开始**：需要 Rust（edition 2024 / MSRV 1.85），在仓库根目录执行
-> `cargo test --workspace`。完整命令与仓库约定见第 7 节。
+> `cargo test`。完整命令与仓库约定见第 7 节。
 
 ## 0. 快速上手
 
@@ -118,7 +118,7 @@ original/                        # 统计日期：2026-11-09
 
 ## 2. 迁移策略
 
-**不做 1:1 全量直译。** 原 SDK 规模百万行级，含工具链、序列化、可视化、内容导出。按优先级分三层：
+**不做 1:1 全量直译，也不以复刻 C++ 结构为目标。** 原 SDK 规模百万行级，含工具链、序列化、可视化、内容导出。Rust 侧优先使用语言特性（`enum` / `Option` / `Result` / trait / 迭代器 / RAII / 所有权）表达同等能力；C++ 的类层次、指针与函数表只在确定性或兼容需要时保留对应形态。按优先级分三层：
 
 | 优先级 | 范围 | 说明 |
 |---|---|---|
@@ -128,39 +128,52 @@ original/                        # 统计日期：2026-11-09
 
 ---
 
-## 3. 目标 Rust Workspace 结构
+### 2.1 Rust 惯用化准则（2026-11-24 新增）
+
+- 不要求 1:1 复刻 C++ 类层次、指针/句柄惯例或函数表；优先用 `enum` / `Option` / `Result` / trait / 迭代器 / RAII / 所有权表达同一能力。
+- 既有数值热点与 `hvk-trace v1` 保持确定性，不因“惯用化”无意改变加法顺序或位级行为。
+- 当前实现以行为等价迁移为主；后续按模块逐步惯用化重构，不一次性推翻既有测试。
+- `base_*` / `phys_*` 模块名保留用于对照 SDK，是历史命名，不代表新的 crate 边界。
+
+---
+
+## 3. 目标 Rust 单 crate 结构
 
 ```
-havok/                             # 本仓库根目录（workspace 根 + 门面 crate）
-├── Cargo.toml                     # [workspace] members = ["crates/*"] + 门面 crate proton-engine
-├── src/lib.rs                     # proton 门面：重导出公共 API
-├── benches/                       # 基准 harness（随门面 crate）
-├── tests/                         # 集成测试（随门面 crate）
+havok/                             # 本仓库根目录（唯一 crate：proton-engine / lib proton）
+├── Cargo.toml                     # 单 crate manifest，无 [workspace] / 成员 path 依赖
+├── src/                           # 根模块 + 原 workspace 成员退化而来的模块文件夹
+│   ├── lib.rs                     # 声明 src/<module>/ + proton::* 公共别名
+│   ├── convert.rs                 # hkx Value 树 → shape/body/world
+│   ├── base_types/mod.rs          # 每个模块保留原 crate 的模块树与单元测试
+│   ├── base_math/tests/           # 原 crate 集成测试随模块迁入
+│   └── ...（共 14 个模块）
+├── benches/                       # 基准 harness
+├── tests/                         # 门面级集成测试
 ├── docs/                          # 阶段文档（测试矩阵等）
 ├── LICENSE
-├── README.md
-└── crates/
+└── README.md
 ```
 
-> **命名约定（2026-11-16 已完成）**：门面 crate 改名 `proton-engine`（lib 名 `proton`，取代原 `havok`）；crate 前缀 `hk-* → base-*`、`hknp-* → phys-*`。目录、`Cargo.toml`、代码内引用（`hk_types → base_types` 等）已全部重命名，`cargo test --workspace` 全绿。
+> **命名约定（2026-11-16 完成，2026-11-24 单 crate 化）**：门面 crate 为 `proton-engine`（lib 名 `proton`，取代原 `havok`）；模块前缀 `hk-* → base-*`、`hknp-* → phys-*`。目录与代码内引用（`hk_types → base_types` 等）已全部重命名；14 个成员 `Cargo.toml` 已删除，改由根 `src/lib.rs` 按 Rust 标准模块布局声明，`cargo test` 全绿。
 
-| crate | 职责 | 状态（2026-11-23） |
+| 模块 | 职责 | 状态（2026-11-23） |
 |---|---|---|
-| `base-types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
-| `base-math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（Phase 2 标量路径 + 2026-11-24 x86_64 SSE2 分量算术后端） |
-| `base-memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
-| `base-container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
-| `base-thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
-| `base-geometry` | GeometryUtilities：确定性点云凸包（QuickHull 子集 + 低维回退）、顶点/三角形焊接与 remap | ✅ 已实现（后续子集，2026-11-23） |
-| `base-serialize` | HFF 结构化流 + `TAG0` 容器 + `TCM0` compendium + 2014 legacy binary tagfile + 类型元数据/对象重建 + 格式嗅探/结构型·函数型·type-change 版本 patching + 2014 packfile 头校验/外部转换适配 + 统一加载入口 | ✅ 已实现（Phase 10/16 + 后续子集） |
-| `phys-types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
-| `phys-shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 + 质量属性（密度/目标质量、COM、完整惯量张量、主轴、复合聚合）+ 可移植 15 位压缩惯量、`MassDistribution`、确定性 Jacobi 对角化与形状质量缓存 | ✅ 已实现（Phase 5 + 后续子集） |
-| `phys-collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
-| `phys-body` | hknpBody/BodyManager/Motion/MotionManager + Body/Motion 完整质量属性与世界逆惯量张量（保留 Vector4 对角兼容视图）+ Body 质量来源标记与缓存版本 | ✅ 已实现（Phase 6 + 后续子集） |
-| `phys-solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 完整世界逆惯量张量矩阵路径（对角快路径保留）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12 + 后续子集） |
-| `phys-world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动、limited-hinge/6DOF 约束框架轴限位关节）+ 质量派生、形状质量缓存、质量变更信号与共享运动完整惯量张量合并 + 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 + 共享运动（attached body/attach/detach） | ✅ 已实现（Phase 8/11/12 + 后续子集） |
-| `phys-extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom + post-solve 管理器 + 对象/角色交互 + shape-key trigger + rigid-body 路线/listener）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 + 用户自定义状态 + shared-motion 驱动 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
-| `proton` | 门面 crate（workspace 根，`proton-engine`），重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 已迁至根目录（重导出已接好） |
+| `base_types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
+| `base_math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（Phase 2 标量路径 + 2026-11-24 x86_64 SSE2 分量算术后端） |
+| `base_memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
+| `base_container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
+| `base_thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
+| `base_geometry` | GeometryUtilities：确定性点云凸包（QuickHull 子集 + 低维回退）、顶点/三角形焊接与 remap | ✅ 已实现（后续子集，2026-11-23） |
+| `base_serialize` | HFF 结构化流 + `TAG0` 容器 + `TCM0` compendium + 2014 legacy binary tagfile + 类型元数据/对象重建 + 格式嗅探/结构型·函数型·type-change 版本 patching + 2014 packfile 头校验/外部转换适配 + 统一加载入口 | ✅ 已实现（Phase 10/16 + 后续子集） |
+| `phys_types` | hknpTypes：BodyId/BodyIndex、句柄、MotionType/ShapeType、标志位 | ✅ 已实现（Phase 5） |
+| `phys_shape` | 形状体系：统一 Shape trait + 凸体/复合/网格/高度场 + 质量属性（密度/目标质量、COM、完整惯量张量、主轴、复合聚合）+ 可移植 15 位压缩惯量、`MassDistribution`、确定性 Jacobi 对角化与形状质量缓存 | ✅ 已实现（Phase 5 + 后续子集） |
+| `phys_collide` | 宽相/窄相/Manifold + 查询（raycast/shape cast/closest points/AABB，含 mesh/height field/compound 遍历）+ 碰撞过滤（`CollisionFilter` trait、group layer/subsystem/system-group filter、pair 禁用表） | ✅ 已实现（Phase 7/11/14） |
+| `phys_body` | hknpBody/BodyManager/Motion/MotionManager + Body/Motion 完整质量属性与世界逆惯量张量（保留 Vector4 对角兼容视图）+ Body 质量来源标记与缓存版本 | ✅ 已实现（Phase 6 + 后续子集） |
+| `phys_solver` | 迭代式接触求解器 + warm starting（`ContactImpulse`/`JointImpulse` 累积冲量）+ 完整世界逆惯量张量矩阵路径（对角快路径保留）+ 关节约束（ball-socket/hinge/fixed/ragdoll/prismatic/spring/point-to-plane/wheel，含 limits 与 velocity/position/spring 电机）+ 岛内子集求解 API | ✅ 已实现（Phase 8/11/12 + 后续子集） |
+| `phys_world` | hknpWorld 组装 + collide→islands→solve(contacts+joints)→integrate 管线 + 接触冲量缓存 + 关节冲量槽缓存 + 约束管理器（含 wheel：悬挂弹簧/行程限位/转向/驱动、limited-hinge/6DOF 约束框架轴限位关节）+ 质量派生、形状质量缓存、质量变更信号与共享运动完整惯量张量合并 + 查询 API + 岛级休眠/唤醒 + 按岛并行求解 + Dynamic↔Keyframed 运动类型切换 + 共享运动（attached body/attach/detach） | ✅ 已实现（Phase 8/11/12 + 后续子集） |
+| `phys_extensions` | WorldHash + Vehicle 扩展层（raycast 悬挂/engine/transmission/摩擦）+ CharacterControl（simplex/proxy/状态机含 Climbing + trigger 追踪 + 本地 listener/phantom + post-solve 管理器 + 对象/角色交互 + shape-key trigger + rigid-body 路线/listener）+ Ragdoll 调度层（骨骼绑定/约束链/drive-to-pose/硬关键帧）+ Ragdoll 状态机/电机 blender/penetration utility/约束松弛 + at-rest 转换 + 用户自定义状态 + shared-motion 驱动 | ✅ 已实现（Phase 10/13/15 + 后续子集） |
+| `proton` | 根 crate（`proton-engine` 的 lib 名），`src/lib.rs` 挂载全部模块并重导出公共 API + `convert` 模块（hkx Value 树 → shape/body/world，见 Phase 17） | ✅ 单 crate 化完成 |
 
 依赖方向严格单向：`types → math → memory → container → ... → world → extensions`。
 
@@ -169,13 +182,13 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 ## 4. 分阶段迁移计划
 
 ### Phase 0：工程脚手架（✅ 已完成）
-- 将 `havok/` 改造为虚拟 workspace（`[workspace]` + `crates/*`，共 15 个 crate）
+- 最初将 `havok/` 改造为 workspace；2026-11-24 起按新要求取消 workspace，`src/<module>/` 成为 14 个模块文件夹
 - `.gitignore` 忽略 `/target`
 - 检查命令：`cargo fmt`、`clippy -D warnings`、`test`、`doc -D warnings`、release build（CI 未配置，本地执行，见第 7 节）
 - 基础依赖决策：数学库定为**从 C++ 直译**（不用 glam，保证 float32 确定性）；`rayon`/`thiserror`/`bytemuck` 按阶段引入
 
 ### Phase 1：`base-types`（✅ 已完成，2026-11-09）
-交付位于 `crates/base-types/src/`（49 个单元测试 + 13 个文档测试）：
+交付位于 `src/base_types/`（49 个单元测试 + 13 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -196,7 +209,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 验证：`cargo fmt` / `clippy -D warnings` / `test` / `doc -D warnings` / release build 全绿
 
 ### Phase 2：`base-math`（✅ 核心已完成，2026-11-09；标量后端）
-交付位于 `crates/base-math/src/`（52 个单元测试 + 5 个文档测试）：
+交付位于 `src/base_math/`（52 个单元测试 + 5 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -232,7 +245,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - **核心原则**：指针访问全面改为 ID/索引访问，天然契合 Rust 借用检查
 
 ### Phase 4：`base-thread` + 任务系统（✅ 已完成，2026-11-10）
-交付位于 `crates/base-thread/src/`（29 个单元测试 + 5 个文档测试）：
+交付位于 `src/base_thread/`（29 个单元测试 + 5 个文档测试）：
 
 | 模块 | 内容 |
 |---|---|
@@ -699,7 +712,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - SDK `hknpEaseConstraintsAction` 构造只接受 ragdoll / limited-hinge，`hknpConstraintDataUtils::loosenConstraintLimits` 仅放宽 ragdoll / limited-hinge；6DOF 有 save/restore/partial-restore 代码但无放宽实现。Rust 侧 6DOF 采用显式保守放宽（按当前 twist/swing/距离扩大保存的限制），标记为子集而非逐式直译；plane-angle limits 与 per-axis 6DOF 平移限位由后续「Ragdoll 细节补齐」子集补上。
 - 共享运动以 keyframed 刚体组为主要用例，目标必须非静态；`attach_bodies` 默认保留目标 motion 的质量属性，后续「Ragdoll 细节补齐」新增 `KEEP/UPDATE/REBUILD` 显式模式；detach 用 `v + ω × r` 近似把速度平移到新质心；组缩减到 1 人即解散（剩余 body 持有原 motion slot）。
 - `LimitedHingeCinfo` 是 `HingeCinfo` 的类型别名，limited-hinge 关节在 solver 层复用 hinge 行集但忽略电机，以此保持确定性与最小改动。
-- 验证：新增 `ragdoll_joint_families.rs`（3）/`ragdoll_easing_extended.rs`（3）/`ragdoll_custom_states.rs`（5）/`ragdoll_motion_sharing.rs`（5）共 16 个集成测试，含四类场景 `hvk-trace v1` 逐位一致；全 workspace `cargo test` 通过。
+- 验证：新增 `ragdoll_joint_families.rs`（3）/`ragdoll_easing_extended.rs`（3）/`ragdoll_custom_states.rs`（5）/`ragdoll_motion_sharing.rs`（5）共 16 个集成测试，含四类场景 `hvk-trace v1` 逐位一致；全量 `cargo test` 通过。
 
 ### 后续子集：Ragdoll 细节补齐（✅ 已完成，2026-11-21）
 交付（新增集成测试 `tests/ragdoll_details.rs` 6 个）：
@@ -716,7 +729,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - SDK 的平面角 API 是 `setPlaneMinAngularLimit` / `setPlaneMaxAngularLimit`，atom 内部用 `π/2 − angle` 互补存储，默认 `π/2 ± 0.025`（即用户角 `±0.025`）；Rust 侧保存用户角并在 solver 行里转成 `φ−π/2`，上/下限符号互换。新字段默认 `None`（关闭），避免改变既有 ragdoll 链的确定性基线。
 - `AxisMode` 按 SDK 精确命名为 `Unlimited/Limited/Fixed`（固定轴用 `[0,0]` 零宽区间表达），三轴默认 `Unlimited`；SDK 的 `setLinearLimit` 是独立 stiff-spring 球半径距离，与三轴限制并存，Rust 继续保留旧 `linear_limit` 距离行。
 - 质量模式按 SDK `UpdateMotionMode` 命名为 `Keep/Update/Rebuild`，默认 `Keep`；`Update` 在本子集复用确定性重建，不做增量负质量更新。该子集的惯量重建最初只保留世界对角项；后续「Ragdoll 深度补齐」已升级为完整世界惯量张量并接入形状质量属性，但 SDK 的压缩惯量表示与信号驱动缓存仍未移植，故不宣称与原版复合质量逐位一致；keyframed 目标不重建。
-- 验证：`tests/ragdoll_details.rs` 覆盖默认关闭/非法输入拒绝/越界回推/模式保持/质量与质心/放宽回弹/逐位确定性；后续深度补齐再由 `tests/mass_properties.rs` 覆盖质量派生、非对角惯量与完整张量合并，全 workspace `cargo test` 全绿。
+- 验证：`tests/ragdoll_details.rs` 覆盖默认关闭/非法输入拒绝/越界回推/模式保持/质量与质心/放宽回弹/逐位确定性；后续深度补齐再由 `tests/mass_properties.rs` 覆盖质量派生、非对角惯量与完整张量合并，全量 `cargo test` 全绿。
 
 ### 后续子集：CharacterControl 剩余项（✅ 已完成，2026-11-22）
 
@@ -738,7 +751,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 - 查询 `ShapeKey` 是可诊断的迁移编码（mesh/height field/compound 叶索引组合），不宣称与 SDK 二进制 `hknpShapeKey` 逐位一致；trigger 的 `STATUS_UPDATED` 仅在观测位置/法线变化时产生，原版 world 级 merge dispatcher 的 UPDATED（默认关闭）未移植。
 - rigid-body 路线没有 `hknpSolverData` / Jacobian 改写、material trigger modifier、VDB monitor 与 world shift；listener 收到可复制的局部接触摘要与状态快照，`RayCasting` 路线仍未移植。
 - `CharacterProxyListener` / `CharacterRigidBodyListener` 增加 `Send` 约束以满足世界信号的线程安全订阅；现有测试监听器改为 `Arc<Mutex<_>>` 日志。
-- 验证：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`、`cargo test --workspace`、严格 `cargo doc`、`cargo build --workspace --release`、`cargo bench -p proton-engine --bench simulation -- --quick` 全绿。
+- 验证：`cargo fmt --all -- --check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`、严格 `cargo doc`、`cargo build --release`、`cargo bench --bench simulation -- --quick` 全绿。
 
 ### 后续子集：CharacterControl 补齐（✅ 已完成，2026-11-22）
 
@@ -844,7 +857,7 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 
 | 决策点 | 结论 |
 |---|---|
-| Workspace 布局 | `havok/` 改为虚拟 workspace（`crates/*`，15 个 crate），删除默认模板代码 |
+| 工程布局 | 单 crate（`proton-engine` / lib `proton`）；`src/<module>/` 为模块文件夹，不再有成员 Cargo.toml 或 `[workspace]` |
 | Git | **已初始化**：首个提交 `791887c` 仅含 LICENSE，其余源码尚未提交（2026-11-09） |
 | CI | **未配置**：不纳入 `.github/`，fmt / clippy / test / doc / release 在本地执行（见第 7 节） |
 | 数学库 | **从 C++ 直译**，不用 glam，保证 bit-exact float32 |
@@ -852,19 +865,19 @@ havok/                             # 本仓库根目录（workspace 根 + 门面
 
 ## 7. 构建与仓库约定
 
-前置条件：Rust（workspace 声明 `edition = "2024"`、`rust-version = "1.85"`；本机验证工具链为 `rustc 1.101.0-nightly`）。所有命令都在**仓库根目录（`havok/`）**执行：
+前置条件：Rust（manifest 声明 `edition = "2024"`、`rust-version = "1.85"`；本机验证工具链为 `rustc 1.101.0-nightly`）。所有命令都在**仓库根目录（`havok/`）**执行：
 
 ```powershell
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo build --workspace --release
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
 
 # Phase 9 benchmark（无外部依赖；--quick 为小规模冒烟）
-cargo bench -p proton-engine --bench simulation -- --quick
+cargo bench --bench simulation -- --quick
 
 # 文档链接检查（可选）
-$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps
+$env:RUSTDOCFLAGS='-D warnings'; cargo doc --no-deps
 ```
 
 CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地或外部流水线执行。
@@ -873,14 +886,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - 所有 crate 设为 `publish = false`（源码衍生自专有 Havok 代码，防止误发布）
 - crate 间依赖严格单向，方向见第 3 节
 - 当前零外部依赖，`rayon`/`thiserror`/`bytemuck` 按阶段引入
-- `Cargo.lock` 已提交入库（应用型 workspace，锁定依赖）
+- `Cargo.lock` 已提交入库（单 crate 应用，锁定依赖）
 - `../original/` 与 `target/` 不纳入仓库（后者已由 `.gitignore` 忽略）
 
 ## 8. 当前状态
 
 - [x] 原项目结构分析
 - [x] 迁移计划制定
-- [x] Phase 0：工程脚手架 —— workspace 根 + 15 个 crate 骨架 + `.gitignore`（检查命令见第 7 节；CI 未配置）
+- [x] Phase 0：工程脚手架 —— 单 crate + 14 个模块文件夹骨架 + `.gitignore`（2026-11-24 由 workspace 转换；检查命令见第 7 节；CI 未配置）
 - [x] Phase 1：`base-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
 - [x] Phase 2：`base-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
 - [x] Phase 3：`base-memory` + `base-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
@@ -922,13 +935,13 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 后续子集（base-geometry 补齐，2026-11-23）：`base-geometry` 新增确定性点云凸包（焊接去重 + QuickHull 风格可见面/horizon 循环 + 点/线/面低维回退）与顶点/三角形焊接（remap、退化面与重复面移除）；`ConvexHullShape` 新增 `try_from_points`/`from_points`，保留旧构造语义；`base-geometry` 10 个单元测试、`phys-shape` 新增 3 个单元测试、新增集成测试 `convex_hull_from_points.rs` 4 个，`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿
 - [x] 后续子集（查询精度补齐，2026-11-23）：`phys-collide` 在 GJK 命中后按 Capsule 线段径向、Cylinder 名义侧/端盖/圆角面、带圆角 ConvexHull 最近名义面精修法线，命中距离与位置不变；新增共享 `leaf_key_at_local_point`，覆盖 ConvexHull/Mesh/HeightField/Compound；`phys-world` trigger 改用共享解析器并对非凸形状提供确定性中心投影回退；`phys-collide` 新增 4 个单元测试，新增集成测试 `query_precision.rs` 5 个，`fmt` / `clippy -D warnings` / `test` / 严格 `doc` / release build / `bench --quick` 全绿
 - [x] 后续子集（大世界与位级对齐，2026-11-23）：`base-math` 新增 `PreciseTransform`（f32 rotation + double-float translation、f64 转换、补偿加法、relative_to）；`World` 新增 f64 origin、`body_precise_transform`、`set_body_precise_position`、`shift_origin`，默认 f32 路径与 `hvk-trace v1` 不变；`CompressedMassProperties` 新增 SDK float-bit 打包与 32 字节序列化，`MassPropertiesTree` 新增 8 组/32 子 word 缓存，`MassDistribution` 补齐显式/负质量应用链并接入 `World::set_body_mass_distribution`；新增集成测试 `large_world_mass_bit_alignment.rs` 4 个
-- [x] 性能阶段（x86_64 SSE2 分量算术后端，2026-11-24）：`base-math` 新增零依赖内部 helper，`Vector4` 分量算术走 SSE2（非 x86_64 与 `f64` 仍走标量）；归约、`min/max`、比较掩码、`select` 与四元数/矩阵/AABB 热点保持标量，避免改变加法顺序或引入 AABB 回归；`benches/simulation.rs` 新增数学微基准并修正包名注释，`tests/determinism.rs` 新增固定 `GOLDEN_TRACE_30`，`crates/base-math/tests/simd_parity.rs` 6 个逐位对照测试通过；详见 `docs/performance-baseline.md`
+- [x] 性能阶段（x86_64 SSE2 分量算术后端，2026-11-24）：`base-math` 新增零依赖内部 helper，`Vector4` 分量算术走 SSE2（非 x86_64 与 `f64` 仍走标量）；归约、`min/max`、比较掩码、`select` 与四元数/矩阵/AABB 热点保持标量，避免改变加法顺序或引入 AABB 回归；`benches/simulation.rs` 新增数学微基准并修正包名注释，`tests/determinism.rs` 新增固定 `GOLDEN_TRACE_30`，`src/base_math/tests/simd_parity.rs` 6 个逐位对照测试通过；详见 `docs/performance-baseline.md`
 - [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）仍未移植；形状质量属性附加信号与完整 `hknpMassDistribution` 在未提交工作区之外仍缺真实资产 golden 校验；SDK 二进制 `hknpShapeKey` 位布局、GSK 内部实现与 `hkgpConvexHull` 随机简化/布尔运算未移植；AVX2/NEON 后端与 C++ 黄金轨迹仍未验证，本子集不宣称与 C++ 或真实资产逐位等价
 
 仓库现状（2026-11-24）：
 
-- 工具链：`rustc 1.102.0-nightly`（性能基线采集版本；README 快速开始仍以 MSRV 1.85 为准）；workspace `rust-version = "1.85"`、`edition = "2024"`
-- 命名迁移（2026-11-16 完成）：门面 crate 迁至 workspace 根并改名 `proton-engine`（lib 名 `proton`）；14 个子 crate 目录与 `Cargo.toml`、代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
+- 工具链：`rustc 1.102.0-nightly`（性能基线采集版本；README 快速开始仍以 MSRV 1.85 为准）；manifest `rust-version = "1.85"`、`edition = "2024"`
+- 命名迁移（2026-11-16 完成）：门面 crate 位于根并改名 `proton-engine`（lib 名 `proton`）；14 个模块目录与代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（2026-11-24 起不再有子 crate manifest）（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
 - git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；base-geometry 补齐已提交（`ae4a916`）；查询精度补齐已提交（`0e54310`）；大世界与位级对齐已提交（`84421d0`）；本次 SIMD 阶段在工作区，未提交
 - 外部依赖：0
 
@@ -937,12 +950,12 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 | 文档 | 内容 |
 |---|---|
 | [docs/phase9-test-matrix.md](docs/phase9-test-matrix.md) | 41 个原版 UnitTest 的逐项映射（Ported / Partial / Blocked）、S1–S12 场景矩阵、基准矩阵与验收标准 |
-| 各 crate 模块级 doc comment | 决策与偏差随 Phase 交付记录在对应 `crates/*/src/` 模块文档中 |
+| 各 crate 模块级 doc comment | 决策与偏差随 Phase 交付记录在对应 `src/<module>/` 模块文档中 |
 
 生成 API 文档：
 
 ```powershell
-$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps --open
+$env:RUSTDOCFLAGS='-D warnings'; cargo doc --no-deps --open
 ```
 
 ## 10. 许可证

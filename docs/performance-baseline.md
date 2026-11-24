@@ -7,13 +7,13 @@
 | 项 | 值 |
 |---|---|
 | 日期 | 2026-11-24 |
-| 仓库状态 | `84421d0` 之后的优化工作区；基线采集时未改动 `crates/base-math` |
+| 仓库状态 | `84421d0` 之后的优化工作区；基线采集时未改动 `src/base_math` |
 | OS | Microsoft Windows NT 10.0.26300.0 |
 | CPU | 12th Gen Intel(R) Core(TM) i9-12900H |
 | Rust | `rustc 1.102.0-nightly (3ef0c22cd 2026-11-11)` |
 | Cargo | `cargo 1.102.0-nightly (c07ac2c4d 2026-11-06)` |
-| workspace | `edition = "2024"`，`rust-version = "1.85"`，零外部依赖 |
-| 命令 | `cargo bench -p proton-engine --bench simulation -- --quick` / `cargo bench -p proton-engine --bench simulation` |
+| 工程布局 | 单 crate；`edition = "2024"`，`rust-version = "1.85"`，零外部依赖 |
+| 命令 | `cargo bench --bench simulation -- --quick` / `cargo bench --bench simulation` |
 
 ## 2. 基准参数
 
@@ -147,8 +147,8 @@ joint_chain_ragdoll	0.054	ms/step	bodies=25 joints=24
 
 ### 7.1 落地范围
 
-- `crates/base-math/src/simd.rs`：零依赖内部 helper。`x86_64` 上用 SSE2 实现 `add/sub/mul/div/neg/add_mul/sub_mul/abs/flip_sign`；非 `x86_64` 与全部 `f64` 走标量参考路径。
-- `crates/base-math/src/vector.rs`：`Vector4`/`Vector4d` 的公开 API 不变，分量算术改走 helper。
+- `src/base_math/simd.rs`：零依赖内部 helper。`x86_64` 上用 SSE2 实现 `add/sub/mul/div/neg/add_mul/sub_mul/abs/flip_sign`；非 `x86_64` 与全部 `f64` 走标量参考路径。
+- `src/base_math/vector.rs`：`Vector4`/`Vector4d` 的公开 API 不变，分量算术改走 helper。
 - 明确**不**向量化的部分：
   - 点积、叉积、水平求和、归一化：水平归约会改变加法顺序，破坏 `hvk-trace v1` 位级基线；
   - `min`/`max`：Rust 的 NaN/带符号零规则与 `_mm_min_ps` 不同；
@@ -212,5 +212,5 @@ joint_chain_ragdoll	0.041	ms/step	bodies=25 joints=24
 - `math_quaternion_mul`：0.0083/0.0085 → 0.0076/0.0076 us/iter，小幅波动，不足以证明 SIMD 重写四元数有稳定收益；保持标量。
 - `math_aabb_include_point`：0.0027/0.0044 → 0.0025/0.0026 us/iter；中间曾因比较掩码向量化退化到 0.0086，回退后恢复。
 - 整场景指标在噪声范围内波动（`broadphase_grid` 0.387 → 0.243 ms/iter 与早期 0.244 基线同量级），不把单次差值归因为 SIMD。
-- 确定性门禁：`crates/base-math/tests/simd_parity.rs` 6 个测试逐位比较特殊浮点值、比较掩码、归约与 AABB；`tests/determinism.rs` 的 `GOLDEN_TRACE_30` 固定 trace 未漂移；`cargo clippy --workspace --all-targets -- -D warnings` 通过。
+- 确定性门禁：`src/base_math/tests/simd_parity.rs` 6 个测试逐位比较特殊浮点值、比较掩码、归约与 AABB；`tests/determinism.rs` 的 `GOLDEN_TRACE_30` 固定 trace 未漂移；`cargo clippy --all-targets -- -D warnings` 通过。
 - 结论：保留 x86_64 SSE2 分量算术路径作为后端骨架；本阶段只宣称“与 Rust 标量路径逐位一致”，不宣称与 C++ 或真实 `.hkx` 资产逐位等价。
