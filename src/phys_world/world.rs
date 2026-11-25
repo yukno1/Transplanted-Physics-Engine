@@ -4,7 +4,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::base_math::{Matrix3, PreciseTransform, Quaternion, Transform, Vector4, Vector4d};
+use crate::base_math::{DVec4, Matrix3, PreciseTransform, Quaternion, Transform, Vector4};
 use crate::base_thread::{TaskExecutor, ThreadPool, WorkStealingPool};
 use crate::phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
@@ -110,7 +110,7 @@ pub struct World {
     gravity: Vector4,
     /// f64 world origin for large-world coordinates; body/motion transforms stay
     /// small f32 values relative to it.
-    world_origin: Vector4d,
+    world_origin: DVec4,
     bodies: BodyManager,
     motions: MotionManager,
     broad_phase: BroadPhase,
@@ -243,7 +243,7 @@ impl World {
             solver_data_hooks: SolverDataHookRegistry::default(),
             cinfo,
             gravity,
-            world_origin: Vector4d::ZERO,
+            world_origin: DVec4::ZERO,
             step_count: 0,
             last_delta_time: 0.0,
             last_manifold_count: 0,
@@ -2183,14 +2183,14 @@ impl World {
 
     /// Current f64 world origin (`hkWorldShiftUtil` origin subset).
     #[inline]
-    pub fn world_origin(&self) -> Vector4d {
+    pub fn world_origin(&self) -> DVec4 {
         self.world_origin
     }
 
     /// Precise world transform of a body (origin + small f32 local transform).
     pub fn body_precise_transform(&self, body_id: BodyId) -> Option<PreciseTransform> {
         let body = self.bodies.get(body_id)?;
-        let local = Vector4d::new(
+        let local = DVec4::new(
             body.transform.translation.x as f64,
             body.transform.translation.y as f64,
             body.transform.translation.z as f64,
@@ -2204,7 +2204,7 @@ impl World {
 
     /// Set a body's precise world position, converting to a small local f32
     /// offset relative to [`Self::world_origin`].
-    pub fn set_body_precise_position(&mut self, body_id: BodyId, position: Vector4d) -> bool {
+    pub fn set_body_precise_position(&mut self, body_id: BodyId, position: DVec4) -> bool {
         if !position.x.is_finite() || !position.y.is_finite() || !position.z.is_finite() {
             return false;
         }
@@ -2225,7 +2225,7 @@ impl World {
     /// The offset is applied to the f64 origin and subtracted from every f32
     /// body/motion translation. Offsets exactly representable in f32 preserve
     /// precise world positions; sub-f32 remainders stay in `world_origin`.
-    pub fn shift_origin(&mut self, offset: Vector4d) -> bool {
+    pub fn shift_origin(&mut self, offset: DVec4) -> bool {
         if !offset.x.is_finite() || !offset.y.is_finite() || !offset.z.is_finite() {
             return false;
         }
@@ -3442,6 +3442,7 @@ mod tests {
         HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo,
         PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo,
     };
+    use glam::Vec3A;
     use std::f32::consts::FRAC_PI_2;
     use std::sync::{Arc, Mutex};
 
@@ -3562,7 +3563,7 @@ mod tests {
                 .body_aabb(dynamic_id)
                 .unwrap()
                 .min
-                .all_equal3(Vector4::from_xyz(-0.5, -1.0, -1.0), 1e-6)
+                .abs_diff_eq(Vec3A::new(-0.5, -1.0, -1.0), 1e-6)
         );
     }
 

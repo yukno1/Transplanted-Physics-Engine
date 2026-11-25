@@ -231,6 +231,7 @@ impl Shape for CylinderShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     fn y_cylinder(radius: f32, half_height: f32) -> CylinderShape {
         CylinderShape::with_params(
@@ -246,11 +247,8 @@ mod tests {
     fn aabb_and_volume() {
         let cylinder = y_cylinder(1.0, 2.0);
         let aabb = cylinder.aabb();
-        assert!(
-            aabb.min
-                .all_equal3(Vector4::from_xyz(-1.0, -2.0, -1.0), 0.0)
-        );
-        assert!(aabb.max.all_equal3(Vector4::from_xyz(1.0, 2.0, 1.0), 0.0));
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(-1.0, -2.0, -1.0), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(1.0, 2.0, 1.0), 0.0));
         assert_eq!(cylinder.height(), 4.0);
         let side = 16.0 * 1.0 * 1.0 * (2.0 * std::f32::consts::PI / 16.0).sin() * 0.5;
         assert!((cylinder.volume().unwrap() - side * 4.0).abs() < 1e-5);

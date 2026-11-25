@@ -29,14 +29,6 @@ macro_rules! define_mask {
         impl $mask {
             /// No bits set.
             pub const NONE: Self = Self(0);
-            /// `hkVector4ComparisonMask::MASK_X`.
-            pub const X: Self = Self(0b0001);
-            /// `hkVector4ComparisonMask::MASK_Y`.
-            pub const Y: Self = Self(0b0010);
-            /// `hkVector4ComparisonMask::MASK_Z`.
-            pub const Z: Self = Self(0b0100);
-            /// `hkVector4ComparisonMask::MASK_W`.
-            pub const W: Self = Self(0b1000);
             /// `MASK_XYZ` — components x, y, z.
             pub const XYZ: Self = Self(0b0111);
             /// `MASK_XYZW` — all four components.
@@ -224,14 +216,6 @@ macro_rules! define_vector {
                 }
             }
 
-            /// `HK_QUADREAL_1000`-style basis vector.
-            #[inline]
-            pub fn basis(index: usize) -> Self {
-                let mut v = Self::ZERO;
-                v.set_component(index, 1.0);
-                v
-            }
-
             /// `hkVector4f::set` — assign all four components.
             #[inline]
             pub fn set(&mut self, x: $ty, y: $ty, z: $ty, w: $ty) {
@@ -261,45 +245,47 @@ macro_rules! define_vector {
             /// `hkVector4f::setAdd` — `self = a + b`.
             #[inline]
             pub fn set_add(&mut self, a: Self, b: Self) {
-                *self = Self::from_array(crate::base_math::simd::add(a.to_array(), b.to_array()));
+                *self = Self::new(a.x + b.x, a.y + b.y, a.z + b.z, a.w + b.w);
             }
 
             /// `hkVector4f::setSub` — `self = a - b`.
             #[inline]
             pub fn set_sub(&mut self, a: Self, b: Self) {
-                *self = Self::from_array(crate::base_math::simd::sub(a.to_array(), b.to_array()));
+                *self = Self::new(a.x - b.x, a.y - b.y, a.z - b.z, a.w - b.w);
             }
 
             /// `hkVector4f::setMul` — `self = a * b` (component-wise).
             #[inline]
             pub fn set_mul(&mut self, a: Self, b: Self) {
-                *self = Self::from_array(crate::base_math::simd::mul(a.to_array(), b.to_array()));
+                *self = Self::new(a.x * b.x, a.y * b.y, a.z * b.z, a.w * b.w);
             }
 
             /// `hkVector4f::setDiv` — `self = a / b` (component-wise, no checks).
             #[inline]
             pub fn set_div(&mut self, a: Self, b: Self) {
-                *self = Self::from_array(crate::base_math::simd::div(a.to_array(), b.to_array()));
+                *self = Self::new(a.x / b.x, a.y / b.y, a.z / b.z, a.w / b.w);
             }
 
             /// `hkVector4f::setAddMul` — `self = a + b * c`.
             #[inline]
             pub fn set_add_mul(&mut self, a: Self, b: Self, c: Self) {
-                *self = Self::from_array(crate::base_math::simd::add_mul(
-                    a.to_array(),
-                    b.to_array(),
-                    c.to_array(),
-                ));
+                *self = Self::new(
+                    a.x + b.x * c.x,
+                    a.y + b.y * c.y,
+                    a.z + b.z * c.z,
+                    a.w + b.w * c.w,
+                );
             }
 
             /// `hkVector4f::setSubMul` — `self = a - b * c`.
             #[inline]
             pub fn set_sub_mul(&mut self, a: Self, b: Self, c: Self) {
-                *self = Self::from_array(crate::base_math::simd::sub_mul(
-                    a.to_array(),
-                    b.to_array(),
-                    c.to_array(),
-                ));
+                *self = Self::new(
+                    a.x - b.x * c.x,
+                    a.y - b.y * c.y,
+                    a.z - b.z * c.z,
+                    a.w - b.w * c.w,
+                );
             }
 
             /// `hkVector4f::setCross` — 3-component cross product; `w` follows the
@@ -328,34 +314,16 @@ macro_rules! define_vector {
                 self.x * other.x + self.y * other.y + self.z * other.z
             }
 
-            /// `hkVector4f::dot<4>`.
-            #[inline]
-            pub fn dot4(self, other: Self) -> $ty {
-                self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w
-            }
-
             /// `hkVector4f::lengthSquared<3>`.
             #[inline]
             pub fn length_squared3(self) -> $ty {
                 self.dot3(self)
             }
 
-            /// `hkVector4f::lengthSquared<4>`.
-            #[inline]
-            pub fn length_squared4(self) -> $ty {
-                self.dot4(self)
-            }
-
             /// `hkVector4f::length<3>`.
             #[inline]
             pub fn length3(self) -> $ty {
                 self.length_squared3().sqrt()
-            }
-
-            /// `hkVector4f::length<4>`.
-            #[inline]
-            pub fn length4(self) -> $ty {
-                self.length_squared4().sqrt()
             }
 
             /// `hkVector4f::normalize<3>` — zero vector maps to zero.
@@ -371,33 +339,11 @@ macro_rules! define_vector {
                 }
             }
 
-            /// `hkVector4f::normalize<4>` — zero vector maps to zero.
-            #[inline]
-            pub fn normalize4(&mut self) {
-                let length = self.length4();
-                if length == 0.0 {
-                    *self = Self::ZERO;
-                } else {
-                    self.x /= length;
-                    self.y /= length;
-                    self.z /= length;
-                    self.w /= length;
-                }
-            }
-
             /// `hkVector4f::normalized<3>`.
             #[inline]
             pub fn normalized3(self) -> Self {
                 let mut result = self;
                 result.normalize3();
-                result
-            }
-
-            /// `hkVector4f::normalized<4>`.
-            #[inline]
-            pub fn normalized4(self) -> Self {
-                let mut result = self;
-                result.normalize4();
                 result
             }
 
@@ -411,7 +357,7 @@ macro_rules! define_vector {
             /// `hkVector4f::absolute` / `setAbs`.
             #[inline]
             pub fn abs(self) -> Self {
-                Self::from_array(crate::base_math::simd::abs(self.to_array()))
+                Self::new(self.x.abs(), self.y.abs(), self.z.abs(), self.w.abs())
             }
 
             /// `hkVector4f::setMin` — component-wise minimum.
@@ -440,26 +386,10 @@ macro_rules! define_vector {
                 )
             }
 
-            /// Component-wise flip of the sign where `sign` is negative
-            /// (`hkVector4f::setFlipSign(v, vSign)`).
-            #[inline]
-            pub fn flip_sign(self, sign: Self) -> Self {
-                Self::from_array(crate::base_math::simd::flip_sign(
-                    self.to_array(),
-                    sign.to_array(),
-                ))
-            }
-
             /// `hkVector4f::horizontalAdd<3>` — `x + y + z`.
             #[inline]
             pub fn horizontal_add3(self) -> $ty {
                 self.x + self.y + self.z
-            }
-
-            /// `hkVector4f::horizontalAdd<4>` — sum of all components.
-            #[inline]
-            pub fn horizontal_add4(self) -> $ty {
-                self.x + self.y + self.z + self.w
             }
 
             /// `hkVector4f::less`.
@@ -531,18 +461,6 @@ macro_rules! define_vector {
                 )
             }
 
-            /// `hkVector4f::lessZero`.
-            #[inline]
-            pub fn less_zero(self) -> $mask {
-                self.less(Self::ZERO)
-            }
-
-            /// `hkVector4f::greaterZero`.
-            #[inline]
-            pub fn greater_zero(self) -> $mask {
-                self.greater(Self::ZERO)
-            }
-
             /// `hkVector4f::setSelect` — per-component `mask ? true_value : false_value`.
             #[inline]
             pub fn select(mask: $mask, true_value: Self, false_value: Self) -> Self {
@@ -590,10 +508,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn add(self, other: Self) -> Self {
-                Self::from_array(crate::base_math::simd::add(
-                    self.to_array(),
-                    other.to_array(),
-                ))
+                Self::new(
+                    self.x + other.x,
+                    self.y + other.y,
+                    self.z + other.z,
+                    self.w + other.w,
+                )
             }
         }
 
@@ -602,10 +522,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn sub(self, other: Self) -> Self {
-                Self::from_array(crate::base_math::simd::sub(
-                    self.to_array(),
-                    other.to_array(),
-                ))
+                Self::new(
+                    self.x - other.x,
+                    self.y - other.y,
+                    self.z - other.z,
+                    self.w - other.w,
+                )
             }
         }
 
@@ -614,10 +536,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn mul(self, other: Self) -> Self {
-                Self::from_array(crate::base_math::simd::mul(
-                    self.to_array(),
-                    other.to_array(),
-                ))
+                Self::new(
+                    self.x * other.x,
+                    self.y * other.y,
+                    self.z * other.z,
+                    self.w * other.w,
+                )
             }
         }
 
@@ -626,10 +550,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn div(self, other: Self) -> Self {
-                Self::from_array(crate::base_math::simd::div(
-                    self.to_array(),
-                    other.to_array(),
-                ))
+                Self::new(
+                    self.x / other.x,
+                    self.y / other.y,
+                    self.z / other.z,
+                    self.w / other.w,
+                )
             }
         }
 
@@ -638,10 +564,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn mul(self, scalar: $ty) -> Self {
-                Self::from_array(crate::base_math::simd::mul(
-                    self.to_array(),
-                    crate::base_math::simd::splat(scalar),
-                ))
+                Self::new(
+                    self.x * scalar,
+                    self.y * scalar,
+                    self.z * scalar,
+                    self.w * scalar,
+                )
             }
         }
 
@@ -659,10 +587,12 @@ macro_rules! define_vector {
 
             #[inline]
             fn div(self, scalar: $ty) -> Self {
-                Self::from_array(crate::base_math::simd::div(
-                    self.to_array(),
-                    crate::base_math::simd::splat(scalar),
-                ))
+                Self::new(
+                    self.x / scalar,
+                    self.y / scalar,
+                    self.z / scalar,
+                    self.w / scalar,
+                )
             }
         }
 
@@ -671,7 +601,7 @@ macro_rules! define_vector {
 
             #[inline]
             fn neg(self) -> Self {
-                Self::from_array(crate::base_math::simd::neg(self.to_array()))
+                Self::new(-self.x, -self.y, -self.z, -self.w)
             }
         }
 
@@ -772,7 +702,6 @@ mod tests {
         let y = Vector4::UNIT_Y;
         assert_eq!(x.dot3(y), 0.0);
         assert_eq!(x.dot3(x), 1.0);
-        assert_eq!(x.dot4(Vector4::UNIT_W), 0.0);
 
         assert_eq!(x.cross(y), Vector4::UNIT_Z);
         assert_eq!(Vector4::UNIT_Y.cross(Vector4::UNIT_Z), Vector4::UNIT_X);
@@ -794,12 +723,6 @@ mod tests {
 
         let zero = Vector4::ZERO;
         assert_eq!(zero.normalized3(), Vector4::ZERO, "zero maps to zero");
-        assert_eq!(zero.normalized4(), Vector4::ZERO);
-
-        let v4 = Vector4::new(1.0, 1.0, 1.0, 1.0);
-        assert_eq!(v4.length4(), 2.0);
-        let n4 = v4.normalized4();
-        assert!(n4.all_equal(Vector4::splat(0.5), 1e-6));
     }
 
     #[test]
@@ -852,7 +775,6 @@ mod tests {
         v[1] = 9.0;
         v.set_component(2, 8.0);
         assert_eq!(v, Vector4::new(1.0, 9.0, 8.0, 4.0));
-        assert_eq!(Vector4::basis(2), Vector4::UNIT_Z);
         assert_eq!(Vector4::from_array(v.to_array()), v);
     }
 
@@ -860,7 +782,7 @@ mod tests {
     fn f64_vector_matches_f32_semantics() {
         let a = Vector4d::new(1.0, 2.0, 3.0, 4.0);
         let b = Vector4d::new(2.0, 2.0, 2.0, 2.0);
-        assert_eq!(a.dot4(b), 20.0);
+        assert_eq!(a.dot3(b), 12.0);
         assert_eq!(
             a.cross(Vector4d::UNIT_Y),
             Vector4d::new(-3.0, 0.0, 1.0, 0.0)

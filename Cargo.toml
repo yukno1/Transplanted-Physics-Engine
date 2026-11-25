@@ -20,6 +20,9 @@ path = "src/lib.rs"
 name = "simulation"
 harness = false
 
+[dependencies]
+glam = "0.34.3"
+
 # Floating-point determinism note:
 # Havok's simulation relies on bit-exact float32 reproduction. Rust does not
 # reorder or contract FP expressions by default - keep it that way. Never

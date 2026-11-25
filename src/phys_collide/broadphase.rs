@@ -154,7 +154,7 @@ impl BroadPhase {
 }
 
 /// Grid cell of a world coordinate.
-fn cell_coordinate(point: crate::base_math::Vector4, cell_size: f32) -> (i32, i32, i32) {
+fn cell_coordinate(point: glam::Vec3A, cell_size: f32) -> (i32, i32, i32) {
     let coordinate = |value: f32| {
         let scaled = (value / cell_size).floor();
         scaled.clamp(i32::MIN as f32, i32::MAX as f32) as i32

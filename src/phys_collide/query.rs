@@ -944,7 +944,7 @@ pub fn ray_aabb(origin: Vector4, direction: Vector4, aabb: &Aabb) -> Option<(f32
     for axis in 0..3 {
         let origin_component = origin.component(axis);
         let direction_component = direction.component(axis);
-        let (min, max) = (aabb.min.component(axis), aabb.max.component(axis));
+        let (min, max) = (aabb.min[axis], aabb.max[axis]);
         if direction_component.abs() <= 1e-12 {
             if origin_component < min || origin_component > max {
                 return None;

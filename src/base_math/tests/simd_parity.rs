@@ -4,9 +4,15 @@
 //! scalar Rust expressions in the same order as the scalar backend. The tests
 //! pass before any vectorization and must keep passing after the SIMD rollout.
 
+use glam::Vec3A;
+
 use crate::base_math::{Aabb, Vector4, Vector4d};
 
 fn bits(value: Vector4) -> [u32; 4] {
+    value.to_array().map(f32::to_bits)
+}
+
+fn bits3(value: Vec3A) -> [u32; 3] {
     value.to_array().map(f32::to_bits)
 }
 
@@ -99,15 +105,6 @@ fn min_max_abs_and_flip_sign_match_scalar_reference() {
             bits(a.abs()),
             bits(Vector4::new(a.x.abs(), a.y.abs(), a.z.abs(), a.w.abs()))
         );
-
-        let sign = Vector4::new(-1.0, 0.0, -0.0, f32::NAN);
-        let expected = Vector4::new(
-            if sign.x < 0.0 { -a.x } else { a.x },
-            if sign.y < 0.0 { -a.y } else { a.y },
-            if sign.z < 0.0 { -a.z } else { a.z },
-            if sign.w < 0.0 { -a.w } else { a.w },
-        );
-        assert_eq!(bits(a.flip_sign(sign)), bits(expected));
     }
 }
 
@@ -118,13 +115,9 @@ fn reductions_keep_scalar_addition_order() {
 
     let dot3 = a.x * b.x + a.y * b.y + a.z * b.z;
     assert_eq!(a.dot3(b).to_bits(), dot3.to_bits());
-    let dot4 = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
-    assert_eq!(a.dot4(b).to_bits(), dot4.to_bits());
 
     let hadd3 = a.x + a.y + a.z;
     assert_eq!(a.horizontal_add3().to_bits(), hadd3.to_bits());
-    let hadd4 = a.x + a.y + a.z + a.w;
-    assert_eq!(a.horizontal_add4().to_bits(), hadd4.to_bits());
 
     let cross = Vector4::new(
         a.y * b.z - a.z * b.y,
@@ -136,8 +129,6 @@ fn reductions_keep_scalar_addition_order() {
 
     let length_squared3 = a.x * a.x + a.y * a.y + a.z * a.z;
     assert_eq!(a.length_squared3().to_bits(), length_squared3.to_bits());
-    let length_squared4 = a.x * a.x + a.y * a.y + a.z * a.z + a.w * a.w;
-    assert_eq!(a.length_squared4().to_bits(), length_squared4.to_bits());
 
     let length3 = length_squared3.sqrt();
     let expected3 = if length3 == 0.0 {
@@ -146,14 +137,6 @@ fn reductions_keep_scalar_addition_order() {
         Vector4::new(a.x / length3, a.y / length3, a.z / length3, a.w)
     };
     assert_eq!(bits(a.normalized3()), bits(expected3));
-
-    let length4 = length_squared4.sqrt();
-    let expected4 = if length4 == 0.0 {
-        Vector4::ZERO
-    } else {
-        Vector4::new(a.x / length4, a.y / length4, a.z / length4, a.w / length4)
-    };
-    assert_eq!(bits(a.normalized4()), bits(expected4));
 }
 
 #[test]
@@ -197,46 +180,33 @@ fn comparison_masks_and_select_match_scalar_reference() {
 fn aabb_component_ops_match_scalar_reference() {
     let mut aabb = Aabb::empty();
     let points = [
-        Vector4::from_xyz(1.0, -2.0, 0.5),
-        Vector4::from_xyz(-1.0, 3.0, -0.5),
-        Vector4::from_xyz(-0.0, 0.0, f32::NAN),
+        Vec3A::new(1.0, -2.0, 0.5),
+        Vec3A::new(-1.0, 3.0, -0.5),
+        Vec3A::new(-0.0, 0.0, f32::NAN),
     ];
-    let mut min = Vector4::splat(f32::MAX);
-    let mut max = Vector4::splat(-f32::MAX);
+    let mut min = Vec3A::splat(f32::MAX);
+    let mut max = Vec3A::splat(-f32::MAX);
     for point in points {
-        let expected_min = Vector4::new(
-            min.x.min(point.x),
-            min.y.min(point.y),
-            min.z.min(point.z),
-            min.w.min(point.w),
-        );
-        let expected_max = Vector4::new(
-            max.x.max(point.x),
-            max.y.max(point.y),
-            max.z.max(point.z),
-            max.w.max(point.w),
-        );
-        aabb.include_point(point);
-        assert_eq!(bits(aabb.min), bits(expected_min));
-        assert_eq!(bits(aabb.max), bits(expected_max));
+        let expected_min = Vec3A::new(min.x.min(point.x), min.y.min(point.y), min.z.min(point.z));
+        let expected_max = Vec3A::new(max.x.max(point.x), max.y.max(point.y), max.z.max(point.z));
+        aabb.include_point3(point);
+        assert_eq!(bits3(aabb.min), bits3(expected_min));
+        assert_eq!(bits3(aabb.max), bits3(expected_max));
         min = expected_min;
         max = expected_max;
     }
 
     let mut expanded = aabb;
     expanded.expand_by(0.25);
-    let delta = Vector4::splat(0.25);
-    assert_eq!(bits(expanded.min), bits(aabb.min - delta));
-    assert_eq!(bits(expanded.max), bits(aabb.max + delta));
+    let delta = Vec3A::splat(0.25);
+    assert_eq!(bits3(expanded.min), bits3(aabb.min - delta));
+    assert_eq!(bits3(expanded.max), bits3(aabb.max + delta));
 
-    let other = Aabb::new(
-        Vector4::from_xyz(-2.0, -2.0, -2.0),
-        Vector4::from_xyz(2.0, 4.0, 2.0),
-    );
+    let other = Aabb::from_corners(Vec3A::new(-2.0, -2.0, -2.0), Vec3A::new(2.0, 4.0, 2.0));
     let mut merged = aabb;
     merged.include_aabb(&other);
-    assert_eq!(bits(merged.min), bits(aabb.min.min(other.min)));
-    assert_eq!(bits(merged.max), bits(aabb.max.max(other.max)));
+    assert_eq!(bits3(merged.min), bits3(aabb.min.min(other.min)));
+    assert_eq!(bits3(merged.max), bits3(aabb.max.max(other.max)));
 
     assert_eq!(
         other.overlaps(&aabb),

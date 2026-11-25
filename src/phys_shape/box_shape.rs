@@ -129,12 +129,13 @@ impl Shape for BoxShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     #[test]
     fn aabb_and_volume() {
         let box_ = BoxShape::with_convex_radius(Vector4::from_xyz(1.0, 2.0, 3.0), 0.0);
-        assert_eq!(box_.aabb().min, Vector4::from_xyz(-1.0, -2.0, -3.0));
-        assert_eq!(box_.aabb().max, Vector4::from_xyz(1.0, 2.0, 3.0));
+        assert_eq!(box_.aabb().min, Vec3A::new(-1.0, -2.0, -3.0));
+        assert_eq!(box_.aabb().max, Vec3A::new(1.0, 2.0, 3.0));
         assert_eq!(box_.volume().unwrap(), 48.0);
         assert!((box_.bounding_radius() - (14.0f32).sqrt()).abs() < 1e-6);
     }
@@ -142,7 +143,7 @@ mod tests {
     #[test]
     fn convex_radius_expands_aabb_and_support() {
         let box_ = BoxShape::with_convex_radius(Vector4::from_xyz(1.0, 1.0, 1.0), 0.5);
-        assert_eq!(box_.aabb().max, Vector4::from_xyz(1.5, 1.5, 1.5));
+        assert_eq!(box_.aabb().max, Vec3A::new(1.5, 1.5, 1.5));
         // Support along +X: box corner (1,1,1) is not the +X support; the support
         // corner is (1,1,1) rounded by radius in direction X → (1.5,1,1).
         let support = box_.support(Vector4::UNIT_X).unwrap();

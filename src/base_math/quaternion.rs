@@ -77,12 +77,6 @@ impl Quaternion {
         self.w
     }
 
-    /// `hkQuaternionf::setReal`.
-    #[inline]
-    pub fn set_real(&mut self, real: f32) {
-        self.w = real;
-    }
-
     /// `hkQuaternionf::setImag`.
     #[inline]
     pub fn set_imag(&mut self, imag: Vector4) {

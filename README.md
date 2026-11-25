@@ -160,7 +160,7 @@ havok/                             # 本仓库根目录（唯一 crate：proton-
 | 模块 | 职责 | 状态（2026-11-23） |
 |---|---|---|
 | `base_types` | 基础类型：hkReal、句柄、RefPtr、位运算、错误/断言 | ✅ 已实现（Phase 1） |
-| `base_math` | 向量/矩阵/四元数/变换/Aabb（**自研直译 + SIMD**，不用 glam） | ✅ 已实现（Phase 2 标量路径 + 2026-11-24 x86_64 SSE2 分量算术后端） |
+| `base_math` | 向量/矩阵/四元数/变换/Aabb（**glam 迁移中**：glam re-export + SDK 语义扩展 trait + Aabb/PreciseTransform 保留类型；旧自实现类型过渡期共存） | ✅ glam 迁移 Phase 0/2 完成（2026-11-25，见 `docs/refactor-glam-plan.md`；Phase 3 批量替换待执行） |
 | `base_memory` | 内存系统：分配器接口、系统堆分配器、分配统计 | ✅ 已实现（Phase 3） |
 | `base_container` | hkArray / 块流 / 确定性 HashMap、HashSet | ✅ 已实现（Phase 3） |
 | `base_thread` | 线程池、任务图、自旋锁（**std::thread，零依赖**） | ✅ 已实现（Phase 4） |
@@ -185,7 +185,7 @@ havok/                             # 本仓库根目录（唯一 crate：proton-
 - 最初将 `havok/` 改造为 workspace；2026-11-24 起按新要求取消 workspace，`src/<module>/` 成为 14 个模块文件夹
 - `.gitignore` 忽略 `/target`
 - 检查命令：`cargo fmt`、`clippy -D warnings`、`test`、`doc -D warnings`、release build（CI 未配置，本地执行，见第 7 节）
-- 基础依赖决策：数学库定为**从 C++ 直译**（不用 glam，保证 float32 确定性）；`rayon`/`thiserror`/`bytemuck` 按阶段引入
+- 基础依赖决策：数学库**迁移至 glam**（2026-11 决策，见 `docs/refactor-glam-plan.md`；早期"不用 glam"的 bit-exact 约束由 SDK 语义扩展 trait + glam_parity 位级回归门延续）；`rayon`/`thiserror`/`bytemuck` 按阶段引入
 
 ### Phase 1：`base-types`（✅ 已完成，2026-11-09）
 交付位于 `src/base_types/`（49 个单元测试 + 13 个文档测试）：
@@ -225,7 +225,7 @@ havok/                             # 本仓库根目录（唯一 crate：proton-
 决策与偏差：
 - **先标量后端**：直接按 C++ 标量（Fpu）公式书写运算顺序，暂不引入 SSE/AVX；公开 API 不暴露平台类型，后续替换后端无需改签名
 - SIMD 优化推迟到 Phase 9 基准之后：SSE2 为基线，AVX/NEON 可选；每个后端必须跑同一组 bit-exact 用例（`-0.0`、denormal、round-to-nearest），并与标量后端对齐
-- 2026-11-24 已交付 x86_64 SSE2 分量算术后端（`add/sub/mul/div/neg/add_mul/sub_mul/abs/flip_sign`）；归约、`min/max`、比较掩码、`select`、四元数/矩阵/AABB 热点保持标量，详见 `docs/performance-baseline.md` §7
+- 2026-11-24 已交付 x86_64 SSE2 分量算术后端；**2026-11-25 glam 迁移启动后随 `simd.rs` 一并删除**，glam 承担算术后端（`docs/refactor-glam-plan.md` Phase 2）
 - `sqrt`/`sin`/`cos` 来自 Rust 标准库：`+ - * /` 与比较逐位等价，超越函数仅保证容差（C++ 端同样依赖平台 libm；最终以 Phase 9 黄金轨迹为准）
 - 未纳入本阶段：`hkVector2f/d`、`hkIntVector`、`hkPackedVector3`、`hkMatrix4f`、`hkMatrix6f/d`、`hkMathFuncs`、独立 `hkSimdFloat32/d` 包装
 
@@ -860,7 +860,7 @@ havok/                             # 本仓库根目录（唯一 crate：proton-
 | 工程布局 | 单 crate（`proton-engine` / lib `proton`）；`src/<module>/` 为模块文件夹，不再有成员 Cargo.toml 或 `[workspace]` |
 | Git | **已初始化**：首个提交 `791887c` 仅含 LICENSE，其余源码尚未提交（2026-11-09） |
 | CI | **未配置**：不纳入 `.github/`，fmt / clippy / test / doc / release 在本地执行（见第 7 节） |
-| 数学库 | **从 C++ 直译**，不用 glam，保证 bit-exact float32 |
+| 数学库 | **迁移至 glam 0.34.3**（自实现类型过渡期共存；确定性由 SDK 语义扩展 trait + `tests/glam_parity.rs` 位级回归门保证） |
 | 迁移范围 | 按三层划分，暂不含 hkx 序列化 |
 
 ## 7. 构建与仓库约定
@@ -885,7 +885,7 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 脚手架约定：
 - 所有 crate 设为 `publish = false`（源码衍生自专有 Havok 代码，防止误发布）
 - crate 间依赖严格单向，方向见第 3 节
-- 当前零外部依赖，`rayon`/`thiserror`/`bytemuck` 按阶段引入
+- 唯一外部依赖为 `glam 0.34.3`（数学库迁移，见 `docs/refactor-glam-plan.md`）；`rayon`/`thiserror`/`bytemuck` 按阶段引入
 - `Cargo.lock` 已提交入库（单 crate 应用，锁定依赖）
 - `../original/` 与 `target/` 不纳入仓库（后者已由 `.gitignore` 忽略）
 
@@ -895,7 +895,7 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 迁移计划制定
 - [x] Phase 0：工程脚手架 —— 单 crate + 14 个模块文件夹骨架 + `.gitignore`（2026-11-24 由 workspace 转换；检查命令见第 7 节；CI 未配置）
 - [x] Phase 1：`base-types` —— scalar / bitops / Pair / Handle / RefPtr / UFloat8 / Signal / HkResult 全部实现，49 个单元测试 + 13 个文档测试
-- [x] Phase 2：`base-math` —— Vector4/D、Quaternion、Matrix3、Transform、QTransform、QsTransform、Aabb、Half 完成（标量后端），52 个单元测试 + 5 个文档测试
+- [x] Phase 2：`base-math` —— Vector4/D、Quaternion、Matrix3、Transform、Aabb 完成（标量后端）；2026-11-25 起 glam 迁移（Phase 0/2：死代码清理、glam re-export、扩展 trait、Aabb/PreciseTransform glam 化、`QTransform`/`QsTransform`/`Half`/`simd.rs` 删除），Phase 3 批量替换待执行
 - [x] Phase 3：`base-memory` + `base-container` —— 分配器/统计、Array、BlockStream、确定性 HashMap/HashSet 完成，8 + 27 个单元测试 + 5 个文档测试
 - [x] Phase 4：`base-thread` —— SpinLock、ThreadPool、JobQueue、TaskGraph、parallel_for 完成（std::thread，零依赖），29 个单元测试 + 5 个文档测试
 - [x] Phase 5：`phys-types` + `phys-shape` —— 句柄/枚举/标志位、统一 Shape trait、6 种凸体、Compound、Mesh+BVH、HeightField 完成，16 + 41 个单元测试

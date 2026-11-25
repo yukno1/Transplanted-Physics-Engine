@@ -341,6 +341,7 @@ mod tests {
     use super::*;
     use crate::base_math::Quaternion;
     use crate::phys_shape::SphereShape;
+    use glam::Vec3A;
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
@@ -388,21 +389,13 @@ mod tests {
             Transform::IDENTITY,
             MotionId::PRESET_STATIC,
         );
-        assert!(body.aabb.min.all_equal3(Vector4::splat(-2.0), 1e-6));
+        assert!(body.aabb.min.abs_diff_eq(Vec3A::splat(-2.0), 1e-6));
         body.set_transform(Transform::from_quaternion(
             Quaternion::IDENTITY,
             Vector4::from_xyz(10.0, 0.0, 0.0),
         ));
-        assert!(
-            body.aabb
-                .min
-                .all_equal3(Vector4::from_xyz(8.0, -2.0, -2.0), 1e-6)
-        );
-        assert!(
-            body.aabb
-                .max
-                .all_equal3(Vector4::from_xyz(12.0, 2.0, 2.0), 1e-6)
-        );
+        assert!(body.aabb.min.abs_diff_eq(Vec3A::new(8.0, -2.0, -2.0), 1e-6));
+        assert!(body.aabb.max.abs_diff_eq(Vec3A::new(12.0, 2.0, 2.0), 1e-6));
     }
 
     #[test]

@@ -312,7 +312,7 @@ pub fn mass_from_aabb(aabb: &Aabb, config: MassConfig) -> Result<MassProperties,
     ));
     MassProperties::from_geometry(
         volume,
-        aabb.center(),
+        Vector4::from_xyz(aabb.center().x, aabb.center().y, aabb.center().z),
         unit_inertia,
         Quaternion::IDENTITY,
         config,

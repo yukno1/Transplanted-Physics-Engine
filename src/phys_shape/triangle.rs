@@ -162,6 +162,7 @@ impl Shape for TriangleShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     #[test]
     fn aabb_covers_vertices_and_radius() {
@@ -172,11 +173,8 @@ mod tests {
             0.1,
         );
         let aabb = triangle.aabb();
-        assert!(
-            aabb.min
-                .all_equal3(Vector4::from_xyz(-0.1, -0.1, -0.1), 0.0)
-        );
-        assert!(aabb.max.all_equal3(Vector4::from_xyz(1.1, 1.1, 0.1), 0.0));
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(-0.1, -0.1, -0.1), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(1.1, 1.1, 0.1), 0.0));
         assert!((triangle.area() - 0.5).abs() < 1e-6);
     }
 

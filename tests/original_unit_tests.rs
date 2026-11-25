@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use glam::Vec3A;
 use proton::body::BodyCinfo;
 use proton::math::Vector4;
 use proton::np_types::MotionType;
@@ -53,11 +54,8 @@ fn np_box_shape_unit_test() {
     let half = Vector4::from_xyz(1.0, 2.0, 3.0);
     let box_shape = BoxShape::with_convex_radius(half, 0.0);
     let aabb = box_shape.aabb();
-    assert!(
-        aabb.min
-            .all_equal3(Vector4::from_xyz(-1.0, -2.0, -3.0), 0.0)
-    );
-    assert!(aabb.max.all_equal3(Vector4::from_xyz(1.0, 2.0, 3.0), 0.0));
+    assert!(aabb.min.abs_diff_eq(Vec3A::new(-1.0, -2.0, -3.0), 0.0));
+    assert!(aabb.max.abs_diff_eq(Vec3A::new(1.0, 2.0, 3.0), 0.0));
     assert!((box_shape.volume().unwrap() - 48.0).abs() < 1e-5);
     assert_eq!(
         box_shape
@@ -71,12 +69,12 @@ fn np_box_shape_unit_test() {
     assert!(
         inflated_aabb
             .min
-            .all_equal3(Vector4::from_xyz(-1.5, -2.5, -3.5), 1e-6)
+            .abs_diff_eq(Vec3A::new(-1.5, -2.5, -3.5), 1e-6)
     );
     assert!(
         inflated_aabb
             .max
-            .all_equal3(Vector4::from_xyz(1.5, 2.5, 3.5), 1e-6)
+            .abs_diff_eq(Vec3A::new(1.5, 2.5, 3.5), 1e-6)
     );
 }
 
@@ -199,8 +197,8 @@ fn np_height_field_shape_unit_test_structural() {
     assert_eq!(heightfield.int_size_x(), 3);
     assert_eq!(heightfield.int_size_z(), 3);
     let aabb = heightfield.aabb();
-    assert!(aabb.min.all_equal3(Vector4::ZERO, 0.0));
-    assert!(aabb.max.all_equal3(Vector4::from_xyz(2.0, 8.0, 2.0), 0.0));
+    assert!(aabb.min.abs_diff_eq(Vec3A::ZERO, 0.0));
+    assert!(aabb.max.abs_diff_eq(Vec3A::new(2.0, 8.0, 2.0), 0.0));
 }
 
 #[test]

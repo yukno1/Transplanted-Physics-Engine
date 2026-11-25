@@ -3,7 +3,21 @@
 //! Rust port of the core math layer in
 //! `original/Common/Source/Common/Base/Math/` (migration Phase 2, README §4).
 //!
-//! # Scope of this phase
+//! # glam transition layer
+//!
+//! The engine is migrating its math layer onto [`glam`] (see
+//! `docs/refactor-glam-plan.md`). This module currently provides:
+//!
+//! * **glam re-exports** — the canonical types the codebase migrates to
+//!   ([`Vec4`], [`Vec3A`], [`Quat`], [`Mat3`], [`Affine3A`], [`BVec4`],
+//!   [`DVec4`]). New code should prefer these directly.
+//! * **legacy SDK-parity types** — [`Vector4`], [`Vector4d`], [`Quaternion`],
+//!   [`Matrix3`], [`Transform`], kept scalar and bit-faithful to the C++
+//!   `Fpu` formulations until callers are migrated (Phase 3).
+//! * **retained custom types with no glam equivalent** — [`Aabb`] and
+//!   [`PreciseTransform`].
+//!
+//! # Scope of the legacy layer
 //!
 //! | Rust item | Original C++ | Notes |
 //! |---|---|---|
@@ -13,87 +27,58 @@
 //! | [`Matrix3`] | `hkMatrix3`, `hkRotationf` | 3×3 column-major rotation matrix (columns are `Vector4`) |
 //! | [`Transform`] | `hkTransformf` | rotation matrix + translation |
 //! | [`PreciseTransform`] | `hkPreciseTransform` | rotation matrix + double-float translation |
-//! | [`QTransform`] | `hkQTransformf` | quaternion + translation |
-//! | [`QsTransform`] | `hkQsTransformf` | translation + quaternion + scale |
-//! | [`Aabb`] | `hkAabb` | axis-aligned bounding box, `min`/`max` as `Vector4` |
-//! | [`Half`] | `hkFloat16` / `hkHalf16` | 16-bit float with the SDK's round-to-nearest conversion |
+//! | [`Aabb`] | `hkAabb` | axis-aligned bounding box |
 //!
-//! Not ported in this phase: `hkVector2f/d`, `hkIntVector`, `hkPackedVector3`,
-//! `hkMatrix4f`, `hkMatrix6*`, `hkSimdFloat32/d` as standalone wrappers, `hkMathFuncs`
-//! and the per-platform SIMD backends (`Sse`, `Avx`, `Mx`, `Fpu` directories).
+//! Not ported (glam covers them or they are unused): `hkVector2f/d`,
+//! `hkIntVector`, `hkPackedVector3`, `hkMatrix4f`, `hkMatrix6*`,
+//! `hkSimdFloat32/d` as standalone wrappers, `hkMathFuncs`, the per-platform
+//! SIMD backends, `hkQTransformf`/`hkQsTransformf` (unused in this port) and
+//! `hkFloat16` (unused in this port).
 //!
 //! # Determinism
 //!
-//! Every struct is plain IEEE-754 data plus arithmetic written in the same order as
-//! the C++ scalar (`Fpu`) formulations: no FMA contraction, no reassociation. `sqrt`
-//! and the trigonometric functions come from Rust's `std` (the C++ SDK uses the
-//! platform libm/sincos as well), so bit-exactness across compilers is only
-//! guaranteed for `+ - * /` and comparisons, not for `sin`/`cos`/`sqrt`-derived
-//! values (tests use tolerances there, and Phase 9 golden traces are the final
-//! arbiter for simulation data).
+//! The legacy structs are plain IEEE-754 data plus arithmetic written in the
+//! same order as the C++ scalar (`Fpu`) formulations: no FMA contraction, no
+//! reassociation. `sqrt` and the trigonometric functions come from Rust's
+//! `std` (the C++ SDK uses the platform libm/sincos as well), so bit-exactness
+//! across compilers is only guaranteed for `+ - * /` and comparisons, not for
+//! `sin`/`cos`/`sqrt`-derived values (tests use tolerances there, and Phase 9
+//! golden traces are the final arbiter for simulation data).
 //!
 //! # Module layout
 //!
-//! * [`vector`] — `Vector4`, `Vector4d` and comparison masks.
-//! * [`quaternion`] — `Quaternion`.
-//! * [`matrix3`] — `Matrix3` (rotation matrices).
-//! * [`transform`] — `Transform` (matrix + translation).
-//! * [`precise_transform`] — `PreciseTransform` (matrix + double-float translation).
-//! * [`qtransform`] — `QTransform` (quaternion + translation).
-//! * [`qstransform`] — `QsTransform` (quaternion + translation + scale).
-//! * [`aabb`] — `Aabb`.
-//! * [`half`] — `Half` 16-bit float.
-//!
-//! On `x86_64`, component-wise `f32` operations use a zero-dependency SSE2 helper
-//! in the private `simd` module. Reductions, `min`/`max`, comparison masks and
-//! `select` stay scalar to preserve addition order, Rust's NaN/signed-zero
-//! semantics and AABB hot-path performance. Other targets and `f64` use the
-//! scalar reference path. Public signatures are unchanged.
+//! * [`vector`] — legacy `Vector4`, `Vector4d` and comparison masks (scalar
+//!   path; the former SSE2 helper was retired in favor of glam).
+//! * [`quaternion`] — legacy `Quaternion`.
+//! * [`matrix3`] — legacy `Matrix3` (rotation matrices).
+//! * [`transform`] — legacy `Transform` (matrix + translation).
+//! * [`precise_transform`] — [`PreciseTransform`] (matrix + double-float
+//!   translation, glam-backed storage).
+//! * [`aabb`] — [`Aabb`] (glam-backed storage).
 
 pub mod aabb;
-pub mod half;
+pub mod ext_mat3;
+pub mod ext_quat;
+pub mod ext_vec4;
 pub mod matrix3;
 pub mod precise_transform;
-pub mod qstransform;
-pub mod qtransform;
 pub mod quaternion;
-pub(crate) mod simd;
 pub mod transform;
 pub mod vector;
 
+// glam re-exports: the canonical math types going forward
+// (`docs/refactor-glam-plan.md`, Phase 2 transition layer).
+pub use glam::{Affine3A, BVec4, DVec4, Mat3, Quat, Vec3A, Vec4};
+
 pub use aabb::Aabb;
-pub use half::Half;
+pub use ext_mat3::Mat3Ext;
+pub use ext_quat::{QuatExt, quat_mul, quat_normalize};
+pub use ext_vec4::Vec4Ext;
 pub use matrix3::Matrix3;
 pub use precise_transform::PreciseTransform;
-pub use qstransform::QsTransform;
-pub use qtransform::QTransform;
 pub use quaternion::Quaternion;
 pub use transform::Transform;
 pub use vector::{Vector4, Vector4Mask, Vector4d, Vector4dMask};
-
-/// `HK_REAL_PI` — π as `f32`.
-pub const PI: f32 = core::f32::consts::PI;
-/// `2π`.
-pub const TWO_PI: f32 = 2.0 * PI;
-/// `π / 2`.
-pub const HALF_PI: f32 = PI * 0.5;
-/// `HK_REAL_EPSILON` — smallest step at `1.0` (`f32::EPSILON`).
-pub const EPSILON: f32 = f32::EPSILON;
-/// `HK_REAL_MAX` — largest finite `f32`.
-pub const MAX_REAL: f32 = f32::MAX;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn constants_are_reasonable() {
-        assert_eq!(PI, core::f32::consts::PI);
-        assert_eq!(TWO_PI, 2.0 * PI);
-        assert_eq!(HALF_PI * 2.0, PI);
-        assert_eq!(MAX_REAL, f32::MAX);
-    }
-}
 
 #[cfg(test)]
 #[path = "tests/simd_parity.rs"]

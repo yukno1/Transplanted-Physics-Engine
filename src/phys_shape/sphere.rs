@@ -94,13 +94,14 @@ impl Shape for SphereShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     #[test]
     fn unit_sphere_at_origin() {
         let sphere = SphereShape::new(Vector4::ZERO, 1.0);
         let aabb = sphere.aabb();
-        assert_eq!(aabb.min, Vector4::from_xyz(-1.0, -1.0, -1.0));
-        assert_eq!(aabb.max, Vector4::from_xyz(1.0, 1.0, 1.0));
+        assert_eq!(aabb.min, Vec3A::new(-1.0, -1.0, -1.0));
+        assert_eq!(aabb.max, Vec3A::new(1.0, 1.0, 1.0));
         assert!((sphere.bounding_radius() - (3.0f32).sqrt()).abs() < 1e-6);
         assert!((sphere.volume().unwrap() - 4.0 / 3.0 * std::f32::consts::PI).abs() < 1e-5);
     }
@@ -126,13 +127,7 @@ mod tests {
     fn offset_sphere_aabb() {
         let sphere = SphereShape::new(Vector4::from_xyz(10.0, -20.0, 30.0), 3.0);
         let aabb = sphere.aabb();
-        assert!(
-            aabb.min
-                .all_equal3(Vector4::from_xyz(7.0, -23.0, 27.0), 0.0)
-        );
-        assert!(
-            aabb.max
-                .all_equal3(Vector4::from_xyz(13.0, -17.0, 33.0), 0.0)
-        );
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(7.0, -23.0, 27.0), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(13.0, -17.0, 33.0), 0.0));
     }
 }

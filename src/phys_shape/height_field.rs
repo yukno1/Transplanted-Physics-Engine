@@ -204,6 +204,7 @@ impl Shape for HeightFieldShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     fn sample_grid() -> Result<HeightFieldShape, HeightFieldError> {
         HeightFieldShape::new(
@@ -229,8 +230,8 @@ mod tests {
     fn aabb_reflects_extent_and_height_range() {
         let heightfield = sample_grid().unwrap();
         let aabb = heightfield.aabb();
-        assert!(aabb.min.all_equal3(Vector4::from_xyz(0.0, 0.0, 0.0), 0.0));
-        assert!(aabb.max.all_equal3(Vector4::from_xyz(2.0, 8.0, 2.0), 0.0));
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(0.0, 0.0, 0.0), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(2.0, 8.0, 2.0), 0.0));
     }
 
     #[test]

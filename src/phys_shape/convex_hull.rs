@@ -257,6 +257,7 @@ impl Shape for ConvexHullShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     fn cube_vertices(half: f32) -> Vec<Vector4> {
         vec![
@@ -300,8 +301,8 @@ mod tests {
         let support = hull.support(Vector4::UNIT_Y).unwrap();
         assert_eq!(support.y, 1.0);
         let aabb = hull.aabb();
-        assert!(aabb.min.all_equal3(Vector4::splat(-1.0), 0.0));
-        assert!(aabb.max.all_equal3(Vector4::splat(1.0), 0.0));
+        assert!(aabb.min.abs_diff_eq(Vec3A::splat(-1.0), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::splat(1.0), 0.0));
         assert!(hull.flags().contains(ShapeFlags::IS_CONVEX_POLYTOPE_SHAPE));
     }
 

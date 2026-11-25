@@ -150,16 +150,6 @@ impl Matrix3 {
         )
     }
 
-    /// Product `q * m`: rotate every column of `m` (`hkMatrix3f::setMul(quat, m)`).
-    #[inline]
-    pub fn mul_quaternion(&self, q: Quaternion) -> Self {
-        Self::from_cols(
-            q.rotate(self.col0),
-            q.rotate(self.col1),
-            q.rotate(self.col2),
-        )
-    }
-
     /// `hkMatrix3f::setTranspose`.
     #[inline]
     pub fn transpose(&self) -> Self {
@@ -220,15 +210,6 @@ impl Matrix3 {
         *self = self.inverse().0;
     }
 
-    /// Whether the matrix is orthonormal within `epsilon`
-    /// (`hkRotationf::isOrthonormal`).
-    pub fn is_orthonormal(&self, epsilon: f32) -> bool {
-        let product = self.transpose().mul_mat(self);
-        product.col0.all_equal3(Vector4::UNIT_X, epsilon)
-            && product.col1.all_equal3(Vector4::UNIT_Y, epsilon)
-            && product.col2.all_equal3(Vector4::UNIT_Z, epsilon)
-    }
-
     /// Rotation matrix from a quaternion (`hkRotationf::set(quaternion)`).
     #[inline]
     pub fn from_quaternion(q: Quaternion) -> Self {
@@ -239,12 +220,6 @@ impl Matrix3 {
     #[inline]
     pub fn to_quaternion(&self) -> Quaternion {
         Quaternion::from_matrix(self)
-    }
-
-    /// Frobenius norm squared.
-    #[inline]
-    pub fn frobenius_norm_squared(&self) -> f32 {
-        self.col0.dot3(self.col0) + self.col1.dot3(self.col1) + self.col2.dot3(self.col2)
     }
 }
 
@@ -355,7 +330,6 @@ mod tests {
         assert!(m.col0.all_equal3(q.rotate(Vector4::UNIT_X), TOL));
         assert!(m.col1.all_equal3(q.rotate(Vector4::UNIT_Y), TOL));
         assert!(m.col2.all_equal3(q.rotate(Vector4::UNIT_Z), TOL));
-        assert!(m.is_orthonormal(1e-5));
 
         let quat = m.to_quaternion().closest_to(q);
         assert!(quat.all_equal(q, 1e-4));

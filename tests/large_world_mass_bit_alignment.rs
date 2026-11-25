@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::hash_world;
-use proton::math::{Vector4, Vector4d};
+use proton::math::{DVec4, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, CompressedMassProperties, MassConfig, MassPropertiesTree, Shape};
 use proton::world::{World, WorldCinfo};
@@ -23,12 +23,12 @@ fn simple_world() -> (World, proton::np_types::BodyId) {
 #[test]
 fn precise_position_and_shift_origin_keep_large_world_coordinates() {
     let (mut world, body) = simple_world();
-    let target = Vector4d::new(1_000_000.0, 2.0, -3.0, 0.0);
+    let target = DVec4::new(1_000_000.0, 2.0, -3.0, 0.0);
     assert!(world.set_body_precise_position(body, target));
     let precise = world.body_precise_transform(body).unwrap();
     assert!((precise.translation_d().x - target.x).abs() < 1e-3);
 
-    assert!(world.shift_origin(Vector4d::new(1_000_000.0, 0.0, 0.0, 0.0)));
+    assert!(world.shift_origin(DVec4::new(1_000_000.0, 0.0, 0.0, 0.0)));
     assert!((world.world_origin().x - 1_000_000.0).abs() < 1e-9);
     let local = world.body_position(body).unwrap();
     assert!(local.x.abs() < 1e-3, "local x should stay small: {local:?}");
@@ -44,7 +44,7 @@ fn zero_origin_shift_does_not_change_simulation_hash() {
         first.step(1.0 / 60.0);
         second.step(1.0 / 60.0);
     }
-    assert!(second.shift_origin(Vector4d::ZERO));
+    assert!(second.shift_origin(DVec4::ZERO));
     assert_eq!(hash_world(&first), hash_world(&second));
 }
 

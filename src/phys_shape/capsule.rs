@@ -158,6 +158,7 @@ impl Shape for CapsuleShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     #[test]
     fn aabb_and_volume_of_y_capsule() {
@@ -167,11 +168,8 @@ mod tests {
             0.5,
         );
         let aabb = capsule.aabb();
-        assert!(
-            aabb.min
-                .all_equal3(Vector4::from_xyz(-0.5, -1.5, -0.5), 0.0)
-        );
-        assert!(aabb.max.all_equal3(Vector4::from_xyz(0.5, 1.5, 0.5), 0.0));
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(-0.5, -1.5, -0.5), 0.0));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(0.5, 1.5, 0.5), 0.0));
         let expected = std::f32::consts::PI * 0.25 * 2.0 + 4.0 / 3.0 * std::f32::consts::PI * 0.125;
         assert!((capsule.volume().unwrap() - expected).abs() < 1e-5);
         assert_eq!(capsule.segment_length(), 2.0);

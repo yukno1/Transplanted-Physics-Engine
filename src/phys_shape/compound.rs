@@ -175,6 +175,7 @@ mod tests {
     use crate::base_math::{Quaternion, Vector4};
     use crate::phys_shape::{BoxShape, SphereShape};
     use core::f32::consts::FRAC_PI_2;
+    use glam::Vec3A;
 
     #[test]
     fn empty_compound_is_empty() {
@@ -203,11 +204,8 @@ mod tests {
         ]);
 
         let aabb = compound.aabb();
-        assert!(
-            aabb.min
-                .all_equal3(Vector4::from_xyz(-1.0, -1.0, -1.0), 1e-6)
-        );
-        assert!(aabb.max.all_equal3(Vector4::from_xyz(6.0, 1.0, 1.0), 1e-6));
+        assert!(aabb.min.abs_diff_eq(Vec3A::new(-1.0, -1.0, -1.0), 1e-6));
+        assert!(aabb.max.abs_diff_eq(Vec3A::new(6.0, 1.0, 1.0), 1e-6));
         assert_eq!(compound.len(), 2);
     }
 

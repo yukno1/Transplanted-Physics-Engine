@@ -234,8 +234,8 @@ fn build_bvh(
     };
 
     indices.sort_by(|&a, &b| {
-        let ca = triangle_aabbs[a as usize].center().component(axis);
-        let cb = triangle_aabbs[b as usize].center().component(axis);
+        let ca = triangle_aabbs[a as usize].center()[axis];
+        let cb = triangle_aabbs[b as usize].center()[axis];
         ca.total_cmp(&cb)
     });
 
@@ -256,6 +256,7 @@ fn build_bvh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3A;
 
     fn quad() -> (Vec<Vector4>, Vec<[u32; 3]>) {
         (
@@ -310,12 +311,8 @@ mod tests {
         let (vertices, triangles) = quad();
         let mesh = MeshShape::new(vertices, triangles);
         assert!(mesh.aabb().is_valid());
-        assert!(mesh.aabb().min.all_equal3(Vector4::ZERO, 0.0));
-        assert!(
-            mesh.aabb()
-                .max
-                .all_equal3(Vector4::from_xyz(1.0, 1.0, 0.0), 0.0)
-        );
+        assert!(mesh.aabb().min.abs_diff_eq(Vec3A::ZERO, 0.0));
+        assert!(mesh.aabb().max.abs_diff_eq(Vec3A::new(1.0, 1.0, 0.0), 0.0));
         assert_eq!(mesh.volume(), None);
         assert_eq!(mesh.bvh_nodes().len(), 1, "two triangles fit in one leaf");
 
