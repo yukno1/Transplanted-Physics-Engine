@@ -32,6 +32,7 @@
 use core::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use crate::base_thread::executor::TaskExecutor;
 use crate::base_thread::thread_pool::ThreadPool;
 
 /// Identifier of a task inside a graph (`hkTaskGraph::TaskId`).
@@ -264,11 +265,36 @@ impl TaskGraph {
         Ok(())
     }
 
-    /// Execute the graph on a thread pool, one topological level at a time.
-    ///
-    /// Each level is a barrier: all jobs of level `n` must finish before level
-    /// `n+1` starts. Priority hints are ignored here (the pool is FIFO).
+    /// Execute the graph on a FIFO thread pool, one topological level at a
+    /// time. Priority hints are ignored; see
+    /// [`TaskGraph::execute_layered_with_priority`].
     pub fn execute_layered(&mut self, pool: &ThreadPool) -> Result<(), TaskGraphError> {
+        self.execute_layered_with_priority(pool, false)
+    }
+
+    /// Execute the graph on any [`TaskExecutor`], ignoring task priorities.
+    pub fn execute_layered_with<E>(&mut self, executor: &E) -> Result<(), TaskGraphError>
+    where
+        E: TaskExecutor + ?Sized,
+    {
+        self.execute_layered_with_priority(executor, false)
+    }
+
+    /// Execute the graph on any [`TaskExecutor`] with optional priority-aware
+    /// submission inside each topological level.
+    ///
+    /// Each level remains a barrier. When `respect_priority` is true, tasks of
+    /// one level are submitted by descending priority and ascending task id;
+    /// dependencies and the actual job bodies are unchanged. Priority affects
+    /// submission order only, never numerical result order.
+    pub fn execute_layered_with_priority<E>(
+        &mut self,
+        executor: &E,
+        respect_priority: bool,
+    ) -> Result<(), TaskGraphError>
+    where
+        E: TaskExecutor + ?Sized,
+    {
         let order = self.compute_order()?;
         let count = self.nodes.len();
 
@@ -288,17 +314,27 @@ impl TaskGraph {
         let max_level = levels.iter().copied().max().unwrap_or(0);
 
         for level in 0..=max_level {
-            let jobs: Vec<_> = (0..count)
-                .filter(|&id| levels[id] == level)
-                .filter_map(|id| self.nodes[id].job.take())
+            let mut ids: Vec<TaskId> = levels
+                .iter()
+                .enumerate()
+                .filter(|&(_, task_level)| *task_level == level)
+                .map(|(id, _)| id)
                 .collect();
-            if jobs.is_empty() {
-                continue;
+            if respect_priority {
+                ids.sort_by(|&left, &right| {
+                    self.nodes[right]
+                        .priority
+                        .rank()
+                        .cmp(&self.nodes[left].priority.rank())
+                        .then_with(|| left.cmp(&right))
+                });
             }
 
-            let mut handles = Vec::with_capacity(jobs.len());
-            for job in jobs {
-                handles.push(pool.spawn(job));
+            let mut handles = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(job) = self.nodes[id].job.take() {
+                    handles.push(executor.submit(job));
+                }
             }
             for handle in handles {
                 handle.wait();
@@ -456,6 +492,26 @@ mod tests {
                 "{predecessor} must precede {successor}"
             );
         }
+    }
+
+    #[test]
+    fn priority_layered_orders_same_level_submission() {
+        let recorder: Recorder = Arc::new(Mutex::new(Vec::new()));
+        let mut graph = TaskGraph::new();
+        let low = graph.add_task_with_priority(recording_task(&recorder, 0), Priority::Low);
+        let high = graph.add_task_with_priority(recording_task(&recorder, 1), Priority::High);
+
+        // A single FIFO worker makes submission order observable as execution
+        // order without relying on task completion timing.
+        let pool = ThreadPool::new(1);
+        graph
+            .execute_layered_with_priority(&pool, true)
+            .expect("acyclic graph");
+        assert_eq!(
+            *recorder.lock().expect("recorder poisoned"),
+            vec![high, low]
+        );
+        assert_eq!(low, 0);
     }
 
     #[test]

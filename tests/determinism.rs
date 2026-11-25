@@ -8,7 +8,7 @@ use proton::math::{Quaternion, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::ThreadPool;
-use proton::world::{World, WorldCinfo, WorldSnapshot};
+use proton::world::{ExecutorKind, SchedulerConfig, World, WorldCinfo, WorldSnapshot};
 
 const GOLDEN_TRACE_30: &str = "\
 # hvk-trace v1
@@ -151,4 +151,35 @@ fn pooled_task_graph_trace_matches_scalar_golden() {
         GOLDEN_TRACE_30,
         "pooled task graph must not change the scalar 30-step trace"
     );
+}
+
+#[test]
+fn scheduler_backends_match_scalar_golden() {
+    let configs = [
+        ("fifo", SchedulerConfig::new(ExecutorKind::Pool, false)),
+        (
+            "priority-fifo",
+            SchedulerConfig::new(ExecutorKind::Pool, true),
+        ),
+        (
+            "work-stealing",
+            SchedulerConfig::new(ExecutorKind::WorkStealing, false),
+        ),
+        (
+            "priority-work-stealing",
+            SchedulerConfig::new(ExecutorKind::WorkStealing, true),
+        ),
+    ];
+    for (label, config) in configs {
+        let mut world = build_scene();
+        world.set_scheduler_config(config);
+        for _ in 0..30 {
+            world.step_with_scheduler(1.0 / 60.0, 4);
+        }
+        assert_eq!(
+            world.snapshot().to_text(),
+            GOLDEN_TRACE_30,
+            "{label} scheduler backend drifted from the scalar trace"
+        );
+    }
 }

@@ -71,6 +71,9 @@
 //! bodies, so [`World::step_with_threads`] can solve island groups on a
 //! reusable [`crate::thread::ThreadPool`] with a deterministic task graph and
 //! merge per-island results by stable index with bit-identical velocities.
+//! [`World::step_with_scheduler`] additionally selects a work-stealing backend
+//! and optional priority-aware submission through [`SchedulerConfig`]; neither
+//! changes the arithmetic order or result merge order.
 //!
 //! Bodies flagged with [`World::set_body_trigger`] emit deterministic
 //! [`TriggerEvent`]s from broad-phase AABB overlaps; same-step enter/exit pairs
@@ -113,7 +116,7 @@ pub mod solver_data;
 pub(crate) mod tasks;
 pub mod world;
 
-pub use cinfo::WorldCinfo;
+pub use cinfo::{ExecutorKind, SchedulerConfig, WorldCinfo};
 pub use constraint::{
     BallAndSocketCinfo, FixedCinfo, HingeCinfo, HingeLimitsCinfo, HingeMotorCinfo,
     HingePositionMotorCinfo, HingeSpringMotorCinfo, HingeVelocityMotorCinfo, JointType,

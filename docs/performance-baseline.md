@@ -283,3 +283,77 @@ joint_chain_ragdoll	0.039	ms/step	bodies=25 joints=24
 - 任务图本身有提交和两次 barrier 的开销，小场景（`world_stack_10`、`joint_chain_ragdoll`）不追求加速；保留 `<32` 候选与 `<2` 岛的串行阈值。
 - 确定性门禁：`tests/sleeping_and_parallel_solving.rs` 的 `explicit_persistent_pool_matches_single_threaded` 在 36 球场景比较 120 步 `hvk-trace v1`；`thread_pool_is_lazy_and_grows_with_requested_threads` 覆盖池生命周期；`tests/determinism.rs::pooled_task_graph_trace_matches_scalar_golden` 断言 30 步输出等于 `GOLDEN_TRACE_30`。原 `parallel_island_solving_matches_single_threaded` / `parallel_solving_with_warm_starting_and_joints_is_bitwise_identical` 与 `phys-world` 单元 `step_with_threads_matches_single_threaded` 仍全绿。
 - 结论：保留持久池 + 确定性任务图作为后续完整物理任务图的调度骨架；本阶段只宣称“与 Rust 单线程路径逐位一致”，不宣称与 C++、真实 `.hkx` 资产或真实 VDB 轨迹逐位等价。
+
+## 9. 优先级与 work-stealing 后端阶段（2026-11-25）
+
+### 9.1 落地范围
+
+- `TaskExecutor` 提供对象安全提交接口；`ThreadPool` 实现 FIFO 后端，新增 `WorkStealingPool` 使用每 worker 本地 deque、固定轮转投递和固定顺序窃取，worker panic 被捕获以保持工作线程可用，并通过 `JobHandle` 传播失败。
+- `TaskGraph::execute_layered_with_priority` 保持拓扑层与 barrier 不变；开启优先级时仅在同一层内按优先级降序、任务 id 升序提交。世界层 compute chunk 使用 `High`、merge 使用 `Medium`，保证启用/禁用优先级时同层顺序都确定。
+- `World` 新增 `SchedulerConfig` / `ExecutorKind` 与 `set_scheduler_config` / `set_executor` / `clear_executor` / `step_with_scheduler`；默认 `step` / `step_with_threads` 仍走原 FIFO 非优先级路径。
+- `benches/simulation.rs` 新增 `world_fall_n_priority_pool`、`world_fall_n_work_stealing`、`world_fall_n_priority_work_stealing`。
+
+### 9.2 最终 quick 输出
+
+```text
+# hvk-bench v1 quick=true
+# name	value	unit	detail
+math_vector4_add	0.0012	us/iter	iterations=100000
+math_vector4_mul	0.0011	us/iter	iterations=100000
+math_vector4_dot3	0.0014	us/iter	iterations=100000
+math_vector4_normalize3	0.0015	us/iter	iterations=100000
+math_quaternion_mul	0.0078	us/iter	iterations=100000
+math_matrix3_mul_vec	0.0012	us/iter	iterations=100000
+math_aabb_include_point	0.0025	us/iter	iterations=100000
+broadphase_grid	0.024	ms/iter	bodies=64 pairs=156
+gjk_sphere_pair	0.000	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.032	ms/step	bodies=16 contacts=15
+world_fall_n_parallel	0.059	ms/step	bodies=16 contacts=15
+world_fall_n_persistent_pool	0.031	ms/step	bodies=16 contacts=15 threads=4 task-graph
+world_fall_n_priority_pool	0.031	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: Pool, respect_priority: true }
+world_fall_n_work_stealing	0.042	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false }
+world_fall_n_priority_work_stealing	0.033	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: true }
+world_stack_10	0.011	ms/step	bodies=10 contacts=3
+raycast_world	0.003	ms/iter	bodies=17 hits=201
+shape_cast_world	0.001	ms/iter	bodies=1 hits=201
+joint_chain_ragdoll	0.022	ms/step	bodies=9 joints=8
+```
+
+### 9.3 最终 full 输出
+
+```text
+# hvk-bench v1 quick=false
+# name	value	unit	detail
+math_vector4_add	0.0011	us/iter	iterations=2000000
+math_vector4_mul	0.0012	us/iter	iterations=2000000
+math_vector4_dot3	0.0013	us/iter	iterations=2000000
+math_vector4_normalize3	0.0014	us/iter	iterations=2000000
+math_quaternion_mul	0.0084	us/iter	iterations=2000000
+math_matrix3_mul_vec	0.0012	us/iter	iterations=2000000
+math_aabb_include_point	0.0027	us/iter	iterations=2000000
+broadphase_grid	0.257	ms/iter	bodies=512 pairs=1906
+gjk_sphere_pair	0.000	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.084	ms/step	bodies=64 contacts=24
+world_fall_n_parallel	0.128	ms/step	bodies=64 contacts=24
+world_fall_n_persistent_pool	0.093	ms/step	bodies=64 contacts=24 threads=4 task-graph
+world_fall_n_priority_pool	0.126	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: Pool, respect_priority: true }
+world_fall_n_work_stealing	0.088	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false }
+world_fall_n_priority_work_stealing	0.091	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: true }
+world_stack_10	0.018	ms/step	bodies=10 contacts=8
+raycast_world	0.004	ms/iter	bodies=17 hits=2001
+shape_cast_world	0.001	ms/iter	bodies=1 hits=2001
+joint_chain_ragdoll	0.042	ms/step	bodies=25 joints=24
+```
+
+### 9.4 对比与结论
+
+- full 场景中 work-stealing（0.088 / 0.091 ms/step）与持久 FIFO 池（0.093）同量级，priority FIFO（0.126）明显更慢；quick 场景各后端在 0.031–0.042 ms/step 间波动。没有稳定到足以改变默认后端的可归因加速。
+- 优先级在本阶段仅影响同层提交顺序，且世界层 compute chunk 共享同一优先级，因此 priority FIFO 的额外开销未换来收益；保留为显式可选项，不设为默认。
+- 确定性门禁：`tests/sleeping_and_parallel_solving.rs::scheduler_backends_match_single_threaded` 比较四种配置在 36 球场景的 120 步 trace，`explicit_executor_overrides_scheduler_backend` 验证显式执行器优先级；`tests/determinism.rs::scheduler_backends_match_scalar_golden` 断言四种配置 30 步 trace 等于 `GOLDEN_TRACE_30`；`src/base_thread` 新增优先级提交顺序与 work-stealing 队列/panic 单元测试。
+- 结论：保留 `TaskExecutor` 抽象与两个可互换后端作为后续完整物理任务图的执行层；本阶段仍只宣称“与 Rust 单线程路径逐位一致”，不宣称与 C++、真实 `.hkx` 资产或真实 VDB 轨迹逐位等价。

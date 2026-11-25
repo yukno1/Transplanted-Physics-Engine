@@ -5,7 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::base_math::{Matrix3, PreciseTransform, Quaternion, Transform, Vector4, Vector4d};
-use crate::base_thread::ThreadPool;
+use crate::base_thread::{TaskExecutor, ThreadPool, WorkStealingPool};
 use crate::phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
     inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
@@ -49,7 +49,10 @@ use crate::phys_world::tasks::{
     ParallelDispatch, collect_contacts as collect_contacts_with_dispatch,
     solve_islands as solve_islands_with_dispatch,
 };
-use crate::phys_world::{BodySnapshot, ContactManifold, WorldCinfo, WorldSnapshot, WorldStats};
+use crate::phys_world::{
+    BodySnapshot, ContactManifold, ExecutorKind, SchedulerConfig, WorldCinfo, WorldSnapshot,
+    WorldStats,
+};
 
 /// Per-body deactivation state (the world's deactivation-manager subset).
 #[derive(Clone, Copy, Debug, Default)]
@@ -115,6 +118,12 @@ pub struct World {
     solver: Solver,
     /// Reusable worker pool for pooled `step_with_threads`, created lazily.
     thread_pool: Option<Arc<ThreadPool>>,
+    /// Opt-in backend selection for `step_with_scheduler`.
+    scheduler: SchedulerConfig,
+    /// Executor used by `step_with_scheduler` (explicit or lazily created).
+    dynamic_executor: Option<Arc<dyn TaskExecutor>>,
+    /// Whether `dynamic_executor` was provided by the caller.
+    executor_is_explicit: bool,
     contact_cache: ContactImpulseCache,
     sleep_states: HashMap<BodyId, SleepState>,
     last_islands: Vec<IslandInfo>,
@@ -166,6 +175,14 @@ impl fmt::Debug for World {
                 "thread_pool",
                 &self.thread_pool.as_ref().map(|pool| pool.num_threads()),
             )
+            .field("scheduler", &self.scheduler)
+            .field(
+                "executor",
+                &self
+                    .dynamic_executor
+                    .as_ref()
+                    .map(|executor| executor.name()),
+            )
             .field("contact_cache", &self.contact_cache)
             .field("sleep_states", &self.sleep_states)
             .field("last_islands", &self.last_islands)
@@ -204,6 +221,9 @@ impl World {
             joint_count: 0,
             solver: Solver::new(solver_settings),
             thread_pool: None,
+            scheduler: SchedulerConfig::default(),
+            dynamic_executor: None,
+            executor_is_explicit: false,
             contact_cache: ContactImpulseCache::default(),
             sleep_states: HashMap::new(),
             last_islands: Vec::new(),
@@ -267,6 +287,51 @@ impl World {
         let pool = Arc::new(ThreadPool::with_name("hk-step", threads));
         self.thread_pool = Some(Arc::clone(&pool));
         pool
+    }
+
+    /// Configure the backend used by [`World::step_with_scheduler`].
+    ///
+    /// Changing the backend discards an automatically created executor; an
+    /// executor supplied through [`World::set_executor`] is preserved.
+    pub fn set_scheduler_config(&mut self, config: SchedulerConfig) {
+        self.scheduler = config;
+        if !self.executor_is_explicit {
+            self.dynamic_executor = None;
+        }
+    }
+
+    /// Current scheduling configuration.
+    pub fn scheduler_config(&self) -> &SchedulerConfig {
+        &self.scheduler
+    }
+
+    /// Use a caller-owned executor for [`World::step_with_scheduler`].
+    ///
+    /// This overrides [`SchedulerConfig::executor`] while leaving
+    /// [`SchedulerConfig::respect_priority`] in effect.
+    pub fn set_executor(&mut self, executor: Arc<dyn TaskExecutor>) {
+        self.dynamic_executor = Some(executor);
+        self.executor_is_explicit = true;
+    }
+
+    /// Remove a caller-owned executor and fall back to scheduler config.
+    pub fn clear_executor(&mut self) {
+        self.dynamic_executor = None;
+        self.executor_is_explicit = false;
+    }
+
+    fn ensure_scheduler_executor(&mut self, threads: usize) -> Arc<dyn TaskExecutor> {
+        if let Some(executor) = &self.dynamic_executor {
+            if executor.num_threads() >= threads {
+                return Arc::clone(executor);
+            }
+        }
+        let executor: Arc<dyn TaskExecutor> = match self.scheduler.executor {
+            ExecutorKind::Pool => self.ensure_thread_pool(threads),
+            ExecutorKind::WorkStealing => Arc::new(WorkStealingPool::new(threads)),
+        };
+        self.dynamic_executor = Some(Arc::clone(&executor));
+        executor
     }
 
     /// Current gravity (`getGravity`).
@@ -2514,20 +2579,41 @@ impl World {
     /// order, so the contact/manifold order and `hvk-trace v1` are identical to
     /// the single-threaded path.
     pub fn step_with_threads(&mut self, delta_time: f32, threads: usize) {
+        if threads > 1 {
+            let pool = self.ensure_thread_pool(threads);
+            self.step_with_dispatch(
+                delta_time,
+                ParallelDispatch::Pooled(pool.as_ref(), threads, false),
+            );
+        } else {
+            self.step_with_dispatch(delta_time, ParallelDispatch::Scoped(threads));
+        }
+    }
+
+    /// Advance the world using the configured [`SchedulerConfig`].
+    ///
+    /// This selects between the FIFO pool and the optional work-stealing pool,
+    /// and optionally orders same-level task submissions by priority. Physics
+    /// stages and result order are identical to [`World::step_with_threads`].
+    pub fn step_with_scheduler(&mut self, delta_time: f32, threads: usize) {
+        if threads <= 1 {
+            self.step_with_dispatch(delta_time, ParallelDispatch::Scoped(threads));
+            return;
+        }
+        let respect_priority = self.scheduler.respect_priority;
+        let executor = self.ensure_scheduler_executor(threads);
+        self.step_with_dispatch(
+            delta_time,
+            ParallelDispatch::Pooled(executor.as_ref(), threads, respect_priority),
+        );
+    }
+
+    fn step_with_dispatch(&mut self, delta_time: f32, dispatch: ParallelDispatch<'_>) {
         debug_assert!(
             delta_time >= 0.0 && delta_time.is_finite(),
             "invalid step delta time"
         );
 
-        let thread_pool = if threads > 1 {
-            Some(self.ensure_thread_pool(threads))
-        } else {
-            None
-        };
-        let dispatch = match &thread_pool {
-            Some(pool) => ParallelDispatch::Pooled(pool, threads),
-            None => ParallelDispatch::Scoped(threads),
-        };
         let candidates = self.contact_candidates();
         let contacts =
             collect_contacts_with_dispatch(&candidates, self.cinfo.collision_tolerance, dispatch);

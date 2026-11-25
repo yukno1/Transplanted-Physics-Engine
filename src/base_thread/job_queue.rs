@@ -5,10 +5,11 @@
 //! `Thread/TaskQueue/`.
 //!
 //! The C++ job queue is a multi-threaded work-stealing structure with job types,
-//! priorities, timers and dependency counting. For Phase 4 the port only needs
-//! the single-threaded FIFO semantics used by the deterministic simulation path:
-//! push jobs, then run them in order. The multithreaded scheduler is Phase 10
-//! work (`hkJobQueue` task stealing / `hkThreadPool::processTaskQueue`).
+//! priorities, timers and dependency counting. This port keeps the
+//! single-threaded FIFO semantics used by the deterministic simulation path:
+//! push jobs, then run them in order. Multithreaded submission is provided by
+//! [`crate::base_thread::TaskExecutor`] backends and
+//! [`crate::base_thread::TaskGraph`], not by this queue.
 //!
 //! ```
 //! use proton::thread::JobQueue;

@@ -56,6 +56,49 @@ pub struct WorldCinfo {
     pub expected_delta_time: f32,
 }
 
+/// Backend used by [`crate::phys_world::World::step_with_scheduler`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExecutorKind {
+    /// Existing FIFO [`crate::thread::ThreadPool`] (default).
+    #[default]
+    Pool,
+    /// Optional work-stealing pool for uneven island sizes.
+    WorkStealing,
+}
+
+/// Opt-in scheduling behavior for physics steps (`hknpTaskGraph` subset).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SchedulerConfig {
+    /// Executor backend used by the deterministic task graph.
+    pub executor: ExecutorKind,
+    /// Submit same-level tasks by descending priority, then ascending task id.
+    pub respect_priority: bool,
+}
+
+impl SchedulerConfig {
+    /// Construct a scheduler configuration.
+    pub fn new(executor: ExecutorKind, respect_priority: bool) -> Self {
+        Self {
+            executor,
+            respect_priority,
+        }
+    }
+
+    /// Select the executor backend.
+    #[must_use]
+    pub fn with_executor(mut self, executor: ExecutorKind) -> Self {
+        self.executor = executor;
+        self
+    }
+
+    /// Enable or disable priority-aware submission inside one task level.
+    #[must_use]
+    pub fn with_priority(mut self, respect_priority: bool) -> Self {
+        self.respect_priority = respect_priority;
+        self
+    }
+}
+
 impl Default for WorldCinfo {
     fn default() -> Self {
         Self {
@@ -228,5 +271,20 @@ mod tests {
         assert!((cinfo.sleeping_angular_threshold - 0.3).abs() < 1e-6);
         assert!(!cinfo.enable_warm_starting);
         assert!(cinfo.raise_trigger_updated_events);
+    }
+
+    #[test]
+    fn scheduler_config_defaults_and_builder() {
+        let default = SchedulerConfig::default();
+        assert_eq!(default.executor, ExecutorKind::Pool);
+        assert!(!default.respect_priority);
+
+        let work_stealing =
+            SchedulerConfig::new(ExecutorKind::WorkStealing, false).with_priority(true);
+        assert_eq!(work_stealing.executor, ExecutorKind::WorkStealing);
+        assert!(work_stealing.respect_priority);
+        let back_to_pool = work_stealing.with_executor(ExecutorKind::Pool);
+        assert_eq!(back_to_pool.executor, ExecutorKind::Pool);
+        assert!(back_to_pool.respect_priority);
     }
 }

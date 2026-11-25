@@ -105,6 +105,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | S23 | 查询 filter / closest points / AABB | L3 | ignore body、motion-type 开关、重叠负距离、槽序 AABB 结果 | `phys-world` 单元 + 集成 |
 | S24 | 关节场景逐位一致 | L6 | 含 ball-socket/hinge/prismatic 的 180 步双 world snapshot 逐位相等 | `constraints_and_queries.rs` |
 | S25 | 持久池任务图逐位一致 | L6 | 显式 `ThreadPool` 与惰性池在窄相/岛求解场景和 `step` 的 `hvk-trace v1` 相等；30 步 trace 等于 `GOLDEN_TRACE_30`；池创建/扩容/清理行为确定 | `sleeping_and_parallel_solving.rs`、`determinism.rs` |
+| S26 | 多执行器调度逐位一致 | L6 | FIFO / priority FIFO / work-stealing / priority work-stealing 四后端与显式执行器均与单线程 `hvk-trace v1` 相等；30 步 trace 等于 `GOLDEN_TRACE_30`；优先级仅改变同层提交顺序 | `sleeping_and_parallel_solving.rs`、`determinism.rs`、`base_thread` 单元 |
 
 ## 4. 基准场景（`cargo bench -p proton-engine --bench simulation`）
 
@@ -123,7 +124,7 @@ Phase 9 的目标不是“补几个测试”，而是给迁移建立可重复的
 | `gjk_sphere_pair` / `gjk_box_pair` | 2000 次 | ms/iter | GJK 距离开销 |
 | `narrowphase_box_pairs` | 2000 次 | ms/iter | GJK+EPA+流形整链 |
 | `solver_contact_pair` | 2 body/1 contact | ms/iter | 求解器单接触成本 |
-| `world_fall_n` / `world_fall_n_parallel` / `world_fall_n_persistent_pool` | 64 动态球，60 步 | ms/step + contacts | 单线程/惰性池/显式持久池任务图 step 管线 |
+| `world_fall_n` / `world_fall_n_parallel` / `world_fall_n_persistent_pool` / `world_fall_n_priority_pool` / `world_fall_n_work_stealing` / `world_fall_n_priority_work_stealing` | 64 动态球，60 步 | ms/step + contacts | 单线程/FIFO/持久池/优先级/工作窃取 step 管线对比 |
 | `world_stack_10` | 10 个盒子，120 步 | ms/step + contacts | 堆叠稳定性/成本 |
 | `raycast_world` / `shape_cast_world` | 2000 次 | ms/iter | 世界查询 |
 | `joint_chain_ragdoll` | 24 个链接，60 步 | ms/step | 关节求解/重建成本 |
@@ -158,6 +159,7 @@ body <BodyId hex u64> p <f32 bits> <f32 bits> <f32 bits> q <f32 bits> <f32 bits>
 - `cargo bench --bench simulation -- --quick` 正常退出并打印全部指标；
 - `src/base_math/tests/simd_parity.rs` 与固定 `GOLDEN_TRACE_30` 全绿（数学后端改动必需）；
 - 多线程调度改动还须通过 S25：显式/惰性池路径与单线程 `hvk-trace v1` 逐位相等，且池生命周期不改变结果；
+- 执行器后端改动还须通过 S26：四种调度配置与显式执行器均与单线程 trace 逐位相等；
 - `cargo fmt/clippy/doc/release` 全绿；
 - README Phase 9 段如实记录 Ported/Partial/Blocked 数量与 C++ 基准阻塞项；
 - 不新增外部依赖。

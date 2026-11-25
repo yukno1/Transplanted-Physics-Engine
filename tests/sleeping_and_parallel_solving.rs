@@ -11,8 +11,8 @@ use proton::body::BodyCinfo;
 use proton::math::Vector4;
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
-use proton::thread::ThreadPool;
-use proton::world::{World, WorldCinfo};
+use proton::thread::{ThreadPool, WorkStealingPool};
+use proton::world::{ExecutorKind, SchedulerConfig, World, WorldCinfo};
 
 fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
@@ -235,4 +235,65 @@ fn thread_pool_is_lazy_and_grows_with_requested_threads() {
 
     world.clear_thread_pool();
     assert!(world.thread_pool().is_none());
+}
+
+#[test]
+fn scheduler_backends_match_single_threaded() {
+    let configs = [
+        ("fifo", SchedulerConfig::new(ExecutorKind::Pool, false)),
+        (
+            "priority-fifo",
+            SchedulerConfig::new(ExecutorKind::Pool, true),
+        ),
+        (
+            "work-stealing",
+            SchedulerConfig::new(ExecutorKind::WorkStealing, false),
+        ),
+        (
+            "priority-work-stealing",
+            SchedulerConfig::new(ExecutorKind::WorkStealing, true),
+        ),
+    ];
+
+    for (label, config) in configs {
+        let mut sequential = many_bodies_scene();
+        let mut scheduled = many_bodies_scene();
+        scheduled.set_scheduler_config(config);
+        assert_eq!(scheduled.scheduler_config(), &config);
+
+        for _ in 0..90 {
+            sequential.step(1.0 / 60.0);
+            scheduled.step_with_scheduler(1.0 / 60.0, 4);
+        }
+        assert_eq!(
+            sequential.snapshot().to_text(),
+            scheduled.snapshot().to_text(),
+            "{label} backend must stay bitwise identical"
+        );
+    }
+}
+
+#[test]
+fn explicit_executor_overrides_scheduler_backend() {
+    let mut sequential = many_bodies_scene();
+    let mut scheduled = many_bodies_scene();
+    scheduled.set_scheduler_config(SchedulerConfig::new(ExecutorKind::Pool, true));
+    scheduled.set_executor(Arc::new(WorkStealingPool::new(4)));
+
+    for _ in 0..60 {
+        sequential.step(1.0 / 60.0);
+        scheduled.step_with_scheduler(1.0 / 60.0, 4);
+    }
+    assert_eq!(
+        sequential.snapshot().to_text(),
+        scheduled.snapshot().to_text()
+    );
+
+    scheduled.clear_executor();
+    scheduled.set_scheduler_config(SchedulerConfig::new(ExecutorKind::WorkStealing, false));
+    scheduled.step_with_scheduler(1.0 / 60.0, 4);
+    assert_eq!(
+        scheduled.scheduler_config().executor,
+        ExecutorKind::WorkStealing
+    );
 }

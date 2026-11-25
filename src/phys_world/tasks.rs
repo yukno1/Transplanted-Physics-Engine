@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::base_thread::{TaskGraph, ThreadPool};
+use crate::base_thread::{Priority, TaskExecutor, TaskGraph};
 use crate::phys_solver::Solver;
 use crate::phys_world::ContactManifold;
 use crate::phys_world::island::Island;
@@ -48,16 +48,16 @@ impl StepStage {
 #[derive(Clone, Copy)]
 pub(crate) enum ParallelDispatch<'a> {
     /// Scoped workers created for this stage (the legacy `step_with_threads`
-    /// behaviour). Useful for comparing pooled and non-pooled paths.
+    /// behaviour). Useful for comparing scoped and pooled paths.
     Scoped(usize),
-    /// Deterministic task graph submitted to a reusable [`ThreadPool`].
-    Pooled(&'a ThreadPool, usize),
+    /// Deterministic task graph submitted to a shared [`TaskExecutor`].
+    Pooled(&'a dyn TaskExecutor, usize, bool),
 }
 
 impl ParallelDispatch<'_> {
     fn threads(self) -> usize {
         match self {
-            Self::Scoped(threads) | Self::Pooled(_, threads) => threads,
+            Self::Scoped(threads) | Self::Pooled(_, threads, _) => threads,
         }
     }
 }
@@ -143,10 +143,31 @@ fn sort_islands(results: &mut [IslandSolveResult]) {
     results.sort_unstable_by_key(|result| result.index);
 }
 
-fn execute_graph(mut graph: TaskGraph, pool: &ThreadPool, stage: StepStage) {
+fn execute_graph(
+    mut graph: TaskGraph,
+    executor: &dyn TaskExecutor,
+    respect_priority: bool,
+    stage: StepStage,
+) {
     graph
-        .execute_layered(pool)
+        .execute_layered_with_priority(executor, respect_priority)
         .unwrap_or_else(|_| panic!("{}", stage.panic_message()));
+}
+
+fn add_stage_task<F>(
+    graph: &mut TaskGraph,
+    respect_priority: bool,
+    priority: Priority,
+    job: F,
+) -> usize
+where
+    F: FnOnce() + Send + 'static,
+{
+    if respect_priority {
+        graph.add_task_with_priority(job, priority)
+    } else {
+        graph.add_task(job)
+    }
 }
 
 /// Generate contact manifolds with the requested dispatcher.
@@ -162,8 +183,8 @@ pub(crate) fn collect_contacts(
         ParallelDispatch::Scoped(threads) => {
             collect_contacts_scoped(candidates, tolerance, threads)
         }
-        ParallelDispatch::Pooled(pool, threads) => {
-            collect_contacts_pooled(candidates, tolerance, pool, threads)
+        ParallelDispatch::Pooled(executor, threads, respect_priority) => {
+            collect_contacts_pooled(candidates, tolerance, executor, threads, respect_priority)
         }
     }
 }
@@ -193,8 +214,9 @@ fn collect_contacts_scoped(
 fn collect_contacts_pooled(
     candidates: &[ContactCandidate],
     tolerance: f32,
-    pool: &ThreadPool,
+    executor: &dyn TaskExecutor,
     threads: usize,
+    respect_priority: bool,
 ) -> Vec<ContactManifold> {
     let candidates = Arc::new(candidates.to_vec());
     let results: Arc<Mutex<Vec<(usize, ContactManifold)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -206,20 +228,25 @@ fn collect_contacts_pooled(
     for (start, end) in ranges {
         let candidates = Arc::clone(&candidates);
         let results = Arc::clone(&results);
-        chunk_tasks.push(graph.add_task(move || {
-            let local = collect_contacts_chunk(&candidates, tolerance, start, end);
-            if !local.is_empty() {
-                results
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend(local);
-            }
-        }));
+        chunk_tasks.push(add_stage_task(
+            &mut graph,
+            respect_priority,
+            Priority::High,
+            move || {
+                let local = collect_contacts_chunk(&candidates, tolerance, start, end);
+                if !local.is_empty() {
+                    results
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(local);
+                }
+            },
+        ));
     }
 
     let merge_results = Arc::clone(&results);
     let merge_output = Arc::clone(&merged);
-    let merge_task = graph.add_task(move || {
+    let merge_task = add_stage_task(&mut graph, respect_priority, Priority::Medium, move || {
         let mut rows = merge_results
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -233,7 +260,7 @@ fn collect_contacts_pooled(
         graph.add_dependency(chunk, merge_task);
     }
 
-    execute_graph(graph, pool, StepStage::NarrowPhase);
+    execute_graph(graph, executor, respect_priority, StepStage::NarrowPhase);
     merged
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -266,9 +293,15 @@ pub(crate) fn solve_islands(
         ParallelDispatch::Scoped(threads) => {
             solve_islands_scoped(solver, buffers, islands, delta_time, threads)
         }
-        ParallelDispatch::Pooled(pool, threads) => {
-            solve_islands_pooled(solver, buffers, islands, delta_time, pool, threads)
-        }
+        ParallelDispatch::Pooled(executor, threads, respect_priority) => solve_islands_pooled(
+            solver,
+            buffers,
+            islands,
+            delta_time,
+            executor,
+            threads,
+            respect_priority,
+        ),
     }
 }
 
@@ -301,8 +334,9 @@ fn solve_islands_pooled(
     buffers: &IslandSolveBuffers<'_>,
     islands: &[Island],
     delta_time: f32,
-    pool: &ThreadPool,
+    executor: &dyn TaskExecutor,
     threads: usize,
+    respect_priority: bool,
 ) -> Vec<IslandSolveResult> {
     let solver = *solver;
     let solver_bodies = Arc::new(buffers.solver_bodies.to_vec());
@@ -325,27 +359,33 @@ fn solve_islands_pooled(
         let joint_impulses = Arc::clone(&joint_impulses);
         let islands = Arc::clone(&islands);
         let results = Arc::clone(&results);
-        chunk_tasks.push(graph.add_task(move || {
-            let snapshot = IslandSolveBuffers {
-                solver_bodies: solver_bodies.as_slice(),
-                constraints: constraints.as_slice(),
-                contact_impulses: contact_impulses.as_slice(),
-                solver_joints: solver_joints.as_slice(),
-                joint_impulses: joint_impulses.as_slice(),
-            };
-            let local = solve_island_chunk(&solver, &snapshot, &islands, start, end, delta_time);
-            if !local.is_empty() {
-                results
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend(local);
-            }
-        }));
+        chunk_tasks.push(add_stage_task(
+            &mut graph,
+            respect_priority,
+            Priority::High,
+            move || {
+                let snapshot = IslandSolveBuffers {
+                    solver_bodies: solver_bodies.as_slice(),
+                    constraints: constraints.as_slice(),
+                    contact_impulses: contact_impulses.as_slice(),
+                    solver_joints: solver_joints.as_slice(),
+                    joint_impulses: joint_impulses.as_slice(),
+                };
+                let local =
+                    solve_island_chunk(&solver, &snapshot, &islands, start, end, delta_time);
+                if !local.is_empty() {
+                    results
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(local);
+                }
+            },
+        ));
     }
 
     let merge_results = Arc::clone(&results);
     let merge_output = Arc::clone(&merged);
-    let merge_task = graph.add_task(move || {
+    let merge_task = add_stage_task(&mut graph, respect_priority, Priority::Medium, move || {
         let mut rows = merge_results
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -359,7 +399,7 @@ fn solve_islands_pooled(
         graph.add_dependency(chunk, merge_task);
     }
 
-    execute_graph(graph, pool, StepStage::IslandSolve);
+    execute_graph(graph, executor, respect_priority, StepStage::IslandSolve);
     merged
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

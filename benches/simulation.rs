@@ -18,7 +18,7 @@ use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::solver::{ContactConstraint, Solver, SolverBody};
 use proton::thread::ThreadPool;
-use proton::world::{World, WorldCinfo};
+use proton::world::{ExecutorKind, SchedulerConfig, World, WorldCinfo};
 
 fn main() {
     let quick = env::args().any(|argument| argument == "--quick");
@@ -47,6 +47,27 @@ fn main() {
     benchmark_world_fall(fall_bodies, fall_steps, 1, "world_fall_n");
     benchmark_world_fall(fall_bodies, fall_steps, 4, "world_fall_n_parallel");
     benchmark_world_fall_persistent_pool(fall_bodies, fall_steps, 4);
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::Pool, true),
+        "world_fall_n_priority_pool",
+    );
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::WorkStealing, false),
+        "world_fall_n_work_stealing",
+    );
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::WorkStealing, true),
+        "world_fall_n_priority_work_stealing",
+    );
     benchmark_world_stack(stack_steps);
     benchmark_raycast_world(query_iterations);
     benchmark_shape_cast_world(query_iterations);
@@ -333,6 +354,30 @@ fn benchmark_world_fall_persistent_pool(body_count: usize, steps: usize, threads
         steps as u32,
         "ms/step",
         format!("bodies={body_count} contacts={contacts} threads={threads} task-graph"),
+    );
+}
+
+fn benchmark_world_fall_scheduler(
+    body_count: usize,
+    steps: usize,
+    threads: usize,
+    config: SchedulerConfig,
+    name: &str,
+) {
+    let mut world = build_fall_world(body_count);
+    world.set_scheduler_config(config);
+    let start = Instant::now();
+    for _ in 0..steps {
+        world.step_with_scheduler(1.0 / 60.0, threads);
+    }
+    let elapsed = start.elapsed();
+    let contacts = world.last_contact_count();
+    report(
+        name,
+        elapsed,
+        steps as u32,
+        "ms/step",
+        format!("bodies={body_count} contacts={contacts} threads={threads} {config:?}"),
     );
 }
 

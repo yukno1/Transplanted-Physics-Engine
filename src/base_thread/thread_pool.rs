@@ -22,8 +22,9 @@
 //! * Thread priority/affinity (`hkThread::setPriority`, `setThreadAffinityMask`)
 //!   is not exposed; the Rust standard library has no portable API for it.
 //! * There is no timer/monitor stream (`appendTimerData`).
-//! * Jobs are FIFO; `hkJobQueue`'s per-type queues and work stealing are Phase 10
-//!   work.
+//! * Jobs are FIFO. The separate [`crate::base_thread::WorkStealingPool`]
+//!   provides the optional work-stealing backend; both implement
+//!   [`crate::base_thread::TaskExecutor`].
 //! * A job that panics unwinds its worker thread (standard Rust behaviour); the
 //!   pool then has one fewer worker. Jobs in this port must not panic.
 
@@ -31,6 +32,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+
+use crate::base_thread::executor::TaskExecutor;
 
 /// Boxed work item (`hkJob` as a closure).
 pub type PoolJob = Box<dyn FnOnce() + Send + 'static>;
@@ -45,13 +48,13 @@ struct CompletionState {
     success: bool,
 }
 
-struct Completion {
+pub(crate) struct Completion {
     state: Mutex<CompletionState>,
     condvar: Condvar,
 }
 
 impl Completion {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             state: Mutex::new(CompletionState {
                 done: false,
@@ -63,8 +66,8 @@ impl Completion {
 }
 
 /// Marks the completion when the job finishes, including on unwind.
-struct CompletionGuard {
-    completion: Arc<Completion>,
+pub(crate) struct CompletionGuard {
+    pub(crate) completion: Arc<Completion>,
 }
 
 impl Drop for CompletionGuard {
@@ -87,6 +90,11 @@ pub struct JobHandle {
 }
 
 impl JobHandle {
+    /// Wrap a completion state created by another executor backend.
+    pub(crate) fn from_completion(completion: Arc<Completion>) -> Self {
+        Self { completion }
+    }
+
     /// Block until the job has run.
     ///
     /// # Panics
@@ -228,6 +236,20 @@ impl ThreadPool {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         assert!(sender.send(message).is_ok(), "hk thread pool is shut down");
+    }
+}
+
+impl TaskExecutor for ThreadPool {
+    fn submit(&self, job: PoolJob) -> JobHandle {
+        self.spawn(job)
+    }
+
+    fn num_threads(&self) -> usize {
+        self.num_threads
+    }
+
+    fn name(&self) -> &'static str {
+        "fifo-pool"
     }
 }
 
