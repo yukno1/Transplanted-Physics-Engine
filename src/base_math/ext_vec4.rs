@@ -22,6 +22,15 @@ pub trait Vec4Ext: Sized {
     /// (legacy `Vector4::dot3`, `vector.rs:325-329`).
     fn dot3(self, other: Self) -> f32;
 
+    /// `hkVector4f::length<3>` squared — `x*x + y*y + z*z`, fixed order
+    /// (legacy `Vector4::length_squared3`, `vector.rs:319-321`).
+    fn length_squared3(self) -> f32;
+
+    /// `hkVector4f::cross` — legacy `set_cross` scalar formula with `w` zeroed
+    /// (legacy `Vector4::set_cross`, `vector.rs:294-301`). glam exposes `cross`
+    /// only on `Vec3`/`Vec3A`, not `Vec4`.
+    fn cross3(self, other: Self) -> Self;
+
     /// `hkVector4f::horizontalAdd<3>` — `x + y + z`
     /// (legacy `Vector4::horizontal_add3`, `vector.rs:453-457`).
     fn horizontal_add3(self) -> f32;
@@ -41,6 +50,21 @@ impl Vec4Ext for Vec4 {
     #[inline]
     fn dot3(self, other: Self) -> f32 {
         self.x * other.x + self.y * other.y + self.z * other.z
+    }
+
+    #[inline]
+    fn length_squared3(self) -> f32 {
+        self.dot3(self)
+    }
+
+    #[inline]
+    fn cross3(self, other: Self) -> Self {
+        Self::new(
+            self.y * other.z - self.z * other.y,
+            self.z * other.x - self.x * other.z,
+            self.x * other.y - self.y * other.x,
+            0.0,
+        )
     }
 
     #[inline]

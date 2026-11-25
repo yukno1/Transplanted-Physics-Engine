@@ -14,7 +14,7 @@
 use core::any::Any;
 
 use crate::base_geometry::convex_hull::{build_convex_hull, build_convex_hull_with_tolerance};
-use crate::base_math::{Aabb, Matrix3, Quaternion, Vector4};
+use crate::base_math::{Aabb, Matrix3, Quaternion, Vec4, Vector4};
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
 pub use crate::base_geometry::convex_hull::HullError as ConvexHullBuildError;
@@ -92,9 +92,12 @@ impl ConvexHullShape {
         points: Vec<Vector4>,
         convex_radius: f32,
     ) -> Result<Self, ConvexHullBuildError> {
-        let hull = build_convex_hull(&points)?;
+        // 过渡期边界转换：`base_geometry` 已迁移 glam（Phase 3 步骤 1），而
+        // `Shape` trait / `MassProperties` 仍是 legacy 类型（步骤 2 迁移）。
+        // 转换逐分量复制，不改变任何浮点位模式。
+        let hull = build_convex_hull(&to_glam_points(&points))?;
         Ok(Self::new(
-            hull.vertices().to_vec(),
+            from_glam_vertices(hull.vertices()),
             hull.faces().to_vec(),
             convex_radius,
         ))
@@ -106,9 +109,9 @@ impl ConvexHullShape {
         convex_radius: f32,
         tolerance: f32,
     ) -> Result<Self, ConvexHullBuildError> {
-        let hull = build_convex_hull_with_tolerance(&points, tolerance)?;
+        let hull = build_convex_hull_with_tolerance(&to_glam_points(&points), tolerance)?;
         Ok(Self::new(
-            hull.vertices().to_vec(),
+            from_glam_vertices(hull.vertices()),
             hull.faces().to_vec(),
             convex_radius,
         ))
@@ -124,6 +127,23 @@ impl ConvexHullShape {
         Self::try_from_points(points, convex_radius)
             .expect("failed to build convex hull from points")
     }
+}
+
+/// 过渡期辅助：legacy `Vector4` 点列 → glam `Vec4`（Phase 3 步骤 2 迁移
+/// `phys_shape` 时随边界转换一并删除）。
+fn to_glam_points(points: &[Vector4]) -> Vec<Vec4> {
+    points
+        .iter()
+        .map(|p| Vec4::new(p.x, p.y, p.z, p.w))
+        .collect()
+}
+
+/// 过渡期辅助：glam `Vec4` 顶点列 → legacy `Vector4`（同上，步骤 2 删除）。
+fn from_glam_vertices(vertices: &[Vec4]) -> Vec<Vector4> {
+    vertices
+        .iter()
+        .map(|v| Vector4::from_xyz(v.x, v.y, v.z))
+        .collect()
 }
 
 impl Shape for ConvexHullShape {

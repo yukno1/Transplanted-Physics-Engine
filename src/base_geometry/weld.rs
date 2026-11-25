@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::base_math::Vector4;
+use crate::base_math::Vec4;
 
 /// Options for [`weld_vertices`].
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,7 +63,7 @@ impl std::error::Error for WeldError {}
 /// [`WeldResult::triangles`], or `-1` when the triangle was removed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeldResult {
-    pub vertices: Vec<Vector4>,
+    pub vertices: Vec<Vec4>,
     pub triangles: Vec<[u32; 3]>,
     pub vertex_remap: Vec<u32>,
     pub triangle_remap: Vec<i32>,
@@ -71,7 +71,7 @@ pub struct WeldResult {
 
 /// Weld coincident vertices and rewrite triangle indices.
 pub fn weld_vertices(
-    points: &[Vector4],
+    points: &[Vec4],
     triangles: &[[u32; 3]],
     options: WeldOptions,
 ) -> Result<WeldResult, WeldError> {
@@ -129,7 +129,7 @@ pub fn weld_vertices(
         .iter()
         .map(|&rep| compact[rep] as u32)
         .collect();
-    let vertices: Vec<Vector4> = unique_order.iter().map(|&index| points[index]).collect();
+    let vertices: Vec<Vec4> = unique_order.iter().map(|&index| points[index]).collect();
 
     let mut welded_triangles = Vec::new();
     let mut triangle_remap = vec![-1i32; triangles.len()];
@@ -171,14 +171,14 @@ pub fn weld_vertices(
     })
 }
 
-fn compare_point(a: Vector4, b: Vector4) -> core::cmp::Ordering {
+fn compare_point(a: Vec4, b: Vec4) -> core::cmp::Ordering {
     a.x.partial_cmp(&b.x)
         .unwrap()
         .then_with(|| a.y.partial_cmp(&b.y).unwrap())
         .then_with(|| a.z.partial_cmp(&b.z).unwrap())
 }
 
-fn distance_sq3(a: Vector4, b: Vector4) -> f32 {
+fn distance_sq3(a: Vec4, b: Vec4) -> f32 {
     let dx = a.x - b.x;
     let dy = a.y - b.y;
     let dz = a.z - b.z;
@@ -188,18 +188,15 @@ fn distance_sq3(a: Vector4, b: Vector4) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn point(x: f32, y: f32, z: f32) -> Vector4 {
-        Vector4::from_xyz(x, y, z)
-    }
+    use crate::base_math::Vec4Ext;
 
     #[test]
     fn welds_duplicate_points_and_keeps_first_occurrence_order() {
         let points = vec![
-            point(1.0, 0.0, 0.0),
-            point(0.0, 0.0, 0.0),
-            point(1.0 + 1e-4, 0.0, 0.0),
-            point(0.0, 1.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0 + 1e-4, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
         ];
         let options = WeldOptions {
             keep_vertex_order: true,
@@ -216,10 +213,10 @@ mod tests {
     #[test]
     fn remaps_triangles_and_drops_degenerate_faces() {
         let points = vec![
-            point(0.0, 0.0, 0.0),
-            point(1.0, 0.0, 0.0),
-            point(1.0 + 1e-4, 0.0, 0.0),
-            point(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0 + 1e-4, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
         ];
         let triangles = vec![[0, 1, 3], [1, 2, 3]];
         let options = WeldOptions {
@@ -234,9 +231,9 @@ mod tests {
     #[test]
     fn removes_duplicate_triangles_ignoring_winding() {
         let points = vec![
-            point(0.0, 0.0, 0.0),
-            point(1.0, 0.0, 0.0),
-            point(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
         ];
         let triangles = vec![[0, 1, 2], [2, 1, 0]];
         let options = WeldOptions {
@@ -251,12 +248,12 @@ mod tests {
     #[test]
     fn rejects_non_finite_and_bad_indices() {
         assert_eq!(
-            weld_vertices(&[point(f32::NAN, 0.0, 0.0)], &[], WeldOptions::default()),
+            weld_vertices(&[Vec4::from_xyz(f32::NAN, 0.0, 0.0)], &[], WeldOptions::default()),
             Err(WeldError::NonFinitePoint)
         );
         assert_eq!(
             weld_vertices(
-                &[point(0.0, 0.0, 0.0)],
+                &[Vec4::from_xyz(0.0, 0.0, 0.0)],
                 &[[0, 1, 2]],
                 WeldOptions::default()
             ),

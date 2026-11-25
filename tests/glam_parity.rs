@@ -62,6 +62,16 @@ fn vec4_ext_matches_legacy_bit_for_bit() {
             "horizontal_add3 {x:?}/{y:?}"
         );
 
+        // cross3: legacy `set_cross` scalar formula, w zeroed.
+        assert_eq!(bits4(a.cross3(b)), legacy_bits4(la.cross(lb)), "cross3 {x:?}/{y:?}");
+
+        // length_squared3: fixed-order xyz dot with self.
+        assert_eq!(
+            a.length_squared3().to_bits(),
+            la.length_squared3().to_bits(),
+            "length_squared3 {x:?}/{y:?}"
+        );
+
         // Legacy component-wise min/max use f32::min/max (NaN → other operand).
         let min = Vec4::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z), a.w.min(b.w));
         let max = Vec4::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z), a.w.max(b.w));

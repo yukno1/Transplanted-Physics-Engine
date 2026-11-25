@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proton::body::BodyCinfo;
 use proton::extensions::hash_world;
 use proton::geometry::{WeldOptions, weld_vertices};
-use proton::math::Vector4;
+use proton::math::{Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{ConvexHullShape, MassConfig, Shape};
 use proton::world::{World, WorldCinfo};
@@ -42,10 +42,10 @@ fn point_cloud_builds_volume_mass_and_convex_radius() {
 #[test]
 fn welding_remaps_triangles_and_removes_degenerate_faces() {
     let points = vec![
-        Vector4::from_xyz(0.0, 0.0, 0.0),
-        Vector4::from_xyz(1.0, 0.0, 0.0),
-        Vector4::from_xyz(0.0, 1.0, 0.0),
-        Vector4::from_xyz(1.0 + 1e-4, 0.0, 0.0),
+        Vec4::from_xyz(0.0, 0.0, 0.0),
+        Vec4::from_xyz(1.0, 0.0, 0.0),
+        Vec4::from_xyz(0.0, 1.0, 0.0),
+        Vec4::from_xyz(1.0 + 1e-4, 0.0, 0.0),
     ];
     let triangles = vec![[0, 1, 2], [1, 3, 2]];
     let options = WeldOptions {

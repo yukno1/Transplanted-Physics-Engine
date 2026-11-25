@@ -16,7 +16,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::base_math::Vector4;
+use crate::base_math::{Vec4, Vec4Ext};
 
 use crate::base_geometry::weld::{WeldError, WeldOptions, weld_vertices};
 
@@ -60,14 +60,14 @@ impl std::error::Error for HullError {}
 /// Vertices and outward-facing triangle faces of a convex hull.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConvexHull3D {
-    vertices: Vec<Vector4>,
+    vertices: Vec<Vec4>,
     faces: Vec<[u32; 3]>,
     dimension: HullDimension,
 }
 
 impl ConvexHull3D {
     #[inline]
-    pub fn vertices(&self) -> &[Vector4] {
+    pub fn vertices(&self) -> &[Vec4] {
         &self.vertices
     }
 
@@ -83,13 +83,13 @@ impl ConvexHull3D {
 }
 
 /// Build a hull with [`DEFAULT_HULL_TOLERANCE`].
-pub fn build_convex_hull(points: &[Vector4]) -> Result<ConvexHull3D, HullError> {
+pub fn build_convex_hull(points: &[Vec4]) -> Result<ConvexHull3D, HullError> {
     build_convex_hull_with_tolerance(points, DEFAULT_HULL_TOLERANCE)
 }
 
 /// Build a hull after welding points within `tolerance`.
 pub fn build_convex_hull_with_tolerance(
-    points: &[Vector4],
+    points: &[Vec4],
     tolerance: f32,
 ) -> Result<ConvexHull3D, HullError> {
     let options = WeldOptions {
@@ -145,12 +145,12 @@ pub fn build_convex_hull_with_tolerance(
     let origin = points[first];
     let line = points[last] - origin;
     let line_length_sq = line.length_squared3();
-    let unit_line = line.normalized3();
+    let unit_line = line.normalize_or_zero3();
 
     let mut farthest_index = 0usize;
     let mut farthest_distance_sq = -1.0f32;
     for (index, point) in points.iter().enumerate() {
-        let distance_sq = line.cross(*point - origin).length_squared3();
+        let distance_sq = line.cross3(*point - origin).length_squared3();
         if distance_sq > farthest_distance_sq {
             farthest_distance_sq = distance_sq;
             farthest_index = index;
@@ -164,7 +164,7 @@ pub fn build_convex_hull_with_tolerance(
         });
     }
     let second = farthest_index;
-    let plane_normal = line.cross(points[second] - origin).normalized3();
+    let plane_normal = line.cross3(points[second] - origin).normalize_or_zero3();
 
     let mut third = 0usize;
     let mut plane_distance = -1.0f32;
@@ -176,12 +176,12 @@ pub fn build_convex_hull_with_tolerance(
         }
     }
     if plane_distance <= epsilon {
-        let plane_v = plane_normal.cross(unit_line).normalized3();
+        let plane_v = plane_normal.cross3(unit_line).normalize_or_zero3();
         return Ok(convex_hull_2d(&points, origin, unit_line, plane_v));
     }
 
     let simplex = [first as u32, last as u32, second as u32, third as u32];
-    let mut interior = Vector4::ZERO;
+    let mut interior = Vec4::ZERO;
     for &index in &simplex {
         interior += points[index as usize];
     }
@@ -202,7 +202,7 @@ pub fn build_convex_hull_with_tolerance(
         return Err(HullError::Degenerate);
     }
 
-    let mut centroid = Vector4::ZERO;
+    let mut centroid = Vec4::ZERO;
     for point in &points {
         centroid += *point;
     }
@@ -307,16 +307,16 @@ pub fn build_convex_hull_with_tolerance(
 #[derive(Clone, Debug)]
 struct Facet {
     vertices: [u32; 3],
-    normal: Vector4,
+    normal: Vec4,
     offset: f32,
     outside: Vec<usize>,
 }
 
-fn make_facet(points: &[Vector4], vertices: [u32; 3], interior: Vector4) -> Option<Facet> {
+fn make_facet(points: &[Vec4], vertices: [u32; 3], interior: Vec4) -> Option<Facet> {
     let a = points[vertices[0] as usize];
     let b = points[vertices[1] as usize];
     let c = points[vertices[2] as usize];
-    let normal = (b - a).cross(c - a);
+    let normal = (b - a).cross3(c - a);
     if normal.length_squared3() <= f32::EPSILON {
         return None;
     }
@@ -328,7 +328,7 @@ fn make_facet(points: &[Vector4], vertices: [u32; 3], interior: Vector4) -> Opti
     let a = points[vertices[0] as usize];
     let b = points[vertices[1] as usize];
     let c = points[vertices[2] as usize];
-    let mut normal = (b - a).cross(c - a).normalized3();
+    let mut normal = (b - a).cross3(c - a).normalize_or_zero3();
     normal.w = 0.0;
     Some(Facet {
         vertices,
@@ -338,7 +338,7 @@ fn make_facet(points: &[Vector4], vertices: [u32; 3], interior: Vector4) -> Opti
     })
 }
 
-fn signed_distance(facet: &Facet, point: Vector4) -> f32 {
+fn signed_distance(facet: &Facet, point: Vec4) -> f32 {
     facet.normal.dot3(point) + facet.offset
 }
 
@@ -348,7 +348,7 @@ fn has_reversed_edge(vertices: [u32; 3], edge: (u32, u32)) -> bool {
         || (vertices[2] == edge.1 && vertices[0] == edge.0)
 }
 
-fn rebuild_outside(facets: &mut [Facet], points: &[Vector4], processed: &[bool], epsilon: f32) {
+fn rebuild_outside(facets: &mut [Facet], points: &[Vec4], processed: &[bool], epsilon: f32) {
     for facet in facets.iter_mut() {
         facet.outside.clear();
     }
@@ -380,19 +380,19 @@ fn rebuild_outside(facets: &mut [Facet], points: &[Vector4], processed: &[bool],
     }
 }
 
-fn point_outside_triangle(points: &[Vector4], facet: &Facet, point: Vector4, epsilon: f32) -> bool {
+fn point_outside_triangle(points: &[Vec4], facet: &Facet, point: Vec4, epsilon: f32) -> bool {
     let a = points[facet.vertices[0] as usize];
     let b = points[facet.vertices[1] as usize];
     let c = points[facet.vertices[2] as usize];
     let n = facet.normal;
-    let ab = n.dot3((b - a).cross(point - a));
-    let bc = n.dot3((c - b).cross(point - b));
-    let ca = n.dot3((a - c).cross(point - c));
+    let ab = n.dot3((b - a).cross3(point - a));
+    let bc = n.dot3((c - b).cross3(point - b));
+    let ca = n.dot3((a - c).cross3(point - c));
     ab < -epsilon || bc < -epsilon || ca < -epsilon
 }
 
-fn extremes(points: &[Vector4], axis: usize) -> (usize, usize) {
-    let component = |point: Vector4| match axis {
+fn extremes(points: &[Vec4], axis: usize) -> (usize, usize) {
+    let component = |point: Vec4| match axis {
         0 => point.x,
         1 => point.y,
         _ => point.z,
@@ -411,7 +411,7 @@ fn extremes(points: &[Vector4], axis: usize) -> (usize, usize) {
     (minimum, maximum)
 }
 
-fn convex_hull_2d(points: &[Vector4], origin: Vector4, u: Vector4, v: Vector4) -> ConvexHull3D {
+fn convex_hull_2d(points: &[Vec4], origin: Vec4, u: Vec4, v: Vec4) -> ConvexHull3D {
     let mut projected: Vec<(f32, f32, usize)> = points
         .iter()
         .enumerate()
@@ -484,22 +484,19 @@ fn cross2(a: (f32, f32, usize), b: (f32, f32, usize), c: (f32, f32, usize)) -> f
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base_math::Vec4Ext;
 
-    fn point(x: f32, y: f32, z: f32) -> Vector4 {
-        Vector4::from_xyz(x, y, z)
-    }
-
-    fn cube() -> Vec<Vector4> {
+    fn cube() -> Vec<Vec4> {
         let h = 1.0;
         vec![
-            point(-h, -h, -h),
-            point(h, -h, -h),
-            point(h, h, -h),
-            point(-h, h, -h),
-            point(-h, -h, h),
-            point(h, -h, h),
-            point(h, h, h),
-            point(-h, h, h),
+            Vec4::from_xyz(-h, -h, -h),
+            Vec4::from_xyz(h, -h, -h),
+            Vec4::from_xyz(h, h, -h),
+            Vec4::from_xyz(-h, h, -h),
+            Vec4::from_xyz(-h, -h, h),
+            Vec4::from_xyz(h, -h, h),
+            Vec4::from_xyz(h, h, h),
+            Vec4::from_xyz(-h, h, h),
         ]
     }
 
@@ -510,25 +507,25 @@ mod tests {
 
     #[test]
     fn handles_lower_dimensions() {
-        let single = build_convex_hull(&[point(0.0, 0.0, 0.0)]).unwrap();
+        let single = build_convex_hull(&[Vec4::from_xyz(0.0, 0.0, 0.0)]).unwrap();
         assert_eq!(single.dimension(), HullDimension::Point);
         assert_eq!(single.vertices().len(), 1);
 
         let line = build_convex_hull(&[
-            point(0.0, 0.0, 0.0),
-            point(2.0, 0.0, 0.0),
-            point(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(2.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
         ])
         .unwrap();
         assert_eq!(line.dimension(), HullDimension::Line);
         assert_eq!(line.vertices().len(), 2);
 
         let plane = build_convex_hull(&[
-            point(0.0, 0.0, 0.0),
-            point(2.0, 0.0, 0.0),
-            point(2.0, 1.0, 0.0),
-            point(0.0, 1.0, 0.0),
-            point(1.0, 0.5, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(2.0, 0.0, 0.0),
+            Vec4::from_xyz(2.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(1.0, 0.5, 0.0),
         ])
         .unwrap();
         assert_eq!(plane.dimension(), HullDimension::Plane);
@@ -547,7 +544,7 @@ mod tests {
             let pa = hull.vertices()[a as usize];
             let pb = hull.vertices()[b as usize];
             let pc = hull.vertices()[c as usize];
-            six_volume += pa.dot3(pb.cross(pc));
+            six_volume += pa.dot3(pb.cross3(pc));
         }
         assert!((six_volume / 6.0 - 8.0).abs() < 1e-3);
     }
@@ -555,7 +552,7 @@ mod tests {
     #[test]
     fn ignores_duplicates_and_interior_points() {
         let mut points = cube();
-        points.push(point(0.0, 0.0, 0.0));
+        points.push(Vec4::from_xyz(0.0, 0.0, 0.0));
         points.extend(cube());
         let hull = build_convex_hull(&points).unwrap();
         assert_eq!(hull.dimension(), HullDimension::Volume);
@@ -566,10 +563,10 @@ mod tests {
     #[test]
     fn builds_tetrahedron() {
         let hull = build_convex_hull(&[
-            point(0.0, 0.0, 0.0),
-            point(1.0, 0.0, 0.0),
-            point(0.0, 1.0, 0.0),
-            point(0.0, 0.0, 1.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 1.0),
         ])
         .unwrap();
         assert_eq!(hull.dimension(), HullDimension::Volume);
