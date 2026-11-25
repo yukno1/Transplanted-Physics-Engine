@@ -179,8 +179,8 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
     );
 }
 
-fn many_bodies_scene() -> World {
-    let mut world = World::new(WorldCinfo::new());
+fn many_bodies_scene_with(cinfo: WorldCinfo) -> World {
+    let mut world = World::new(cinfo);
     ground(&mut world, Vector4::from_xyz(6.0, 0.5, 6.0));
     let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..36 {
@@ -192,6 +192,10 @@ fn many_bodies_scene() -> World {
         );
     }
     world
+}
+
+fn many_bodies_scene() -> World {
+    many_bodies_scene_with(WorldCinfo::new())
 }
 
 #[test]
@@ -296,4 +300,40 @@ fn explicit_executor_overrides_scheduler_backend() {
         scheduled.scheduler_config().executor,
         ExecutorKind::WorkStealing
     );
+}
+
+#[test]
+fn staged_parallelism_matches_single_threaded_with_sleeping() {
+    let configs = [
+        ("fifo", ExecutorKind::Pool, false),
+        ("priority-work-stealing", ExecutorKind::WorkStealing, true),
+    ];
+    let cinfo = || {
+        WorldCinfo::new()
+            .with_sleeping(true)
+            .with_sleeping_settings(0.2, 0.1, 0.1)
+    };
+
+    for (label, executor, priority) in configs {
+        let mut sequential = many_bodies_scene_with(cinfo());
+        let mut staged = many_bodies_scene_with(cinfo());
+        staged.set_scheduler_config(
+            SchedulerConfig::new(executor, priority).with_stage_parallelism(true, true),
+        );
+
+        for _ in 0..180 {
+            sequential.step(1.0 / 60.0);
+            staged.step_with_scheduler(1.0 / 60.0, 4);
+        }
+        assert_eq!(
+            sequential.snapshot().to_text(),
+            staged.snapshot().to_text(),
+            "{label} must keep the stepped trace bit-identical"
+        );
+        assert_eq!(
+            sequential.stats().sleeping_body_count,
+            staged.stats().sleeping_body_count,
+            "{label} must reach the same sleeping state"
+        );
+    }
 }

@@ -33,9 +33,7 @@ use crate::phys_world::constraint::{
 use crate::phys_world::contact_modifier::{
     ContactEditAction, ContactModifier, ContactModifierId, ContactModifierRegistry, EditableContact,
 };
-use crate::phys_world::events::{
-    PostCollideContactPoint, PostCollideEvent, TriggerEvent, TriggerEventMerger,
-};
+use crate::phys_world::events::{PostCollideEvent, TriggerEvent, TriggerEventMerger};
 use crate::phys_world::island::{IslandInfo, build_islands};
 use crate::phys_world::signals::{
     MassChangeEvent, MassChangeReason, MassConnectionId, MassSignal, MassSummary,
@@ -46,7 +44,10 @@ use crate::phys_world::solver_data::{
     SolverDataHook, SolverDataHookId, SolverDataHookRegistry, SolverDataView,
 };
 use crate::phys_world::tasks::{
-    ParallelDispatch, collect_contacts as collect_contacts_with_dispatch,
+    ParallelDispatch, PreparedContactPoint, PreparedContactRowGroup,
+    build_contact_rows as build_contact_rows_stage,
+    collect_contacts as collect_contacts_with_dispatch,
+    compute_writeback as compute_writeback_candidates,
     solve_islands as solve_islands_with_dispatch,
 };
 use crate::phys_world::{
@@ -2408,7 +2409,9 @@ impl World {
     /// dropped point is excluded from all three. One post-collide event is
     /// produced per manifold (including those whose points were all dropped)
     /// so listeners can observe the filtering.
-    fn build_contact_rows(
+    /// Run contact modifiers and solver-data hooks in registration order and
+    /// snapshot everything needed by the pure row-finalization stage.
+    fn prepare_contact_rows(
         &self,
         contacts: &[ContactManifold],
         index_map: &HashMap<BodyId, usize>,
@@ -2416,23 +2419,10 @@ impl World {
         hooks: &[Arc<dyn SolverDataHook>],
         step_number: u64,
         delta_time: f32,
-    ) -> (
-        Vec<ContactConstraint>,
-        Vec<ContactKey>,
-        Vec<ContactImpulse>,
-        Vec<PostCollideEvent>,
-    ) {
-        let point_count: usize = contacts
-            .iter()
-            .map(|contact| contact.manifold.num_points())
-            .sum();
-        let mut constraints = Vec::with_capacity(point_count);
-        let mut contact_keys = Vec::with_capacity(point_count);
-        let mut contact_impulses = Vec::with_capacity(point_count);
-        let mut events = Vec::with_capacity(contacts.len());
-
+    ) -> Vec<PreparedContactRowGroup> {
+        let mut groups = Vec::with_capacity(contacts.len());
         for contact in contacts {
-            let (Some(&body_a), Some(&body_b)) = (
+            let (Some(&solver_a), Some(&solver_b)) = (
                 index_map.get(&contact.body_a),
                 index_map.get(&contact.body_b),
             ) else {
@@ -2506,58 +2496,55 @@ impl World {
                     }
                 }
 
-                if editable.normal.length3() > 1e-10 {
-                    editable.normal = editable.normal.normalized3();
-                }
-                let (tangent_1, tangent_2) = contact_tangents(editable.normal);
-                editable.tangent_1 = tangent_1;
-                editable.tangent_2 = tangent_2;
-                editable.normal_impulse = editable.normal_impulse.max(0.0);
-                let limit = editable.friction.max(0.0) * editable.normal_impulse;
-                editable.tangent_impulse_1 = editable.tangent_impulse_1.clamp(-limit, limit);
-                editable.tangent_impulse_2 = editable.tangent_impulse_2.clamp(-limit, limit);
-
-                let penetration = editable.penetration.max(0.0);
-                let constraint_point = editable.position - editable.normal * (penetration * 0.5);
-                constraints.push(ContactConstraint::new(
-                    body_a,
-                    body_b,
-                    editable.normal,
-                    constraint_point,
-                    penetration,
-                    editable.friction,
-                ));
-                let key = ContactKey {
-                    body_a: contact.body_a,
-                    body_b: contact.body_b,
-                    local_point_b: transform_b.inverse_transform_point(editable.position),
-                    normal: editable.normal,
-                };
-                contact_impulses.push(ContactImpulse {
-                    normal: editable.normal_impulse,
-                    tangent_1: editable.tangent_impulse_1,
-                    tangent_2: editable.tangent_impulse_2,
-                });
-                contact_keys.push(key);
-                points.push(PostCollideContactPoint {
+                points.push(PreparedContactPoint {
                     position: editable.position,
                     normal: editable.normal,
-                    penetration,
+                    penetration: editable.penetration,
                     friction: editable.friction,
+                    normal_impulse: editable.normal_impulse,
+                    tangent_impulse_1: editable.tangent_impulse_1,
+                    tangent_impulse_2: editable.tangent_impulse_2,
                 });
             }
 
-            events.push(PostCollideEvent {
-                step_count: step_number,
-                delta_time,
+            groups.push(PreparedContactRowGroup {
                 body_a: contact.body_a,
                 body_b: contact.body_b,
+                solver_a,
+                solver_b,
+                transform_b,
+                step_number,
+                delta_time,
+                dropped,
                 points,
-                dropped_point_count: dropped,
             });
         }
+        groups
+    }
 
-        (constraints, contact_keys, contact_impulses, events)
+    fn build_contact_rows(
+        &self,
+        contacts: &[ContactManifold],
+        index_map: &HashMap<BodyId, usize>,
+        modifiers: &[Arc<dyn ContactModifier>],
+        hooks: &[Arc<dyn SolverDataHook>],
+        step_number: u64,
+        delta_time: f32,
+    ) -> (
+        Vec<ContactConstraint>,
+        Vec<ContactKey>,
+        Vec<ContactImpulse>,
+        Vec<PostCollideEvent>,
+    ) {
+        let groups = self.prepare_contact_rows(
+            contacts,
+            index_map,
+            modifiers,
+            hooks,
+            step_number,
+            delta_time,
+        );
+        build_contact_rows_stage(&groups, ParallelDispatch::Scoped(1))
     }
 
     /// Advance the world by `delta_time` using one thread.
@@ -2584,9 +2571,11 @@ impl World {
             self.step_with_dispatch(
                 delta_time,
                 ParallelDispatch::Pooled(pool.as_ref(), threads, false),
+                false,
+                false,
             );
         } else {
-            self.step_with_dispatch(delta_time, ParallelDispatch::Scoped(threads));
+            self.step_with_dispatch(delta_time, ParallelDispatch::Scoped(threads), false, false);
         }
     }
 
@@ -2596,8 +2585,15 @@ impl World {
     /// and optionally orders same-level task submissions by priority. Physics
     /// stages and result order are identical to [`World::step_with_threads`].
     pub fn step_with_scheduler(&mut self, delta_time: f32, threads: usize) {
+        let parallel_contact_rows = self.scheduler.parallel_contact_rows;
+        let parallel_writeback = self.scheduler.parallel_writeback;
         if threads <= 1 {
-            self.step_with_dispatch(delta_time, ParallelDispatch::Scoped(threads));
+            self.step_with_dispatch(
+                delta_time,
+                ParallelDispatch::Scoped(threads),
+                parallel_contact_rows,
+                parallel_writeback,
+            );
             return;
         }
         let respect_priority = self.scheduler.respect_priority;
@@ -2605,10 +2601,18 @@ impl World {
         self.step_with_dispatch(
             delta_time,
             ParallelDispatch::Pooled(executor.as_ref(), threads, respect_priority),
+            parallel_contact_rows,
+            parallel_writeback,
         );
     }
 
-    fn step_with_dispatch(&mut self, delta_time: f32, dispatch: ParallelDispatch<'_>) {
+    fn step_with_dispatch(
+        &mut self,
+        delta_time: f32,
+        dispatch: ParallelDispatch<'_>,
+        parallel_contact_rows: bool,
+        parallel_writeback: bool,
+    ) {
         debug_assert!(
             delta_time >= 0.0 && delta_time.is_finite(),
             "invalid step delta time"
@@ -2685,15 +2689,31 @@ impl World {
         // step over a snapshot so parallel workers cannot see partial edits.
         let modifier_snapshot = self.contact_modifiers.snapshot();
         let hook_snapshot = self.solver_data_hooks.snapshot();
-        let (constraints, contact_keys, mut contact_impulses, post_collide_events) = self
-            .build_contact_rows(
+        let prepared = if parallel_contact_rows {
+            Some(self.prepare_contact_rows(
                 &contacts,
                 &index_map,
                 &modifier_snapshot,
                 &hook_snapshot,
                 self.step_count + 1,
                 delta_time,
-            );
+            ))
+        } else {
+            None
+        };
+        let (constraints, contact_keys, mut contact_impulses, post_collide_events) =
+            if let Some(groups) = prepared.as_ref() {
+                build_contact_rows_stage(groups, dispatch)
+            } else {
+                self.build_contact_rows(
+                    &contacts,
+                    &index_map,
+                    &modifier_snapshot,
+                    &hook_snapshot,
+                    self.step_count + 1,
+                    delta_time,
+                )
+            };
         self.last_manifold_count = post_collide_events.len();
         self.last_contact_count = constraints.len();
         for event in &post_collide_events {
@@ -2837,40 +2857,93 @@ impl World {
             self.contact_cache.clear();
         }
 
-        // Write solved velocities back to dynamic motions.
-        for (index, body_id) in body_ids.iter().enumerate() {
-            let Some(body) = self.bodies.get(*body_id) else {
-                continue;
-            };
-            let solved = solver_bodies[index];
-            if solved.inverse_mass > 0.0 {
-                if let Some(motion) = self.motions.get_mut(body.motion_id) {
-                    motion.linear_velocity = solved.linear_velocity;
-                    motion.angular_velocity = solved.angular_velocity;
+        // Write solved velocities back to dynamic motions. The parallel path
+        // computes candidates from immutable snapshots but applies them in body
+        // slot order so shared motions keep the original last-write semantics.
+        let collect_sleep_timers = self.cinfo.enable_sleeping && delta_time > 0.0;
+        let (velocity_writes, timer_updates) = if parallel_writeback {
+            let motion_ids: Vec<Option<MotionId>> = body_ids
+                .iter()
+                .map(|&body_id| self.bodies.get(body_id).map(|body| body.motion_id))
+                .collect();
+            let sleeping: Vec<bool> = body_ids
+                .iter()
+                .map(|&body_id| {
+                    self.sleep_states
+                        .get(&body_id)
+                        .map(|state| state.sleeping)
+                        .unwrap_or(false)
+                })
+                .collect();
+            compute_writeback_candidates(
+                &solver_bodies,
+                &body_ids,
+                &motion_ids,
+                &is_dynamic,
+                &sleeping,
+                self.cinfo.sleeping_linear_threshold,
+                self.cinfo.sleeping_angular_threshold,
+                collect_sleep_timers,
+                dispatch,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
+        if parallel_writeback {
+            for candidate in velocity_writes {
+                if let Some(motion) = self.motions.get_mut(candidate.motion_id) {
+                    motion.linear_velocity = candidate.linear_velocity;
+                    motion.angular_velocity = candidate.angular_velocity;
+                }
+            }
+        } else {
+            for (index, body_id) in body_ids.iter().enumerate() {
+                let Some(body) = self.bodies.get(*body_id) else {
+                    continue;
+                };
+                let solved = solver_bodies[index];
+                if solved.inverse_mass > 0.0 {
+                    if let Some(motion) = self.motions.get_mut(body.motion_id) {
+                        motion.linear_velocity = solved.linear_velocity;
+                        motion.angular_velocity = solved.angular_velocity;
+                    }
                 }
             }
         }
 
         // Update deactivation timers and put fully low-energy islands to sleep.
-        if self.cinfo.enable_sleeping && delta_time > 0.0 {
-            for (index, &body_id) in body_ids.iter().enumerate() {
-                if !is_dynamic[index] {
-                    continue;
+        if collect_sleep_timers {
+            if parallel_writeback {
+                for candidate in timer_updates {
+                    let state = self.sleep_states.entry(candidate.body_id).or_default();
+                    if candidate.low_energy {
+                        state.timer += delta_time;
+                    } else {
+                        state.timer = 0.0;
+                    }
                 }
-                let state = self.sleep_states.entry(body_id).or_default();
-                if state.sleeping {
-                    continue;
-                }
-                let solved = solver_bodies[index];
-                let low_energy = solved.linear_velocity.dot3(solved.linear_velocity)
-                    < self.cinfo.sleeping_linear_threshold * self.cinfo.sleeping_linear_threshold
-                    && solved.angular_velocity.dot3(solved.angular_velocity)
-                        < self.cinfo.sleeping_angular_threshold
-                            * self.cinfo.sleeping_angular_threshold;
-                if low_energy {
-                    state.timer += delta_time;
-                } else {
-                    state.timer = 0.0;
+            } else {
+                for (index, &body_id) in body_ids.iter().enumerate() {
+                    if !is_dynamic[index] {
+                        continue;
+                    }
+                    let state = self.sleep_states.entry(body_id).or_default();
+                    if state.sleeping {
+                        continue;
+                    }
+                    let solved = solver_bodies[index];
+                    let low_energy = solved.linear_velocity.dot3(solved.linear_velocity)
+                        < self.cinfo.sleeping_linear_threshold
+                            * self.cinfo.sleeping_linear_threshold
+                        && solved.angular_velocity.dot3(solved.angular_velocity)
+                            < self.cinfo.sleeping_angular_threshold
+                                * self.cinfo.sleeping_angular_threshold;
+                    if low_energy {
+                        state.timer += delta_time;
+                    } else {
+                        state.timer = 0.0;
+                    }
                 }
             }
 

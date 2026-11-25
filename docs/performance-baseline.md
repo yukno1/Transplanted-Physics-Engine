@@ -357,3 +357,83 @@ joint_chain_ragdoll	0.042	ms/step	bodies=25 joints=24
 - 优先级在本阶段仅影响同层提交顺序，且世界层 compute chunk 共享同一优先级，因此 priority FIFO 的额外开销未换来收益；保留为显式可选项，不设为默认。
 - 确定性门禁：`tests/sleeping_and_parallel_solving.rs::scheduler_backends_match_single_threaded` 比较四种配置在 36 球场景的 120 步 trace，`explicit_executor_overrides_scheduler_backend` 验证显式执行器优先级；`tests/determinism.rs::scheduler_backends_match_scalar_golden` 断言四种配置 30 步 trace 等于 `GOLDEN_TRACE_30`；`src/base_thread` 新增优先级提交顺序与 work-stealing 队列/panic 单元测试。
 - 结论：保留 `TaskExecutor` 抽象与两个可互换后端作为后续完整物理任务图的执行层；本阶段仍只宣称“与 Rust 单线程路径逐位一致”，不宣称与 C++、真实 `.hkx` 资产或真实 VDB 轨迹逐位等价。
+
+## 10. 阶段级并行扩展（2026-11-25）
+
+### 10.1 落地范围
+
+- `SchedulerConfig` 新增 `parallel_contact_rows` / `parallel_writeback`，默认均为 `false`；`step` / `step_with_threads` 不受影响，仅 `step_with_scheduler` 按配置启用。
+- 接触行阶段先由调用线程按注册顺序执行 modifier / hook，生成 `PreparedContactRowGroup` 不可变快照；分块任务只做归一化、切向基、warm-start 冲量钳制与约束/事件构造，并按流形顺序归并。post-collide 事件仍由调用线程按原序派发。
+- 回写阶段按 body 索引计算速度写入与休眠计时候选，调用线程按槽序应用；共享 motion 的 last-write 语义、warm-start 行序、休眠判定与积分保持不变。
+- `benches/simulation.rs` 新增 `world_fall_n_parallel_contact_rows`、`world_fall_n_parallel_writeback`、`world_fall_n_parallel_stages`。
+
+### 10.2 最终 quick 输出
+
+```text
+# hvk-bench v1 quick=true
+# name	value	unit	detail
+math_vector4_add	0.0013	us/iter	iterations=100000
+math_vector4_mul	0.0012	us/iter	iterations=100000
+math_vector4_dot3	0.0017	us/iter	iterations=100000
+math_vector4_normalize3	0.0016	us/iter	iterations=100000
+math_quaternion_mul	0.0083	us/iter	iterations=100000
+math_matrix3_mul_vec	0.0012	us/iter	iterations=100000
+math_aabb_include_point	0.0027	us/iter	iterations=100000
+broadphase_grid	0.021	ms/iter	bodies=64 pairs=156
+gjk_sphere_pair	0.001	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.039	ms/step	bodies=16 contacts=15
+world_fall_n_parallel	0.043	ms/step	bodies=16 contacts=15
+world_fall_n_persistent_pool	0.025	ms/step	bodies=16 contacts=15 threads=4 task-graph
+world_fall_n_priority_pool	0.036	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: Pool, respect_priority: true, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_work_stealing	0.037	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_priority_work_stealing	0.042	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: true, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_parallel_contact_rows	0.033	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: Pool, respect_priority: false, parallel_contact_rows: true, parallel_writeback: false }
+world_fall_n_parallel_writeback	0.040	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: Pool, respect_priority: false, parallel_contact_rows: false, parallel_writeback: true }
+world_fall_n_parallel_stages	0.035	ms/step	bodies=16 contacts=15 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false, parallel_contact_rows: true, parallel_writeback: true }
+world_stack_10	0.011	ms/step	bodies=10 contacts=3
+raycast_world	0.003	ms/iter	bodies=17 hits=201
+shape_cast_world	0.001	ms/iter	bodies=1 hits=201
+joint_chain_ragdoll	0.021	ms/step	bodies=9 joints=8
+```
+
+### 10.3 最终 full 输出
+
+```text
+# hvk-bench v1 quick=false
+# name	value	unit	detail
+math_vector4_add	0.0011	us/iter	iterations=2000000
+math_vector4_mul	0.0011	us/iter	iterations=2000000
+math_vector4_dot3	0.0013	us/iter	iterations=2000000
+math_vector4_normalize3	0.0015	us/iter	iterations=2000000
+math_quaternion_mul	0.0074	us/iter	iterations=2000000
+math_matrix3_mul_vec	0.0013	us/iter	iterations=2000000
+math_aabb_include_point	0.0027	us/iter	iterations=2000000
+broadphase_grid	0.237	ms/iter	bodies=512 pairs=1906
+gjk_sphere_pair	0.000	ms/iter	separated
+gjk_box_pair	0.000	ms/iter	separated
+narrowphase_box_pairs	0.001	ms/iter	overlapping
+solver_contact_pair	0.000	ms/iter	2 bodies, 1 contact, 4 iterations
+world_fall_n	0.074	ms/step	bodies=64 contacts=24
+world_fall_n_parallel	0.127	ms/step	bodies=64 contacts=24
+world_fall_n_persistent_pool	0.092	ms/step	bodies=64 contacts=24 threads=4 task-graph
+world_fall_n_priority_pool	0.103	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: Pool, respect_priority: true, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_work_stealing	0.094	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_priority_work_stealing	0.085	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: true, parallel_contact_rows: false, parallel_writeback: false }
+world_fall_n_parallel_contact_rows	0.110	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: Pool, respect_priority: false, parallel_contact_rows: true, parallel_writeback: false }
+world_fall_n_parallel_writeback	0.114	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: Pool, respect_priority: false, parallel_contact_rows: false, parallel_writeback: true }
+world_fall_n_parallel_stages	0.099	ms/step	bodies=64 contacts=24 threads=4 SchedulerConfig { executor: WorkStealing, respect_priority: false, parallel_contact_rows: true, parallel_writeback: true }
+world_stack_10	0.018	ms/step	bodies=10 contacts=8
+raycast_world	0.003	ms/iter	bodies=17 hits=2001
+shape_cast_world	0.001	ms/iter	bodies=1 hits=2001
+joint_chain_ragdoll	0.043	ms/step	bodies=25 joints=24
+```
+
+### 10.4 对比与结论
+
+- full 场景中单独开启接触行或回写阶段分别约 0.110 / 0.114 ms/step，组合 work-stealing 后约 0.099 ms/step，与既有持久 FIFO 池 0.092 ms/step 同量级但未见稳定收益；quick 场景同样在噪声范围内波动。
+- 阶段拆分的价值在于把“回调顺序敏感”和“纯计算”明确分离，为后续更大场景/更多阶段提供安全的调度边界；新阶段保持默认关闭，不因为它们改变默认性能基线。
+- 确定性门禁：`tests/sleeping_and_parallel_solving.rs::staged_parallelism_matches_single_threaded_with_sleeping` 在 36 球休眠场景比较 FIFO 与 priority-work-stealing 的 180 步 trace 与休眠体数；`tests/determinism.rs::staged_parallelism_matches_scalar_golden` 断言 30 步 trace 等于 `GOLDEN_TRACE_30`；既有 modifier / hook / post-collide / warm-start / 共享 motion 测试仍全绿。
+- 结论：保留两个新阶段为显式可选项；本阶段仍只宣称“与 Rust 单线程路径逐位一致”，不宣称与 C++、真实 `.hkx` 资产或真实 VDB 轨迹逐位等价。

@@ -1,11 +1,13 @@
 //! Deterministic per-step scheduling for the physics world.
 //!
 //! Rust counterpart of the `hknpTaskGraph` scheduling layer used by
-//! `hknpMultithreadedSimulation`. Only independent compute stages are
-//! dispatched here: broad-phase candidate narrow phase and per-island solver
-//! sweeps. Stages that mutate the world (gravity, event dispatch, warm-start
-//! write-back, sleeping and integration) stay on the calling thread, in the
-//! original order, so `hvk-trace v1` remains bit-identical.
+//! `hknpMultithreadedSimulation`. Independent compute stages are dispatched
+//! here: broad-phase candidate narrow phase, per-island solver sweeps,
+//! contact-row finalization after serial modifier/hook callbacks, and
+//! write-back/sleep-timer candidate computation. Stages that mutate the world
+//! (gravity, event dispatch, warm-start application, sleep decisions and
+//! integration) stay on the calling thread in the original order, so
+//! `hvk-trace v1` remains bit-identical.
 //!
 //! A pooled step uses a fresh [`TaskGraph`] per stage: chunk tasks write to
 //! indexed result slots and a dependent merge task restores stable candidate /
@@ -14,9 +16,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use crate::base_math::{Transform, Vector4};
 use crate::base_thread::{Priority, TaskExecutor, TaskGraph};
-use crate::phys_solver::Solver;
+use crate::phys_solver::{ContactConstraint, ContactImpulse, Solver, SolverBody, contact_tangents};
+use crate::phys_types::{BodyId, MotionId};
 use crate::phys_world::ContactManifold;
+use crate::phys_world::cache::ContactKey;
+use crate::phys_world::events::{PostCollideContactPoint, PostCollideEvent};
 use crate::phys_world::island::Island;
 use crate::phys_world::world::{
     ContactCandidate, IslandSolveBuffers, IslandSolveResult, collide_candidate,
@@ -27,19 +33,27 @@ use crate::phys_world::world::{
 pub(crate) const MIN_PARALLEL_CANDIDATES: usize = 32;
 /// Island count below which the sequential solver sweep is used.
 pub(crate) const MIN_PARALLEL_ISLANDS: usize = 2;
+/// Contact manifold count below which row construction stays serial.
+pub(crate) const MIN_PARALLEL_CONTACT_ROWS: usize = 16;
+/// Body count below which write-back candidate computation stays serial.
+pub(crate) const MIN_PARALLEL_WRITEBACK: usize = 32;
 
 /// Stage name carried into panic messages so a worker failure is locatable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StepStage {
     NarrowPhase,
+    ContactRows,
     IslandSolve,
+    Writeback,
 }
 
 impl StepStage {
     fn panic_message(self) -> &'static str {
         match self {
             Self::NarrowPhase => "narrow-phase task graph contains a cycle",
+            Self::ContactRows => "contact-row task graph contains a cycle",
             Self::IslandSolve => "island-solve task graph contains a cycle",
+            Self::Writeback => "writeback task graph contains a cycle",
         }
     }
 }
@@ -76,6 +90,240 @@ fn chunk_ranges(len: usize, threads: usize) -> Vec<(usize, usize)> {
             (start < end).then_some((start, end))
         })
         .collect()
+}
+
+/// One contact point after serial modifier/hook callbacks but before final
+/// normalization and solver-row construction.
+#[derive(Clone, Copy)]
+pub(crate) struct PreparedContactPoint {
+    pub(crate) position: Vector4,
+    pub(crate) normal: Vector4,
+    pub(crate) penetration: f32,
+    pub(crate) friction: f32,
+    pub(crate) normal_impulse: f32,
+    pub(crate) tangent_impulse_1: f32,
+    pub(crate) tangent_impulse_2: f32,
+}
+
+/// One manifold worth of prepared contact points.
+#[derive(Clone)]
+pub(crate) struct PreparedContactRowGroup {
+    pub(crate) body_a: BodyId,
+    pub(crate) body_b: BodyId,
+    pub(crate) solver_a: usize,
+    pub(crate) solver_b: usize,
+    pub(crate) transform_b: Transform,
+    pub(crate) step_number: u64,
+    pub(crate) delta_time: f32,
+    pub(crate) dropped: usize,
+    pub(crate) points: Vec<PreparedContactPoint>,
+}
+
+struct ContactRowChunk {
+    index: usize,
+    constraints: Vec<ContactConstraint>,
+    contact_keys: Vec<ContactKey>,
+    contact_impulses: Vec<ContactImpulse>,
+    events: Vec<PostCollideEvent>,
+}
+
+fn finalize_contact_rows_chunk(
+    groups: &[PreparedContactRowGroup],
+    start: usize,
+    end: usize,
+) -> ContactRowChunk {
+    let point_count: usize = groups[start..end]
+        .iter()
+        .map(|group| group.points.len())
+        .sum();
+    let mut chunk = ContactRowChunk {
+        index: start,
+        constraints: Vec::with_capacity(point_count),
+        contact_keys: Vec::with_capacity(point_count),
+        contact_impulses: Vec::with_capacity(point_count),
+        events: Vec::with_capacity(end - start),
+    };
+
+    for group in &groups[start..end] {
+        let mut points = Vec::with_capacity(group.points.len());
+        for point in &group.points {
+            let mut normal = point.normal;
+            if normal.length3() > 1e-10 {
+                normal = normal.normalized3();
+            }
+            let (tangent_1, tangent_2) = contact_tangents(normal);
+            let normal_impulse = point.normal_impulse.max(0.0);
+            let limit = point.friction.max(0.0) * normal_impulse;
+            let tangent_impulse_1 = point.tangent_impulse_1.clamp(-limit, limit);
+            let tangent_impulse_2 = point.tangent_impulse_2.clamp(-limit, limit);
+            let penetration = point.penetration.max(0.0);
+            let constraint_point = point.position - normal * (penetration * 0.5);
+
+            chunk.constraints.push(ContactConstraint::new(
+                group.solver_a,
+                group.solver_b,
+                normal,
+                constraint_point,
+                penetration,
+                point.friction,
+            ));
+            chunk.contact_keys.push(ContactKey {
+                body_a: group.body_a,
+                body_b: group.body_b,
+                local_point_b: group.transform_b.inverse_transform_point(point.position),
+                normal,
+            });
+            chunk.contact_impulses.push(ContactImpulse {
+                normal: normal_impulse,
+                tangent_1: tangent_impulse_1,
+                tangent_2: tangent_impulse_2,
+            });
+            points.push(PostCollideContactPoint {
+                position: point.position,
+                normal,
+                penetration,
+                friction: point.friction,
+            });
+            let _ = (tangent_1, tangent_2);
+        }
+        chunk.events.push(PostCollideEvent {
+            step_count: group.step_number,
+            delta_time: group.delta_time,
+            body_a: group.body_a,
+            body_b: group.body_b,
+            points,
+            dropped_point_count: group.dropped,
+        });
+    }
+    chunk
+}
+
+fn merge_contact_chunks(
+    mut chunks: Vec<ContactRowChunk>,
+) -> (
+    Vec<ContactConstraint>,
+    Vec<ContactKey>,
+    Vec<ContactImpulse>,
+    Vec<PostCollideEvent>,
+) {
+    chunks.sort_unstable_by_key(|chunk| chunk.index);
+    let mut constraints = Vec::new();
+    let mut contact_keys = Vec::new();
+    let mut contact_impulses = Vec::new();
+    let mut events = Vec::new();
+    for chunk in chunks {
+        constraints.extend(chunk.constraints);
+        contact_keys.extend(chunk.contact_keys);
+        contact_impulses.extend(chunk.contact_impulses);
+        events.extend(chunk.events);
+    }
+    (constraints, contact_keys, contact_impulses, events)
+}
+
+/// Build solver contact rows from already-prepared manifold snapshots.
+///
+/// Modifier and hook callbacks must have run on the caller thread before this
+/// stage so their global registration-order side effects stay unchanged.
+pub(crate) fn build_contact_rows(
+    groups: &[PreparedContactRowGroup],
+    dispatch: ParallelDispatch<'_>,
+) -> (
+    Vec<ContactConstraint>,
+    Vec<ContactKey>,
+    Vec<ContactImpulse>,
+    Vec<PostCollideEvent>,
+) {
+    if groups.len() < MIN_PARALLEL_CONTACT_ROWS || dispatch.threads() <= 1 {
+        return merge_contact_chunks(vec![finalize_contact_rows_chunk(groups, 0, groups.len())]);
+    }
+    match dispatch {
+        ParallelDispatch::Scoped(threads) => build_contact_rows_scoped(groups, threads),
+        ParallelDispatch::Pooled(executor, threads, respect_priority) => {
+            build_contact_rows_pooled(groups, executor, threads, respect_priority)
+        }
+    }
+}
+
+fn build_contact_rows_scoped(
+    groups: &[PreparedContactRowGroup],
+    threads: usize,
+) -> (
+    Vec<ContactConstraint>,
+    Vec<ContactKey>,
+    Vec<ContactImpulse>,
+    Vec<PostCollideEvent>,
+) {
+    let results: Mutex<Vec<ContactRowChunk>> = Mutex::new(Vec::new());
+    crate::base_thread::parallel::parallel_for_chunks(groups.len(), threads, |start, end| {
+        let chunk = finalize_contact_rows_chunk(groups, start, end);
+        results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(chunk);
+    });
+    merge_contact_chunks(
+        results
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+fn build_contact_rows_pooled(
+    groups: &[PreparedContactRowGroup],
+    executor: &dyn TaskExecutor,
+    threads: usize,
+    respect_priority: bool,
+) -> (
+    Vec<ContactConstraint>,
+    Vec<ContactKey>,
+    Vec<ContactImpulse>,
+    Vec<PostCollideEvent>,
+) {
+    let groups = Arc::new(groups.to_vec());
+    let results: Arc<Mutex<Vec<ContactRowChunk>>> = Arc::new(Mutex::new(Vec::new()));
+    let merged: Arc<Mutex<Option<Vec<ContactRowChunk>>>> = Arc::new(Mutex::new(None));
+    let ranges = chunk_ranges(groups.len(), threads);
+
+    let mut graph = TaskGraph::with_capacity(ranges.len() + 1, ranges.len());
+    let mut chunk_tasks = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let groups = Arc::clone(&groups);
+        let results = Arc::clone(&results);
+        chunk_tasks.push(add_stage_task(
+            &mut graph,
+            respect_priority,
+            Priority::High,
+            move || {
+                let chunk = finalize_contact_rows_chunk(&groups, start, end);
+                results
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(chunk);
+            },
+        ));
+    }
+    let merge_results = Arc::clone(&results);
+    let merge_output = Arc::clone(&merged);
+    let merge_task = add_stage_task(&mut graph, respect_priority, Priority::Medium, move || {
+        let mut chunks = merge_results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        chunks.sort_unstable_by_key(|chunk| chunk.index);
+        *merge_output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::mem::take(&mut *chunks));
+    });
+    for chunk in chunk_tasks {
+        graph.add_dependency(chunk, merge_task);
+    }
+    execute_graph(graph, executor, respect_priority, StepStage::ContactRows);
+    merge_contact_chunks(
+        merged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_default(),
+    )
 }
 
 fn collect_contacts_chunk(
@@ -168,6 +416,257 @@ where
     } else {
         graph.add_task(job)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct VelocityWritebackCandidate {
+    pub(crate) motion_id: MotionId,
+    pub(crate) linear_velocity: Vector4,
+    pub(crate) angular_velocity: Vector4,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct SleepTimerCandidate {
+    pub(crate) body_id: BodyId,
+    pub(crate) low_energy: bool,
+}
+
+struct WritebackChunk {
+    index: usize,
+    velocities: Vec<VelocityWritebackCandidate>,
+    timers: Vec<SleepTimerCandidate>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_writeback_chunk(
+    solver_bodies: &[SolverBody],
+    body_ids: &[BodyId],
+    motion_ids: &[Option<MotionId>],
+    is_dynamic: &[bool],
+    sleeping: &[bool],
+    linear_threshold_sq: f32,
+    angular_threshold_sq: f32,
+    collect_timers: bool,
+    start: usize,
+    end: usize,
+) -> WritebackChunk {
+    let mut chunk = WritebackChunk {
+        index: start,
+        velocities: Vec::new(),
+        timers: Vec::new(),
+    };
+    for index in start..end {
+        let solved = solver_bodies[index];
+        if solved.inverse_mass > 0.0 {
+            if let Some(motion_id) = motion_ids[index] {
+                chunk.velocities.push(VelocityWritebackCandidate {
+                    motion_id,
+                    linear_velocity: solved.linear_velocity,
+                    angular_velocity: solved.angular_velocity,
+                });
+            }
+        }
+        if collect_timers && is_dynamic[index] && !sleeping[index] {
+            let low_energy = solved.linear_velocity.dot3(solved.linear_velocity)
+                < linear_threshold_sq
+                && solved.angular_velocity.dot3(solved.angular_velocity) < angular_threshold_sq;
+            chunk.timers.push(SleepTimerCandidate {
+                body_id: body_ids[index],
+                low_energy,
+            });
+        }
+    }
+    chunk
+}
+
+fn merge_writeback_chunks(
+    mut chunks: Vec<WritebackChunk>,
+) -> (Vec<VelocityWritebackCandidate>, Vec<SleepTimerCandidate>) {
+    chunks.sort_unstable_by_key(|chunk| chunk.index);
+    let mut velocities = Vec::new();
+    let mut timers = Vec::new();
+    for chunk in chunks {
+        velocities.extend(chunk.velocities);
+        timers.extend(chunk.timers);
+    }
+    (velocities, timers)
+}
+
+/// Compute solver write-back and sleep-timer candidates without mutating world
+/// state. Candidates are returned in ascending body index order for serial
+/// application by the caller.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_writeback(
+    solver_bodies: &[SolverBody],
+    body_ids: &[BodyId],
+    motion_ids: &[Option<MotionId>],
+    is_dynamic: &[bool],
+    sleeping: &[bool],
+    linear_threshold: f32,
+    angular_threshold: f32,
+    collect_timers: bool,
+    dispatch: ParallelDispatch<'_>,
+) -> (Vec<VelocityWritebackCandidate>, Vec<SleepTimerCandidate>) {
+    let linear_threshold_sq = linear_threshold * linear_threshold;
+    let angular_threshold_sq = angular_threshold * angular_threshold;
+    if body_ids.len() < MIN_PARALLEL_WRITEBACK || dispatch.threads() <= 1 {
+        return merge_writeback_chunks(vec![compute_writeback_chunk(
+            solver_bodies,
+            body_ids,
+            motion_ids,
+            is_dynamic,
+            sleeping,
+            linear_threshold_sq,
+            angular_threshold_sq,
+            collect_timers,
+            0,
+            body_ids.len(),
+        )]);
+    }
+    match dispatch {
+        ParallelDispatch::Scoped(threads) => compute_writeback_scoped(
+            solver_bodies,
+            body_ids,
+            motion_ids,
+            is_dynamic,
+            sleeping,
+            linear_threshold_sq,
+            angular_threshold_sq,
+            collect_timers,
+            threads,
+        ),
+        ParallelDispatch::Pooled(executor, threads, respect_priority) => compute_writeback_pooled(
+            solver_bodies,
+            body_ids,
+            motion_ids,
+            is_dynamic,
+            sleeping,
+            linear_threshold_sq,
+            angular_threshold_sq,
+            collect_timers,
+            executor,
+            threads,
+            respect_priority,
+        ),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_writeback_scoped(
+    solver_bodies: &[SolverBody],
+    body_ids: &[BodyId],
+    motion_ids: &[Option<MotionId>],
+    is_dynamic: &[bool],
+    sleeping: &[bool],
+    linear_threshold_sq: f32,
+    angular_threshold_sq: f32,
+    collect_timers: bool,
+    threads: usize,
+) -> (Vec<VelocityWritebackCandidate>, Vec<SleepTimerCandidate>) {
+    let results: Mutex<Vec<WritebackChunk>> = Mutex::new(Vec::new());
+    crate::base_thread::parallel::parallel_for_chunks(body_ids.len(), threads, |start, end| {
+        let chunk = compute_writeback_chunk(
+            solver_bodies,
+            body_ids,
+            motion_ids,
+            is_dynamic,
+            sleeping,
+            linear_threshold_sq,
+            angular_threshold_sq,
+            collect_timers,
+            start,
+            end,
+        );
+        results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(chunk);
+    });
+    merge_writeback_chunks(
+        results
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_writeback_pooled(
+    solver_bodies: &[SolverBody],
+    body_ids: &[BodyId],
+    motion_ids: &[Option<MotionId>],
+    is_dynamic: &[bool],
+    sleeping: &[bool],
+    linear_threshold_sq: f32,
+    angular_threshold_sq: f32,
+    collect_timers: bool,
+    executor: &dyn TaskExecutor,
+    threads: usize,
+    respect_priority: bool,
+) -> (Vec<VelocityWritebackCandidate>, Vec<SleepTimerCandidate>) {
+    let solver_bodies = Arc::new(solver_bodies.to_vec());
+    let body_ids = Arc::new(body_ids.to_vec());
+    let motion_ids = Arc::new(motion_ids.to_vec());
+    let is_dynamic = Arc::new(is_dynamic.to_vec());
+    let sleeping = Arc::new(sleeping.to_vec());
+    let results: Arc<Mutex<Vec<WritebackChunk>>> = Arc::new(Mutex::new(Vec::new()));
+    let merged: Arc<Mutex<Option<Vec<WritebackChunk>>>> = Arc::new(Mutex::new(None));
+    let ranges = chunk_ranges(body_ids.len(), threads);
+
+    let mut graph = TaskGraph::with_capacity(ranges.len() + 1, ranges.len());
+    let mut chunk_tasks = Vec::with_capacity(ranges.len());
+    for (start, end) in ranges {
+        let solver_bodies = Arc::clone(&solver_bodies);
+        let body_ids = Arc::clone(&body_ids);
+        let motion_ids = Arc::clone(&motion_ids);
+        let is_dynamic = Arc::clone(&is_dynamic);
+        let sleeping = Arc::clone(&sleeping);
+        let results = Arc::clone(&results);
+        chunk_tasks.push(add_stage_task(
+            &mut graph,
+            respect_priority,
+            Priority::High,
+            move || {
+                let chunk = compute_writeback_chunk(
+                    &solver_bodies,
+                    &body_ids,
+                    &motion_ids,
+                    &is_dynamic,
+                    &sleeping,
+                    linear_threshold_sq,
+                    angular_threshold_sq,
+                    collect_timers,
+                    start,
+                    end,
+                );
+                results
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(chunk);
+            },
+        ));
+    }
+    let merge_results = Arc::clone(&results);
+    let merge_output = Arc::clone(&merged);
+    let merge_task = add_stage_task(&mut graph, respect_priority, Priority::Medium, move || {
+        let mut chunks = merge_results
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        chunks.sort_unstable_by_key(|chunk| chunk.index);
+        *merge_output
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(std::mem::take(&mut *chunks));
+    });
+    for chunk in chunk_tasks {
+        graph.add_dependency(chunk, merge_task);
+    }
+    execute_graph(graph, executor, respect_priority, StepStage::Writeback);
+    merge_writeback_chunks(
+        merged
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+            .unwrap_or_default(),
+    )
 }
 
 /// Generate contact manifolds with the requested dispatcher.

@@ -68,6 +68,27 @@ fn main() {
         SchedulerConfig::new(ExecutorKind::WorkStealing, true),
         "world_fall_n_priority_work_stealing",
     );
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::Pool, false).with_parallel_contact_rows(true),
+        "world_fall_n_parallel_contact_rows",
+    );
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::Pool, false).with_parallel_writeback(true),
+        "world_fall_n_parallel_writeback",
+    );
+    benchmark_world_fall_scheduler(
+        fall_bodies,
+        fall_steps,
+        4,
+        SchedulerConfig::new(ExecutorKind::WorkStealing, false).with_stage_parallelism(true, true),
+        "world_fall_n_parallel_stages",
+    );
     benchmark_world_stack(stack_steps);
     benchmark_raycast_world(query_iterations);
     benchmark_shape_cast_world(query_iterations);

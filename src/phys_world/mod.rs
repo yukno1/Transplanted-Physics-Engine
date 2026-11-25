@@ -45,7 +45,11 @@
 //! order, and the solver sweeps contacts in insertion order.
 //! [`World::step_with_threads`] keeps every arithmetic order but submits
 //! independent narrow-phase and island chunks through a deterministic task
-//! graph on a reusable pool.
+//! graph on a reusable pool. [`SchedulerConfig`] can additionally enable
+//! parallel contact-row construction and write-back candidate computation on
+//! [`World::step_with_scheduler`]; modifier/hook callbacks, event dispatch,
+//! warm-start application, sleep decisions and shared-motion integration stay
+//! serial so global ordering is unchanged.
 //!
 //! # Scope limits
 //!

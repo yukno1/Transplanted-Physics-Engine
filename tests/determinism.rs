@@ -183,3 +183,25 @@ fn scheduler_backends_match_scalar_golden() {
         );
     }
 }
+
+#[test]
+fn staged_parallelism_matches_scalar_golden() {
+    let configs = [
+        ("fifo", ExecutorKind::Pool, false),
+        ("priority-work-stealing", ExecutorKind::WorkStealing, true),
+    ];
+    for (label, executor, priority) in configs {
+        let mut world = build_scene();
+        world.set_scheduler_config(
+            SchedulerConfig::new(executor, priority).with_stage_parallelism(true, true),
+        );
+        for _ in 0..30 {
+            world.step_with_scheduler(1.0 / 60.0, 4);
+        }
+        assert_eq!(
+            world.snapshot().to_text(),
+            GOLDEN_TRACE_30,
+            "{label} staged scheduler drifted from the scalar trace"
+        );
+    }
+}

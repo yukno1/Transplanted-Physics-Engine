@@ -365,7 +365,7 @@ havok/                             # 本仓库根目录（唯一 crate：proton-
 
 未完成/阻塞项：
 
-- **完整 `hknpMultithreadedSimulation`**：持久池、确定性任务图、可选 work stealing 与优先级分层提交已在后续阶段落地；剩余求解器/积分阶段级并行、完整 `hknpTaskGraph` 依赖记账与 task multiplicity 仍未移植。
+- **完整 `hknpMultithreadedSimulation`**：持久池、确定性任务图、可选 work stealing、优先级分层提交、接触行构建与求解回写候选的并行阶段已在后续阶段落地；剩余积分/共享 motion 阶段并行、完整 `hknpTaskGraph` 依赖记账与 task multiplicity 仍未移植。
 - **`hkx` 对象加载**：TYPE/DATA 反射类型注册、对象 rebuild、patch/fixup、binary packfile、writer/XML/2014 兼容均未移植；`base-serialize` 不能替代资产加载。
 - **Ragdoll / Vehicle / CharacterControl**：前置的 `约束/joint` 与 `查询` 系统已在 Phase 11 完成（见下）；扩展层本身（ragdoll 驱动/身体绑定、wheel 悬挂约束与 vehicle 调度、character action 调度）仍未移植。
 - 大世界 `hkPreciseTransform` 的 Rust 子集已补齐（`base-math::PreciseTransform` + `World` origin/shift）；求解器内部仍全部使用 f32 局部坐标。
@@ -938,13 +938,14 @@ CI：当前**未配置**（仓库内无 `.github/`），上述检查需在本地
 - [x] 性能阶段（x86_64 SSE2 分量算术后端，2026-11-24）：`base-math` 新增零依赖内部 helper，`Vector4` 分量算术走 SSE2（非 x86_64 与 `f64` 仍走标量）；归约、`min/max`、比较掩码、`select` 与四元数/矩阵/AABB 热点保持标量，避免改变加法顺序或引入 AABB 回归；`benches/simulation.rs` 新增数学微基准并修正包名注释，`tests/determinism.rs` 新增固定 `GOLDEN_TRACE_30`，`src/base_math/tests/simd_parity.rs` 6 个逐位对照测试通过；详见 `docs/performance-baseline.md`
 - [x] 多线程仿真调度阶段（2026-11-24）：`World` 新增可选持久 `ThreadPool`（`set_thread_pool` / `thread_pool` / `clear_thread_pool`，`step_with_threads` 惰性创建与按需扩容）与 `src/phys_world/tasks.rs` 确定性任务图（窄相/按岛求解分块任务 + 按索引归并）；`step` 单线程与 `GOLDEN_TRACE_30` 不变，重力/事件/warm-start 回写/休眠/积分仍串行保序；新增持久池逐位一致、生命周期与 golden trace 测试，以及 `world_fall_n_persistent_pool` 基准；详见 `docs/performance-baseline.md` §8
 - [x] 调度器深化阶段（2026-11-25）：`base-thread` 新增对象安全 `TaskExecutor`、可选 `WorkStealingPool`（本地 deque + 固定顺序窃取 + panic 传播）与 `TaskGraph::execute_layered_with_priority`（同层按优先级降序/任务 id 升序提交）；`World` 新增 `SchedulerConfig` / `ExecutorKind` 与 `set_scheduler_config` / `set_executor` / `clear_executor` / `step_with_scheduler`，默认 FIFO 与非优先级路径保持既有行为；四后端与显式执行器均与单线程 `hvk-trace v1` 逐位一致；新增三后端基准，详见 `docs/performance-baseline.md` §9
+- [x] 阶段级并行扩展（2026-11-25）：`SchedulerConfig` 新增默认关闭的 `parallel_contact_rows` / `parallel_writeback` 与 builder；接触行构建拆成调用线程按注册序执行 modifier/hook 的快照阶段 + 可并行纯计算/按流形归并阶段；求解速度回写与休眠计时改为按 body 分块计算候选、调用线程按槽序应用；事件派发、warm-start 应用、休眠判定与共享 motion 积分仍串行保序；新增休眠场景逐位测试、golden trace 测试与三项基准，详见 `docs/performance-baseline.md` §10
 - [ ] 后续：packfile 正文仍需外部 `hkCompatFormats.dll` 或等效转换器（源码分发内无解析器），真实 `.hkx` 资产与 DLL 转换结果等价性未验证；真实 VDB 流/可视化、`hknpSolverData` block-stream 内存级直写、`RayCasting` 独立刚体路线（SDK 无此类）仍未移植；形状质量属性附加信号与完整 `hknpMassDistribution` 仍缺真实资产 golden 校验；SDK 二进制 `hknpShapeKey` 位布局、GSK 内部实现与 `hkgpConvexHull` 随机简化/布尔运算未移植；AVX2/NEON 后端与 C++ 黄金轨迹仍未验证，本子集不宣称与 C++ 或真实资产逐位等价
 
 仓库现状（2026-11-25）：
 
 - 工具链：`rustc 1.102.0-nightly`（性能基线采集版本；README 快速开始仍以 MSRV 1.85 为准）；manifest `rust-version = "1.85"`、`edition = "2024"`
 - 命名迁移（2026-11-16 完成）：门面 crate 位于根并改名 `proton-engine`（lib 名 `proton`）；14 个模块目录与代码引用由 `hk-*` / `hknp-*` 改为 `base-*` / `phys-*`（2026-11-24 起不再有子 crate manifest）（`hk_types → base_types` 等），C++ 符号名（`hknpWorld`、`hkVector4f`、`HK_ASSERT` 等）保持不变；clippy 与全量测试通过
-- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；base-geometry 补齐已提交（`ae4a916`）；查询精度补齐已提交（`0e54310`）；大世界与位级对齐已提交（`84421d0`）；性能与 SIMD 阶段已提交（`eaf28f1`），单 crate 化已提交（`80b874b`）；多线程仿真调度阶段已提交（`f3f823e`）；调度器深化阶段改动在工作区，未提交
+- git：Phase 12/13/14/15 均已提交（`faf2ce5 CharacterControl`）；Phase 16 为 `37497d6`（hkx 对象加载子集）、Phase 17 为 `a8873e2`（generic Value 树桥接物理对象）、compendium 为 `f2ce9d8`、2014 legacy tagfile 为 `504dfff`、Ragdoll 调度层为 `728e672`、Ragdoll 状态机为 `f24ab05`、penetration utility 为 `d70f86d`、约束松弛/at-rest 为 `31eed77`、hkx 嗅探/patching 为 `1357eab`、Climbing/trigger 为 `381d0c2`、CharacterControl listener/phantom 为 `0cc9743`、Ragdoll 扩展余项为 `4914e50`；hkx packfile 适配 + 函数/type-change patching 为 `5478d25`、Ragdoll 细节补齐为 `74b7217`、Ragdoll 深度补齐为 `93fde26`、质量属性后续边界为 `742210e`、CharacterControl 剩余项为 `d114a1a`；CharacterControl 补齐与余项已提交（`ec8d120`、`c501758`）；base-geometry 补齐已提交（`ae4a916`）；查询精度补齐已提交（`0e54310`）；大世界与位级对齐已提交（`84421d0`）；性能与 SIMD 阶段已提交（`eaf28f1`），单 crate 化已提交（`80b874b`）；多线程仿真调度阶段已提交（`f3f823e`）；调度器深化阶段已提交（`0a75687`）；阶段级并行扩展改动在工作区，未提交
 - 外部依赖：0
 
 ## 9. 文档

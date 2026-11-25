@@ -73,14 +73,20 @@ pub struct SchedulerConfig {
     pub executor: ExecutorKind,
     /// Submit same-level tasks by descending priority, then ascending task id.
     pub respect_priority: bool,
+    /// Build solver contact rows in parallel chunks (default off).
+    pub parallel_contact_rows: bool,
+    /// Compute solver write-back and sleep timers in parallel chunks (default off).
+    pub parallel_writeback: bool,
 }
 
 impl SchedulerConfig {
-    /// Construct a scheduler configuration.
+    /// Construct a scheduler configuration with stage parallelism disabled.
     pub fn new(executor: ExecutorKind, respect_priority: bool) -> Self {
         Self {
             executor,
             respect_priority,
+            parallel_contact_rows: false,
+            parallel_writeback: false,
         }
     }
 
@@ -95,6 +101,28 @@ impl SchedulerConfig {
     #[must_use]
     pub fn with_priority(mut self, respect_priority: bool) -> Self {
         self.respect_priority = respect_priority;
+        self
+    }
+
+    /// Enable or disable parallel contact-row construction.
+    #[must_use]
+    pub fn with_parallel_contact_rows(mut self, enabled: bool) -> Self {
+        self.parallel_contact_rows = enabled;
+        self
+    }
+
+    /// Enable or disable parallel write-back candidate computation.
+    #[must_use]
+    pub fn with_parallel_writeback(mut self, enabled: bool) -> Self {
+        self.parallel_writeback = enabled;
+        self
+    }
+
+    /// Enable or disable both newly parallelizable stages at once.
+    #[must_use]
+    pub fn with_stage_parallelism(mut self, rows: bool, writeback: bool) -> Self {
+        self.parallel_contact_rows = rows;
+        self.parallel_writeback = writeback;
         self
     }
 }
@@ -278,13 +306,24 @@ mod tests {
         let default = SchedulerConfig::default();
         assert_eq!(default.executor, ExecutorKind::Pool);
         assert!(!default.respect_priority);
+        assert!(!default.parallel_contact_rows);
+        assert!(!default.parallel_writeback);
 
         let work_stealing =
             SchedulerConfig::new(ExecutorKind::WorkStealing, false).with_priority(true);
         assert_eq!(work_stealing.executor, ExecutorKind::WorkStealing);
         assert!(work_stealing.respect_priority);
+        assert!(!work_stealing.parallel_contact_rows);
+        assert!(!work_stealing.parallel_writeback);
         let back_to_pool = work_stealing.with_executor(ExecutorKind::Pool);
         assert_eq!(back_to_pool.executor, ExecutorKind::Pool);
         assert!(back_to_pool.respect_priority);
+
+        let staged = SchedulerConfig::new(ExecutorKind::Pool, false)
+            .with_stage_parallelism(true, true)
+            .with_parallel_contact_rows(false)
+            .with_parallel_writeback(true);
+        assert!(!staged.parallel_contact_rows);
+        assert!(staged.parallel_writeback);
     }
 }
