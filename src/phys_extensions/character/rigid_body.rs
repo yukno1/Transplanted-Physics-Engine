@@ -218,7 +218,7 @@ impl CharacterRigidBody {
                 count += 1;
                 if let Some(body) = world.body(point.body) {
                     if let Some(motion) = world.motion(body.motion_id) {
-                        velocity += motion.linear_velocity;
+                        velocity += crate::phys_shape::to_vector4(motion.linear_velocity);
                     }
                 }
             }

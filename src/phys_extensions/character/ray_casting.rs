@@ -387,13 +387,13 @@ mod tests {
             World::new(WorldCinfo::new().with_gravity(Vector4::from_xyz(0.0, -9.81, 0.0)));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, height - 0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, height - 0.5, 0.0)),
         );
         let character = world.create_body(
             &BodyCinfo::new(Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>)
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(75.0)
-                .with_position(Vector4::from_xyz(0.0, height + 0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, height + 0.5, 0.0)),
         );
         (world, character)
     }
@@ -415,7 +415,7 @@ mod tests {
         let (mut world, body) = scene(0.0);
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(1.0, 0.2, 1.0)))
-                .with_position(Vector4::from_xyz(2.0, -0.2, 0.0)),
+                .with_position(Vec4::from_xyz(2.0, -0.2, 0.0)),
         );
         let info = RayCastingCharacterCinfo::new(Vector4::UNIT_X, 1.0, 1.0, 0.5, 1.0, 0.5);
         let param = get_character_params(&world, body, &info, Vector4::UNIT_X);

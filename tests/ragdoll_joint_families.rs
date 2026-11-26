@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Transform, Vector4, Vec4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
     HingeCinfo, HingeLimitsCinfo, JointType, SixDofCinfo, SixDofLimitsCinfo, World, WorldCinfo,
 };
 
-fn body(world: &mut World, position: Vector4) -> BodyId {
+fn body(world: &mut World, position: Vec4) -> BodyId {
     let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.2)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
@@ -21,8 +21,8 @@ fn body(world: &mut World, position: Vector4) -> BodyId {
 }
 
 fn limited_hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
-    let a = body(world, Vector4::ZERO);
-    let b = body(world, Vector4::from_xyz(1.0, 0.0, 0.0));
+    let a = body(world, Vec4::ZERO);
+    let b = body(world, Vec4::from_xyz(1.0, 0.0, 0.0));
     let info = HingeCinfo::new(
         a,
         b,
@@ -38,8 +38,8 @@ fn limited_hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
 }
 
 fn six_dof(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
-    let a = body(world, Vector4::ZERO);
-    let b = body(world, Vector4::from_xyz(0.0, 1.0, 0.0));
+    let a = body(world, Vec4::ZERO);
+    let b = body(world, Vec4::from_xyz(0.0, 1.0, 0.0));
     let info = SixDofCinfo::new(
         a,
         b,

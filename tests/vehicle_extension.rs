@@ -23,7 +23,7 @@ fn ground_plane(world: &mut World) {
             Vec4::from_xyz(50.0, 0.5, 50.0),
             0.0,
         )) as Arc<dyn Shape>)
-        .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
 }
 
@@ -38,7 +38,7 @@ fn raycast_vehicle(world: &mut World) -> (BodyId, VehicleInstance) {
         )) as Arc<dyn Shape>)
         .with_motion_type(MotionType::Dynamic)
         .with_mass(400.0)
-        .with_position(Vector4::from_xyz(0.0, 0.9, 0.0)),
+        .with_position(Vec4::from_xyz(0.0, 0.9, 0.0)),
     );
     // Box inertia (1 × 0.5 × 2.4 m, 400 kg) so suspension and tyre friction
     // can pitch/roll/yaw the chassis (a zero inverse inertia chassis cannot
@@ -48,7 +48,7 @@ fn raycast_vehicle(world: &mut World) -> (BodyId, VehicleInstance) {
     // unloaded axle and the contact-only suspension starts bouncing.
     let motion_id = world.body(chassis).unwrap().motion_id;
     let motion = world.motion_mut(motion_id).unwrap();
-    motion.inverse_inertia = Vector4::from_xyz(0.006, 0.005, 0.02);
+    motion.inverse_inertia = Vec4::from_xyz(0.006, 0.005, 0.02);
     let mut setup = VehicleSetup::new(chassis).with_brake_torques(1200.0, 1200.0);
     for (x, z) in [(-0.5, -1.1), (0.5, -1.1), (-0.5, 1.1), (0.5, 1.1)] {
         let mut wheel = WheelSetup::new(Vector4::from_xyz(x, -0.25, z), 0.3)

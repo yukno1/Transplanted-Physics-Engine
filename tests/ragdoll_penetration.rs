@@ -24,11 +24,11 @@ fn ground(world: &mut World) {
     world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Static)
-            .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
 }
 
-fn dynamic_sphere(world: &mut World, position: Vector4) -> BodyId {
+fn dynamic_sphere(world: &mut World, position: Vec4) -> BodyId {
     let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.25)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
@@ -49,8 +49,8 @@ fn p1_detects_root_embedded_in_ground_and_pushes_it_out() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
     ground(&mut world);
-    let root = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, 0.2, 0.0));
-    let child = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, 1.0, 0.0));
+    let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 0.2, 0.0));
+    let child = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 1.0, 0.0));
     let mut data = RagdollData::new();
     data.add_bone("root", None, Some(root), Transform::IDENTITY);
     data.add_bone(
@@ -106,7 +106,7 @@ fn p2_clean_scene_reports_resolved() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
     ground(&mut world);
-    let root = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, 2.0, 0.0));
+    let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 2.0, 0.0));
     let ragdoll = single_bone_ragdoll(&mut world, root);
     let hierarchy = BodyHierarchy::from_ragdoll(&world, &ragdoll, None);
     let input = PenetrationInput::default().with_resolution_vector(Vector4::UNIT_Y);
@@ -128,8 +128,8 @@ fn p3_hierarchy_ray_flags_parent_and_ancestor() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
     ground(&mut world);
-    let parent = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, 1.0, 0.0));
-    let child = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, -1.0, 0.0));
+    let parent = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 1.0, 0.0));
+    let child = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, -1.0, 0.0));
     let mut data = RagdollData::new();
     data.add_bone("parent", None, Some(parent), Transform::IDENTITY);
     data.add_bone(
@@ -168,7 +168,7 @@ fn p4_controller_resolves_penetration_before_state_step() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
     ground(&mut world);
-    let root = dynamic_sphere(&mut world, Vector4::from_xyz(0.0, 0.2, 0.0));
+    let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 0.2, 0.0));
     let ragdoll = single_bone_ragdoll(&mut world, root);
     let mut controller = RagdollController::new(
         &mut world,

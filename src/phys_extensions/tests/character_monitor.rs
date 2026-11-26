@@ -110,7 +110,7 @@ fn rigid_body_reports_all_monitor_phases() {
     world.create_body(
         &BodyCinfo::new(ground)
             .with_motion_type(MotionType::Static)
-            .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(G4::from_xyz(0.0, -0.5, 0.0)),
     );
     let manager = CharacterProxyManager::new();
     let shape = StdArc::new(SphereShape::new(G4::ZERO, 0.5)) as StdArc<dyn Shape>;

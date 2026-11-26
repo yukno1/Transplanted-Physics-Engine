@@ -324,7 +324,7 @@ fn build_fall_world(body_count: usize) -> World {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        &BodyCinfo::new(ground_shape).with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..body_count {
@@ -334,7 +334,7 @@ fn build_fall_world(body_count: usize) -> World {
             &BodyCinfo::new(Arc::clone(&sphere))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(x, 5.0, z)),
+                .with_position(Vec4::from_xyz(x, 5.0, z)),
         );
     }
     world
@@ -410,7 +410,7 @@ fn benchmark_world_stack(steps: usize) {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        &BodyCinfo::new(ground_shape).with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let box_shape =
         Arc::new(BoxShape::with_convex_radius(Vec4::splat(0.5), 0.0)) as Arc<dyn Shape>;
@@ -419,7 +419,7 @@ fn benchmark_world_stack(steps: usize) {
             &BodyCinfo::new(Arc::clone(&box_shape))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 1.0 + index as f32 * 1.2, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 1.0 + index as f32 * 1.2, 0.0)),
         );
     }
     let start = Instant::now();
@@ -444,7 +444,7 @@ fn benchmark_raycast_world(iterations: u32) {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        &BodyCinfo::new(ground_shape).with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..16 {
@@ -454,7 +454,7 @@ fn benchmark_raycast_world(iterations: u32) {
             &BodyCinfo::new(Arc::clone(&sphere))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(x, 3.0, z)),
+                .with_position(Vec4::from_xyz(x, 3.0, z)),
         );
     }
     let mut hits = 0;
@@ -481,7 +481,7 @@ fn benchmark_shape_cast_world(iterations: u32) {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+        &BodyCinfo::new(ground_shape).with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let query = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
@@ -507,7 +507,7 @@ fn benchmark_joint_chain(body_count: usize, steps: usize) {
     let mut world = World::new(WorldCinfo::new());
     let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     let anchor = world.create_body(
-        &BodyCinfo::new(Arc::clone(&sphere)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+        &BodyCinfo::new(Arc::clone(&sphere)).with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
     );
     let mut previous = anchor;
     for index in 1..=body_count {
@@ -515,13 +515,13 @@ fn benchmark_joint_chain(body_count: usize, steps: usize) {
             &BodyCinfo::new(Arc::clone(&sphere))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 10.0, index as f32)),
+                .with_position(Vec4::from_xyz(0.0, 10.0, index as f32)),
         );
         let motion = world.body(body).expect("live body").motion_id;
         world
             .motion_mut(motion)
             .expect("live motion")
-            .inverse_inertia = Vector4::splat(0.5);
+            .inverse_inertia = Vec4::splat(0.5);
         world.create_ragdoll_constraint(
             &proton::world::RagdollCinfo::new(
                 body,

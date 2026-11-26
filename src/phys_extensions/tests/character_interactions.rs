@@ -74,7 +74,7 @@ fn object_interaction_result_can_cancel_push() {
         &BodyCinfo::new(dynamic)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
-            .with_position(V4::from_xyz(0.45, 0.0, 0.0)),
+            .with_position(G4::from_xyz(0.45, 0.0, 0.0)),
     );
 
     let mut proxy = capsule(0.0);

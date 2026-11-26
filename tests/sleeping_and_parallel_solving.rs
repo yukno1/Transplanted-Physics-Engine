@@ -28,7 +28,7 @@ fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
 
 fn ground(world: &mut World, half_extents: Vec4) -> BodyId {
     world.create_body(
-        &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
+        &BodyCinfo::new(box_shape(half_extents)).with_position(Vec4::from_xyz(
             0.0,
             -half_extents.y,
             0.0,
@@ -44,7 +44,7 @@ fn resting_world(sleeping: bool) -> (World, BodyId) {
     );
     ground(&mut world, Vec4::from_xyz(4.0, 0.5, 4.0));
     let ball = world.create_body(
-        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)),
+        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)),
     );
     (world, ball)
 }
@@ -79,8 +79,8 @@ fn island_sleeps_and_stays_frozen_until_contact() {
     // An active body touching the sleeping island wakes it again.
     world.create_body(
         &dynamic(BodyCinfo::new(sphere_shape(0.5)))
-            .with_position(Vector4::from_xyz(0.0, 2.5, 0.0))
-            .with_linear_velocity(Vector4::from_xyz(0.0, -2.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 2.5, 0.0))
+            .with_linear_velocity(Vec4::from_xyz(0.0, -2.0, 0.0)),
     );
     let mut woke = false;
     for _ in 0..60 {
@@ -103,17 +103,17 @@ fn parallel_island_solving_matches_single_threaded() {
         for index in 0..3 {
             world.create_body(
                 &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-                    .with_position(Vector4::from_xyz(-2.0, 1.0 + index as f32 * 1.1, 0.0)),
+                    .with_position(Vec4::from_xyz(-2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
             world.create_body(
                 &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-                    .with_position(Vector4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
+                    .with_position(Vec4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }
         world.create_body(
             &dynamic(BodyCinfo::new(sphere_shape(0.5)))
-                .with_position(Vector4::from_xyz(0.0, 5.0, 0.0))
-                .with_linear_velocity(Vector4::from_xyz(1.5, 0.0, -1.0)),
+                .with_position(Vec4::from_xyz(0.0, 5.0, 0.0))
+                .with_linear_velocity(Vec4::from_xyz(1.5, 0.0, -1.0)),
         );
         world
     };
@@ -146,11 +146,11 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
         // Left stack with a ball-socket jointed pair; right stack plain.
         let a = world.create_body(
             &dynamic(BodyCinfo::new(sphere_shape(0.5)))
-                .with_position(Vector4::from_xyz(-2.0, 0.5, 0.0)),
+                .with_position(Vec4::from_xyz(-2.0, 0.5, 0.0)),
         );
         let b = world.create_body(
             &dynamic(BodyCinfo::new(sphere_shape(0.5)))
-                .with_position(Vector4::from_xyz(-2.0, 1.6, 0.0)),
+                .with_position(Vec4::from_xyz(-2.0, 1.6, 0.0)),
         );
         world.create_ball_socket_constraint(&proton::world::BallAndSocketCinfo::new(
             b,
@@ -161,7 +161,7 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
         for index in 0..3 {
             world.create_body(
                 &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-                    .with_position(Vector4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
+                    .with_position(Vec4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }
         world
@@ -188,7 +188,7 @@ fn many_bodies_scene_with(cinfo: WorldCinfo) -> World {
         let z = (index / 6) as f32 * 1.2 - 3.0;
         world.create_body(
             &dynamic(BodyCinfo::new(Arc::clone(&sphere)))
-                .with_position(Vector4::from_xyz(x, 4.0, z)),
+                .with_position(Vec4::from_xyz(x, 4.0, z)),
         );
     }
     world

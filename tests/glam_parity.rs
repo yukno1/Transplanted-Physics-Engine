@@ -72,6 +72,19 @@ fn vec4_ext_matches_legacy_bit_for_bit() {
             "length_squared3 {x:?}/{y:?}"
         );
 
+        // all_equal3: xyz-only tolerance comparison (bool, no bit-level math).
+        let eps = 1e-3;
+        assert_eq!(
+            a.all_equal3(b, eps),
+            la.all_equal3(lb, eps),
+            "all_equal3 {x:?}/{y:?}"
+        );
+        assert_eq!(
+            a.all_equal3(a, eps),
+            la.all_equal3(la, eps),
+            "all_equal3 self {x:?}/{y:?}"
+        );
+
         // Legacy component-wise min/max use f32::min/max (NaN → other operand).
         let min = Vec4::new(a.x.min(b.x), a.y.min(b.y), a.z.min(b.z), a.w.min(b.w));
         let max = Vec4::new(a.x.max(b.x), a.y.max(b.y), a.z.max(b.z), a.w.max(b.w));

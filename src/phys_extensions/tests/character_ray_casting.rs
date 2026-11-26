@@ -22,13 +22,13 @@ fn scene() -> (World, crate::phys_types::BodyId) {
     let mut world = World::new(WorldCinfo::new());
     world.create_body(
         &BodyCinfo::new(box_shape(G4::from_xyz(10.0, 0.5, 10.0)))
-            .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(G4::from_xyz(0.0, -0.5, 0.0)),
     );
     let body = world.create_body(
         &BodyCinfo::new(Arc::new(SphereShape::new(G4::ZERO, 0.5)) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(75.0)
-            .with_position(V4::from_xyz(0.0, 1.0, 0.0)),
+            .with_position(G4::from_xyz(0.0, 1.0, 0.0)),
     );
     (world, body)
 }
@@ -54,7 +54,7 @@ fn step_ahead_increases_displacement_towards_the_step() {
     let (mut world, body) = scene();
     world.create_body(
         &BodyCinfo::new(box_shape(G4::from_xyz(0.5, 0.2, 0.5)))
-            .with_position(V4::from_xyz(0.8, 0.1, 0.0)),
+            .with_position(G4::from_xyz(0.8, 0.1, 0.0)),
     );
     let towards = get_character_params(&world, body, &info(0.4), V4::UNIT_X);
     let away = get_character_params(&world, body, &info(0.4), -V4::UNIT_X);
@@ -74,7 +74,7 @@ fn horizontal_obstacle_applies_bump_factor() {
     );
     world.create_body(
         &BodyCinfo::new(box_shape(G4::from_xyz(0.1, 0.5, 0.5)))
-            .with_position(V4::from_xyz(0.9, 0.5, 0.0)),
+            .with_position(G4::from_xyz(0.9, 0.5, 0.0)),
     );
     let blocked = get_character_params(&world, body, &info(0.4), V4::UNIT_X);
     assert_eq!(blocked.bump_factor, 0.4);

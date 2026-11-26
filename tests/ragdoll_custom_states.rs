@@ -8,7 +8,7 @@ use proton::extensions::{
     RagdollControllerCinfo, RagdollData, RagdollError, RagdollState, RagdollStateBehavior,
     RagdollStateContext,
 };
-use proton::math::{Quaternion, Transform, Vector4, Vec4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
@@ -78,7 +78,7 @@ fn chain(world: &mut World) -> (Ragdoll, [BodyId; 2]) {
             &BodyCinfo::new(shape())
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(1.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(1.0, 0.0, 0.0)),
         ),
     ];
     let mut data = RagdollData::new();

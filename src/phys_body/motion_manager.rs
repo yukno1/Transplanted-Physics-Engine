@@ -159,16 +159,16 @@ impl MotionManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::{Quaternion, Vector4};
+    use crate::base_math::{Quat, Vec4};
     use crate::phys_types::MotionType;
 
     fn dynamic_motion() -> Motion {
         Motion::new(
             MotionType::Dynamic,
-            Vector4::ZERO,
-            Quaternion::IDENTITY,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Quat::IDENTITY,
+            Vec4::ZERO,
+            Vec4::ZERO,
             1.0,
         )
     }

@@ -448,10 +448,10 @@ pub fn body_cinfo_from_item(bundle: &Bundle, item: u32) -> Result<BodyCinfo, Con
         cinfo = cinfo.with_motion_type(motion_type);
     }
     if let Some(position) = field(record, &["m_position", "position"]) {
-        cinfo = cinfo.with_position(to_vector4(as_vector(position, "m_position")?));
+        cinfo = cinfo.with_position(as_vector(position, "m_position")?);
     }
     if let Some(orientation) = field(record, &["m_orientation", "orientation"]) {
-        cinfo = cinfo.with_orientation(to_quaternion(as_quaternion(orientation, "m_orientation")?));
+        cinfo = cinfo.with_orientation(as_quaternion(orientation, "m_orientation")?);
     }
     if let Some(mass) = field(record, &["m_mass", "mass"]) {
         cinfo = cinfo.with_mass(as_float(mass, "m_mass")?);

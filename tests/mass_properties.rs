@@ -4,7 +4,8 @@ use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Mat3Ext, Matrix3, Quaternion, Transform, Vec4, Vec4Ext, Vector4};
+use glam::Vec3;
+use proton::math::{Mat3, Mat3Ext, Matrix3, Quaternion, Transform, Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::mass::{MassConfig, MassError};
 use proton::shape::{BoxShape, CompoundShape, Shape, ShapeInstance, ShapeMassCache, SphereShape};
@@ -74,7 +75,7 @@ fn negative_mass_bodies_derive_shape_inertia() {
     let body_id = world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)
-            .with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
     );
     let body = world.body(body_id).unwrap();
     assert!((body.mass - 48.0).abs() < 1e-4);
@@ -83,7 +84,7 @@ fn negative_mass_bodies_derive_shape_inertia() {
     let motion = world
         .motion(world.body_motion_id(body_id).unwrap())
         .unwrap();
-    assert!(motion.inverse_inertia_world.element(0, 0) > 0.0);
+    assert!(motion.inverse_inertia_world.element_sdk(0, 0) > 0.0);
     assert!(motion.inverse_inertia.x > 0.0);
 
     let matrix = Matrix3::from_cols(
@@ -95,8 +96,15 @@ fn negative_mass_bodies_derive_shape_inertia() {
     let motion = world
         .motion(world.body_motion_id(body_id).unwrap())
         .unwrap();
-    assert_eq!(motion.inverse_inertia_world, matrix);
-    assert_eq!(motion.inverse_inertia, Vector4::from_xyz(0.3, 0.2, 0.4));
+    assert_eq!(
+        motion.inverse_inertia_world,
+        Mat3::from_cols(
+            Vec3::new(0.3, 0.0, 0.1),
+            Vec3::new(0.0, 0.2, 0.0),
+            Vec3::new(0.1, 0.0, 0.4),
+        )
+    );
+    assert_eq!(motion.inverse_inertia, Vec4::from_xyz(0.3, 0.2, 0.4));
 }
 
 #[test]
@@ -108,7 +116,7 @@ fn shape_derived_mass_trace_is_deterministic() {
             world.create_body(
                 &BodyCinfo::new(Arc::clone(&shape))
                     .with_motion_type(MotionType::Dynamic)
-                    .with_position(Vector4::from_xyz(index as f32, 2.0 + index as f32, 0.0)),
+                    .with_position(Vec4::from_xyz(index as f32, 2.0 + index as f32, 0.0)),
             );
         }
         for _ in 0..60 {

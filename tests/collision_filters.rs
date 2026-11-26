@@ -22,7 +22,7 @@ fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
 
 fn ground(layer: u32) -> BodyCinfo {
     BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-        .with_position(Vector4::from_xyz(0.0, -0.5, 0.0))
+        .with_position(Vec4::from_xyz(0.0, -0.5, 0.0))
         .with_collision_filter_info(GroupCollisionFilter::calc_filter_info(layer))
 }
 
@@ -30,11 +30,11 @@ fn falling_ball(layer: u32, height: f32) -> BodyCinfo {
     BodyCinfo::new(sphere_shape(0.5))
         .with_motion_type(MotionType::Dynamic)
         .with_mass(1.0)
-        .with_position(Vector4::from_xyz(0.0, height, 0.0))
+        .with_position(Vec4::from_xyz(0.0, height, 0.0))
         .with_collision_filter_info(GroupCollisionFilter::calc_filter_info(layer))
 }
 
-fn dynamic_sphere(position: Vector4, info: u32) -> BodyCinfo {
+fn dynamic_sphere(position: Vec4, info: u32) -> BodyCinfo {
     BodyCinfo::new(sphere_shape(0.5))
         .with_motion_type(MotionType::Dynamic)
         .with_mass(1.0)
@@ -97,11 +97,11 @@ fn same_system_group_bypasses_layer_table() {
     let mut world = World::new(WorldCinfo::new());
     world.set_collision_filter(Some(Arc::new(filter)));
     world.create_body(&dynamic_sphere(
-        Vector4::from_xyz(0.0, 5.0, 0.0),
+        Vec4::from_xyz(0.0, 5.0, 0.0),
         GroupCollisionFilter::calc_filter_info_full(1, 42, 1, 0),
     ));
     world.create_body(&dynamic_sphere(
-        Vector4::from_xyz(0.6, 5.0, 0.0),
+        Vec4::from_xyz(0.6, 5.0, 0.0),
         GroupCollisionFilter::calc_filter_info_full(2, 42, 2, 0),
     ));
 
@@ -129,8 +129,8 @@ fn system_group_subsystem_exclusion_blocks_pair() {
 
     let mut world = World::new(WorldCinfo::new());
     world.set_collision_filter(Some(Arc::new(filter)));
-    world.create_body(&dynamic_sphere(Vector4::from_xyz(0.0, 5.0, 0.0), info_a));
-    world.create_body(&dynamic_sphere(Vector4::from_xyz(0.6, 5.0, 0.0), info_b));
+    world.create_body(&dynamic_sphere(Vec4::from_xyz(0.0, 5.0, 0.0), info_a));
+    world.create_body(&dynamic_sphere(Vec4::from_xyz(0.6, 5.0, 0.0), info_b));
 
     for _ in 0..60 {
         world.step(1.0 / 60.0);

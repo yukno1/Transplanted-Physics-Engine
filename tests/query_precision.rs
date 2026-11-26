@@ -85,7 +85,7 @@ fn analytic_normals_are_exposed_through_the_facade() {
 
 fn trigger_world_with(
     shape: Arc<dyn Shape>,
-    trigger_position: Vector4,
+    trigger_position: Vec4,
 ) -> (World, Vec<WorldTriggerEvent>) {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
@@ -97,7 +97,7 @@ fn trigger_world_with(
     let other = world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Static)
-            .with_position(Vector4::ZERO),
+            .with_position(Vec4::ZERO),
     );
     assert!(trigger < other);
     world.set_body_trigger(trigger, true);
@@ -112,7 +112,7 @@ fn trigger_world_with(
 
 #[test]
 fn world_trigger_emits_mesh_triangle_leaf_key() {
-    let (_, events) = trigger_world_with(quad_mesh(), Vector4::from_xyz(1.5, 0.0, -1.5));
+    let (_, events) = trigger_world_with(quad_mesh(), Vec4::from_xyz(1.5, 0.0, -1.5));
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].shape_key_b, leaf_key::new(leaf_key::MESH, 0));
 }
@@ -121,7 +121,7 @@ fn world_trigger_emits_mesh_triangle_leaf_key() {
 fn world_trigger_emits_height_field_cell_leaf_key() {
     let heightfield: Arc<dyn Shape> =
         Arc::new(HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).unwrap());
-    let (_, events) = trigger_world_with(heightfield, Vector4::from_xyz(1.5, 0.0, 1.5));
+    let (_, events) = trigger_world_with(heightfield, Vec4::from_xyz(1.5, 0.0, 1.5));
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].shape_key_b, leaf_key::height_field(1, 1, 0));
 }
@@ -141,7 +141,7 @@ fn world_trigger_emits_compound_child_leaf_key() {
             Arc::new(SphereShape::new(Vec4::ZERO, 1.0)),
         ),
     ]));
-    let (_, events) = trigger_world_with(compound, Vector4::from_xyz(0.9, 0.0, 0.0));
+    let (_, events) = trigger_world_with(compound, Vec4::from_xyz(0.9, 0.0, 0.0));
     assert_eq!(events.len(), 1);
     assert_eq!(
         events[0].shape_key_b,
@@ -151,7 +151,7 @@ fn world_trigger_emits_compound_child_leaf_key() {
 
 #[test]
 fn leaf_key_trigger_scene_is_bitwise_deterministic() {
-    let first = trigger_world_with(quad_mesh(), Vector4::from_xyz(1.5, 0.0, -1.5)).0;
-    let second = trigger_world_with(quad_mesh(), Vector4::from_xyz(1.5, 0.0, -1.5)).0;
+    let first = trigger_world_with(quad_mesh(), Vec4::from_xyz(1.5, 0.0, -1.5)).0;
+    let second = trigger_world_with(quad_mesh(), Vec4::from_xyz(1.5, 0.0, -1.5)).0;
     assert_eq!(hash_world(&first), hash_world(&second));
 }

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Transform, Vector4, Vec4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
@@ -19,7 +19,7 @@ fn sphere(radius: f32) -> Arc<dyn Shape> {
     Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
-fn dynamic_sphere(radius: f32, position: Vector4) -> BodyCinfo {
+fn dynamic_sphere(radius: f32, position: Vec4) -> BodyCinfo {
     BodyCinfo::new(sphere(radius))
         .with_motion_type(MotionType::Dynamic)
         .with_mass(1.0)
@@ -29,10 +29,10 @@ fn dynamic_sphere(radius: f32, position: Vector4) -> BodyCinfo {
 /// Static hub at the origin plus a dynamic arm at `(2, 0, 0)` hinged about
 /// `+Z` through the world origin (mirror of the world unit-test helper).
 fn hinged_arm(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
-    let hub = world.create_body(&BodyCinfo::new(sphere(0.5)).with_position(Vector4::ZERO));
-    let arm = world.create_body(&dynamic_sphere(0.5, Vector4::from_xyz(2.0, 0.0, 0.0)));
+    let hub = world.create_body(&BodyCinfo::new(sphere(0.5)).with_position(Vec4::ZERO));
+    let arm = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(2.0, 0.0, 0.0)));
     let arm_motion = world.body(arm).unwrap().motion_id;
-    world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+    world.motion_mut(arm_motion).unwrap().inverse_inertia = Vec4::splat(0.5);
     let id = world.create_hinge_constraint(&HingeCinfo::new(
         hub,
         arm,
@@ -137,7 +137,7 @@ fn hinge_velocity_motor_still_spins_with_the_enum_api() {
 fn prismatic_position_motor_and_spring_motor_drive_the_slider() {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let parent = world.create_body(&BodyCinfo::new(sphere(0.5)));
-    let slider = world.create_body(&dynamic_sphere(0.5, Vector4::ZERO));
+    let slider = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
 
     let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
         slider,

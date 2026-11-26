@@ -36,7 +36,7 @@ fn scene() -> (World, CharacterProxyManager, Arc<Mutex<Vec<String>>>) {
     world.create_body(
         &BodyCinfo::new(dynamic)
             .with_mass(1.0)
-            .with_position(V4::from_xyz(0.5, 0.0, 0.0)),
+            .with_position(G4::from_xyz(0.5, 0.0, 0.0)),
     );
 
     let manager = CharacterProxyManager::new();

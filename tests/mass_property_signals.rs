@@ -3,12 +3,12 @@
 use std::sync::{Arc, Mutex};
 
 use proton::body::BodyCinfo;
-use proton::math::{Vector4, Vec4};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{MassConfig, Shape, SphereShape};
 use proton::world::{MassChangeEvent, MassChangeReason, MotionMassUpdateMode, World, WorldCinfo};
 
-fn body(world: &mut World, radius: f32, position: Vector4) -> proton::np_types::BodyId {
+fn body(world: &mut World, radius: f32, position: Vec4) -> proton::np_types::BodyId {
     let shape = Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
@@ -28,7 +28,7 @@ fn recorder(world: &World) -> Arc<Mutex<Vec<MassChangeEvent>>> {
 #[test]
 fn s1_shape_replacement_fires_post_rebuild_event() {
     let mut world = World::new(WorldCinfo::new());
-    let id = body(&mut world, 0.5, Vector4::ZERO);
+    let id = body(&mut world, 0.5, Vec4::ZERO);
     let events = recorder(&world);
     let old_mass = world.body(id).unwrap().mass;
 
@@ -45,7 +45,7 @@ fn s1_shape_replacement_fires_post_rebuild_event() {
 #[test]
 fn s2_mass_config_change_rescales_and_notifies() {
     let mut world = World::new(WorldCinfo::new());
-    let id = body(&mut world, 0.5, Vector4::ZERO);
+    let id = body(&mut world, 0.5, Vec4::ZERO);
     let events = recorder(&world);
     let old_mass = world.body(id).unwrap().mass;
 
@@ -59,7 +59,7 @@ fn s2_mass_config_change_rescales_and_notifies() {
 #[test]
 fn s3_unsubscribe_stops_future_events() {
     let mut world = World::new(WorldCinfo::new());
-    let id = body(&mut world, 0.5, Vector4::ZERO);
+    let id = body(&mut world, 0.5, Vec4::ZERO);
     let events = recorder(&world);
     let connection = world.subscribe_mass_changes(move |event| {
         let _ = event;
@@ -73,8 +73,8 @@ fn s3_unsubscribe_stops_future_events() {
 #[test]
 fn s4_shape_change_rebuilds_shared_motion() {
     let mut world = World::new(WorldCinfo::new());
-    let target = body(&mut world, 0.5, Vector4::ZERO);
-    let child = body(&mut world, 0.5, Vector4::from_xyz(1.0, 0.0, 0.0));
+    let target = body(&mut world, 0.5, Vec4::ZERO);
+    let child = body(&mut world, 0.5, Vec4::from_xyz(1.0, 0.0, 0.0));
     let motion = world.body_motion_id(target).unwrap();
     assert!(world.attach_bodies_with_mode(target, &[child], MotionMassUpdateMode::Rebuild));
     let before = world.motion(motion).unwrap().mass;

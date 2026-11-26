@@ -13,7 +13,7 @@
 //! both linear and angular motion directly (there is no world-level
 //! `applyBodyImpulseAt`).
 
-use crate::base_math::{Transform, Vector4};
+use crate::base_math::{Transform, Vec4Ext, Vector4};
 use crate::phys_types::{BodyId, CollisionFlags};
 use crate::phys_world::{QueryFilter, World};
 
@@ -440,10 +440,12 @@ fn point_velocity(world: &World, body: BodyId, point: Vector4) -> Vector4 {
     let Some(motion) = world.motion(body.motion_id) else {
         return Vector4::ZERO;
     };
-    motion.linear_velocity + motion.angular_velocity.cross(point - motion.position)
+    let arm = crate::phys_shape::to_vec4(point) - motion.position;
+    crate::phys_shape::to_vector4(motion.linear_velocity + motion.angular_velocity.cross3(arm))
 }
 
 fn apply_impulse_at(world: &mut World, body: BodyId, impulse: Vector4, point: Vector4) {
+    use crate::base_math::{QuatExt, Vec4, Vec4Ext};
     let Some(motion_id) = world.body(body).map(|body| body.motion_id) else {
         return;
     };
@@ -453,15 +455,17 @@ fn apply_impulse_at(world: &mut World, body: BodyId, impulse: Vector4, point: Ve
     if motion.mass <= 0.0 || !motion.mass.is_finite() {
         return;
     }
+    let impulse = crate::phys_shape::to_vec4(impulse);
+    let point = crate::phys_shape::to_vec4(point);
     motion.linear_velocity += impulse * (1.0 / motion.mass);
-    let torque = (point - motion.position).cross(impulse);
-    let local_torque = motion.orientation.rotate_inverse(torque);
-    let local_delta = Vector4::from_xyz(
+    let torque = (point - motion.position).cross3(impulse);
+    let local_torque = motion.orientation.rotate_inverse_sdk(torque);
+    let local_delta = Vec4::from_xyz(
         local_torque.x * motion.inverse_inertia.x,
         local_torque.y * motion.inverse_inertia.y,
         local_torque.z * motion.inverse_inertia.z,
     );
-    motion.angular_velocity += motion.orientation.rotate(local_delta);
+    motion.angular_velocity += motion.orientation.rotate_sdk(local_delta);
     world.wake_body(body);
 }
 

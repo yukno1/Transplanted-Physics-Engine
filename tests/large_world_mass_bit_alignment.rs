@@ -15,7 +15,7 @@ fn simple_world() -> (World, proton::np_types::BodyId) {
         &BodyCinfo::new(Arc::new(shape) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
-            .with_position(Vector4::from_xyz(0.0, 4.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 4.0, 0.0)),
     );
     (world, body)
 }

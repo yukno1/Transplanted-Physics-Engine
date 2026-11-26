@@ -4,14 +4,14 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::{EaseConstraintsAction, LimitSnapshot, Ragdoll, RagdollData};
-use proton::math::{Quaternion, Transform, Vector4, Vec4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
     HingeCinfo, HingeLimitsCinfo, SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo, World, WorldCinfo,
 };
 
-fn body(world: &mut World, position: Vector4) -> BodyId {
+fn body(world: &mut World, position: Vec4) -> BodyId {
     let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.2)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
@@ -22,8 +22,8 @@ fn body(world: &mut World, position: Vector4) -> BodyId {
 }
 
 fn hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
-    let a = body(world, Vector4::ZERO);
-    let b = body(world, Vector4::from_xyz(1.0, 0.0, 0.0));
+    let a = body(world, Vec4::ZERO);
+    let b = body(world, Vec4::from_xyz(1.0, 0.0, 0.0));
     let info = HingeCinfo::new(
         a,
         b,
@@ -38,8 +38,8 @@ fn hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
 }
 
 fn six_dof(world: &mut World) -> (BodyId, ConstraintId) {
-    let a = body(world, Vector4::ZERO);
-    let b = body(world, Vector4::from_xyz(0.0, 1.0, 0.0));
+    let a = body(world, Vec4::ZERO);
+    let b = body(world, Vec4::from_xyz(0.0, 1.0, 0.0));
     let info = SixDofCinfo::new(
         a,
         b,
@@ -137,8 +137,8 @@ fn e6_mixed_families_keep_snapshot_order() {
     let mut world = World::new(WorldCinfo::new());
     let (_, _, hinge_id) = hinge(&mut world);
     let (_, dof_id) = six_dof(&mut world);
-    let a = body(&mut world, Vector4::from_xyz(4.0, 0.0, 0.0));
-    let b = body(&mut world, Vector4::from_xyz(5.0, 0.0, 0.0));
+    let a = body(&mut world, Vec4::from_xyz(4.0, 0.0, 0.0));
+    let b = body(&mut world, Vec4::from_xyz(5.0, 0.0, 0.0));
     let mut data = RagdollData::new();
     data.add_bone("a", None, Some(a), Transform::IDENTITY);
     data.add_bone(

@@ -31,7 +31,7 @@ fn ground_world() -> World {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &crate::phys_body::BodyCinfo::new(ground).with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+        &crate::phys_body::BodyCinfo::new(ground).with_position(G4::from_xyz(0.0, -0.5, 0.0)),
     );
     world
 }
@@ -91,7 +91,7 @@ fn walking_into_a_wall_stops_the_character() {
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
-        &crate::phys_body::BodyCinfo::new(wall).with_position(V4::from_xyz(3.0, 1.5, 0.0)),
+        &crate::phys_body::BodyCinfo::new(wall).with_position(G4::from_xyz(3.0, 1.5, 0.0)),
     );
 
     let mut proxy = capsule_proxy(V4::from_xyz(0.0, 1.05, 0.0));
@@ -186,7 +186,7 @@ fn walking_character_pushes_dynamic_box() {
         &crate::phys_body::BodyCinfo::new(box_shape)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(2.0)
-            .with_position(V4::from_xyz(1.0, 1.05, 0.0)),
+            .with_position(G4::from_xyz(1.0, 1.05, 0.0)),
     );
 
     let mut proxy = capsule_proxy(V4::from_xyz(0.0, 1.05, 0.0));
@@ -217,7 +217,7 @@ fn character_loop_is_deterministic() {
             0.0,
         )) as Arc<dyn Shape>;
         world.create_body(
-            &crate::phys_body::BodyCinfo::new(wall).with_position(V4::from_xyz(3.0, 1.5, 0.0)),
+            &crate::phys_body::BodyCinfo::new(wall).with_position(G4::from_xyz(3.0, 1.5, 0.0)),
         );
         let mut proxy = capsule_proxy(V4::from_xyz(0.0, 1.05, 0.0));
         let mut context = CharacterContext::new(
@@ -251,9 +251,9 @@ fn steep_slope_touches_manifold_and_classifies_support() {
     )) as Arc<dyn Shape>;
     world.create_body(
         &crate::phys_body::BodyCinfo::new(ramp)
-            .with_position(V4::from_xyz(0.0, 1.5, 0.0))
-            .with_orientation(crate::base_math::Quaternion::from_axis_angle(
-                V4::from_xyz(1.0, 0.0, 0.0),
+            .with_position(G4::from_xyz(0.0, 1.5, 0.0))
+            .with_orientation(glam::Quat::from_axis_angle(
+                glam::Vec3::new(1.0, 0.0, 0.0),
                 ramp_angle,
             )),
     );

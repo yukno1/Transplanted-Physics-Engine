@@ -25,7 +25,7 @@
 //! - Motion angular velocity is stored in **world space** (the SDK stores it in
 //!   motion/inertia space and converts on access). The integration math
 //!   (`q' = Δq * q`, normalized) is equivalent for a world-space input.
-//! - `mass`/`inverse_inertia` are stored as plain `f32`/`Vector4`; the SDK's
+//! - `mass`/`inverse_inertia` are stored as plain `f32`/`Vec4`; the SDK's
 //!   packed `hknpHalf` representation and `hknpMotionPropertiesLibrary` are
 //!   deferred to the mass-properties/solver work.
 //! - Attached bodies (`allocateAttachedBody`), drag, deactivation, solver ids,
@@ -42,8 +42,5 @@ pub mod motion_manager;
 
 pub use body::{Body, BodyCinfo};
 pub use body_manager::BodyManager;
-pub use motion::{
-    Motion, inverse_inertia_diagonal_matrix, inverse_inertia_is_diagonal,
-    world_inverse_inertia_from_mass_properties,
-};
+pub use motion::{Motion, inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties};
 pub use motion_manager::MotionManager;

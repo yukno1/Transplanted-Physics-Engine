@@ -554,10 +554,10 @@ mod tests {
     fn raycast_finds_closest_body() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
         );
         let near = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 4.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 4.0, 0.0)),
         );
 
         let hit = world
@@ -583,11 +583,11 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let first = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
-                .with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
         );
         let second = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
-                .with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
         );
         // Two identical boxes share a pose: both produce the same hit fraction
         // and the lower body id wins.
@@ -603,11 +603,11 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
-                .with_orientation(Quaternion::from_axis_angle(
-                    Vector4::UNIT_Z,
+                .with_orientation(glam::Quat::from_axis_angle(
+                    glam::Vec3::Z,
                     core::f32::consts::FRAC_PI_4,
                 ))
-                .with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let hit = world
             .raycast(Vector4::from_xyz(0.0, 10.0, 0.0), -Vector4::UNIT_Y, 20.0)
@@ -619,7 +619,7 @@ mod tests {
     fn raycast_hits_mesh_body() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let ground = world.create_body(
-            &BodyCinfo::new(mesh_ground(5.0)).with_position(Vector4::from_xyz(0.0, 0.0, 0.0)),
+            &BodyCinfo::new(mesh_ground(5.0)).with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
         let hit = world
             .raycast(Vector4::from_xyz(1.0, 4.0, 1.0), -Vector4::UNIT_Y, 10.0)
@@ -640,10 +640,10 @@ mod tests {
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 4.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 4.0, 0.0)),
         );
         let far = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
         );
         let filter = QueryFilter::default().with_ignore_body(ignored);
         let hit = world
@@ -665,10 +665,10 @@ mod tests {
     fn closest_point_finds_nearest_body() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let near = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 3.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 3.0, 0.0)),
         );
         world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 20.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 20.0, 0.0)),
         );
 
         let hit = world
@@ -693,7 +693,7 @@ mod tests {
     fn closest_point_reports_inside_shapes() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let body = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let hit = world
             .closest_point(Vector4::from_xyz(0.0, 5.0, 0.0), 10.0)
@@ -706,7 +706,7 @@ mod tests {
     fn closest_points_to_shape_finds_nearest_surface() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let body = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 4.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 4.0, 0.0)),
         );
         let query = sphere_shape(0.5);
         let hit = world
@@ -742,7 +742,7 @@ mod tests {
     fn closest_points_report_overlap_as_negative_distance() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let body = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
         );
         let query = sphere_shape(0.5);
         let filter = QueryFilter::default();
@@ -792,10 +792,10 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let ground = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let caster = world.create_body(
-            &BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let query = sphere_shape(0.5);
         let start =
@@ -812,7 +812,7 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
-                .with_position(Vector4::from_xyz(0.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
         let query = sphere_shape(0.5);
         let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::ZERO);
@@ -834,13 +834,13 @@ mod tests {
     fn aabb_query_reports_overlapping_bodies_in_slot_order() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let first = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(0.0, 0.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
         let second = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
         );
         world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(20.0, 0.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(20.0, 0.0, 0.0)),
         );
         let aabb = Aabb::from_center_half_extents(Vector4::ZERO, Vector4::splat(1.0));
         let bodies = world.query_aabb(&aabb, &QueryFilter::default());
@@ -861,8 +861,8 @@ mod tests {
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 10.0, 0.0))
-                .with_linear_velocity(-Vector4::UNIT_Y),
+                .with_position(Vec4::from_xyz(0.0, 10.0, 0.0))
+                .with_linear_velocity(Vec4::new(0.0, -1.0, 0.0, 0.0)),
         );
         world.step(0.5);
         let hit = world

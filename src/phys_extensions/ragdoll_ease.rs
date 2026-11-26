@@ -552,7 +552,7 @@ pub fn lerp(current: f32, original: f32, weight: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::{Quaternion, Transform, Vector4};
+    use crate::base_math::{Quaternion, Transform, Vec4Ext, Vector4};
     use glam::Vec4;
     use crate::phys_body::BodyCinfo;
     use crate::phys_extensions::ragdoll::{Ragdoll, RagdollData};
@@ -579,7 +579,7 @@ mod tests {
             &BodyCinfo::new(shape())
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(1.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(1.0, 0.0, 0.0)),
         );
         let mut data = RagdollData::new();
         data.add_bone("a", None, Some(a), Transform::IDENTITY);

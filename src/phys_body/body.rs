@@ -2,8 +2,9 @@
 
 use std::sync::Arc;
 
-use crate::base_math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
-use crate::phys_shape::{MassConfig, MassProperties, Shape};
+use crate::base_math::{Aabb, Mat3, Quat, Transform, Vec4};
+use crate::base_math::QuatExt;
+use crate::phys_shape::{MassConfig, MassProperties, Shape, to_mat3, to_quaternion, to_vec4, to_vector4};
 use crate::phys_types::{
     BodyId, BodyIndex, BodyQualityId, CollisionFlags, MaterialId, MotionId, MotionPropertiesId,
     MotionType,
@@ -19,8 +20,7 @@ pub const DEFAULT_MAX_DEPENETRATION_SPEED: f32 = 1.0;
 ///
 /// ```
 /// use std::sync::Arc;
-/// use proton::math::Vec4;
-/// use proton::math::Vector4;
+/// use proton::math::{Vec4, Vec4Ext};
 /// use proton::body::BodyCinfo;
 /// use proton::shape::SphereShape;
 /// use proton::np_types::MotionType;
@@ -28,7 +28,7 @@ pub const DEFAULT_MAX_DEPENETRATION_SPEED: f32 = 1.0;
 /// let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0));
 /// let cinfo = BodyCinfo::new(shape)
 ///     .with_motion_type(MotionType::Dynamic)
-///     .with_position(Vector4::from_xyz(0.0, 10.0, 0.0))
+///     .with_position(Vec4::from_xyz(0.0, 10.0, 0.0))
 ///     .with_mass(2.0);
 /// assert_eq!(cinfo.motion_type, MotionType::Dynamic);
 /// ```
@@ -51,13 +51,13 @@ pub struct BodyCinfo {
     /// Initial motion type.
     pub motion_type: MotionType,
     /// Initial world position (center of mass).
-    pub position: Vector4,
+    pub position: Vec4,
     /// Initial world orientation.
-    pub orientation: Quaternion,
+    pub orientation: Quat,
     /// Initial world linear velocity (ignored for static bodies).
-    pub linear_velocity: Vector4,
+    pub linear_velocity: Vec4,
     /// Initial world angular velocity (ignored for static bodies).
-    pub angular_velocity: Vector4,
+    pub angular_velocity: Vec4,
     /// Mass: `< 0` use the shape mass, `0` infinite mass, `> 0` explicit mass.
     pub mass: f32,
     /// Configuration used to derive mass properties from the shape when `mass < 0`.
@@ -83,10 +83,10 @@ impl BodyCinfo {
             name: None,
             user_data: 0,
             motion_type: MotionType::Static,
-            position: Vector4::ZERO,
-            orientation: Quaternion::IDENTITY,
-            linear_velocity: Vector4::ZERO,
-            angular_velocity: Vector4::ZERO,
+            position: Vec4::ZERO,
+            orientation: Quat::IDENTITY,
+            linear_velocity: Vec4::ZERO,
+            angular_velocity: Vec4::ZERO,
             mass: -1.0,
             mass_config: MassConfig::DEFAULT,
             motion_properties_id: MotionPropertiesId::INVALID,
@@ -104,14 +104,14 @@ impl BodyCinfo {
 
     /// Set the world position.
     #[must_use]
-    pub fn with_position(mut self, position: Vector4) -> Self {
+    pub fn with_position(mut self, position: Vec4) -> Self {
         self.position = position;
         self
     }
 
     /// Set the world orientation.
     #[must_use]
-    pub fn with_orientation(mut self, orientation: Quaternion) -> Self {
+    pub fn with_orientation(mut self, orientation: Quat) -> Self {
         self.orientation = orientation;
         self
     }
@@ -119,21 +119,21 @@ impl BodyCinfo {
     /// Set both position and orientation from a transform.
     #[must_use]
     pub fn with_transform(mut self, transform: Transform) -> Self {
-        self.position = transform.translation;
-        self.orientation = transform.rotation_quaternion();
+        self.position = to_vec4(transform.translation);
+        self.orientation = Quat::from_matrix_sdk(to_mat3(&transform.rotation));
         self
     }
 
     /// Set the initial linear velocity.
     #[must_use]
-    pub fn with_linear_velocity(mut self, velocity: Vector4) -> Self {
+    pub fn with_linear_velocity(mut self, velocity: Vec4) -> Self {
         self.linear_velocity = velocity;
         self
     }
 
     /// Set the initial angular velocity (world space).
     #[must_use]
-    pub fn with_angular_velocity(mut self, velocity: Vector4) -> Self {
+    pub fn with_angular_velocity(mut self, velocity: Vec4) -> Self {
         self.angular_velocity = velocity;
         self
     }
@@ -196,7 +196,7 @@ impl BodyCinfo {
 
     /// The initial transform implied by `position`/`orientation`.
     pub fn transform(&self) -> Transform {
-        Transform::from_quaternion(self.orientation, self.position)
+        Transform::from_quaternion(to_quaternion(self.orientation), to_vector4(self.position))
     }
 }
 
@@ -230,7 +230,7 @@ pub struct Body {
     /// Whether mass/COM/inertia should be derived from the shape on rebuild.
     pub derive_mass_from_shape: bool,
     /// Diagonal inverse inertia in body-local space, used only by mass merges.
-    pub inverse_inertia: Vector4,
+    pub inverse_inertia: Vec4,
     /// Full mass properties derived from the shape or explicitly assigned.
     pub mass_properties: Option<MassProperties>,
     /// Mass configuration captured at creation or by the latest mass update.
@@ -238,7 +238,7 @@ pub struct Body {
     /// Monotonically increasing version for mass-property cache invalidation.
     pub mass_version: u64,
     /// Full world-space inverse inertia matrix used by shared-motion mass merges.
-    pub inverse_inertia_world: Matrix3,
+    pub inverse_inertia_world: Mat3,
     /// Body state flags (including `IS_STATIC`/`IS_DYNAMIC`/`IS_KEYFRAMED`/`IS_ACTIVE`).
     pub flags: CollisionFlags,
     /// Root material id.
@@ -271,11 +271,11 @@ impl Body {
             motion_id,
             mass: 0.0,
             derive_mass_from_shape: false,
-            inverse_inertia: Vector4::ZERO,
+            inverse_inertia: Vec4::ZERO,
             mass_properties: None,
             mass_config: MassConfig::DEFAULT,
             mass_version: 0,
-            inverse_inertia_world: Matrix3::ZERO,
+            inverse_inertia_world: Mat3::ZERO,
             flags: CollisionFlags::NONE,
             material_id: MaterialId::PRESET_DEFAULT,
             quality_id: BodyQualityId::INVALID,
@@ -340,10 +340,11 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
+    use crate::base_math::Vector4;
+    use crate::base_math::Vec4Ext;
     use crate::phys_shape::SphereShape;
     use glam::Vec3A;
-    use glam::Vec4;
+    use glam::Vec3;
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
@@ -367,8 +368,8 @@ mod tests {
         let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let cinfo = BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)
-            .with_position(Vector4::from_xyz(1.0, 2.0, 3.0))
-            .with_orientation(Quaternion::from_axis_angle(Vector4::UNIT_Z, FRAC_PI_2))
+            .with_position(Vec4::from_xyz(1.0, 2.0, 3.0))
+            .with_orientation(Quat::from_axis_angle(Vec3::Z, FRAC_PI_2))
             .with_mass(2.0)
             .with_user_data(7)
             .with_name("body");
@@ -393,7 +394,7 @@ mod tests {
         );
         assert!(body.aabb.min.abs_diff_eq(Vec3A::splat(-2.0), 1e-6));
         body.set_transform(Transform::from_quaternion(
-            Quaternion::IDENTITY,
+            crate::base_math::Quaternion::IDENTITY,
             Vector4::from_xyz(10.0, 0.0, 0.0),
         ));
         assert!(body.aabb.min.abs_diff_eq(Vec3A::new(8.0, -2.0, -2.0), 1e-6));

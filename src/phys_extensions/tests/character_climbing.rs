@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
 use glam::Vec4 as G4;
 use crate::phys_extensions::{
     CharacterContext, CharacterInput, CharacterOutput, CharacterStateManager, CharacterStateType,
@@ -100,12 +101,12 @@ fn t1_tracker_reports_enter_exit_and_clear() {
     let first = world.create_body(
         &crate::phys_body::BodyCinfo::new(shape())
             .with_motion_type(MotionType::Static)
-            .with_position(V4::ZERO),
+            .with_position(G4::ZERO),
     );
     let second = world.create_body(
         &crate::phys_body::BodyCinfo::new(shape())
             .with_motion_type(MotionType::Static)
-            .with_position(V4::from_xyz(10.0, 0.0, 0.0)),
+            .with_position(G4::from_xyz(10.0, 0.0, 0.0)),
     );
     let filter = QueryFilter::default();
     let mut tracker = TriggerTracker::new();

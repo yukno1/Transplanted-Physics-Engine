@@ -35,6 +35,10 @@ pub trait Vec4Ext: Sized {
     /// (legacy `Vector4::horizontal_add3`, `vector.rs:453-457`).
     fn horizontal_add3(self) -> f32;
 
+    /// `hkVector4f::allEqual<3>` — per-component `|a - b| <= eps` on `xyz` only
+    /// (legacy `Vector4::all_equal3`, `vector.rs:487-491`).
+    fn all_equal3(self, other: Self, epsilon: f32) -> bool;
+
     /// `hkVector4f::normalize<3, HK_SQRT_SET_ZERO>` — zero vector maps to zero;
     /// only `xyz` are divided, `w` is carried through unchanged
     /// (legacy `Vector4::normalize3`, `vector.rs:361-372`).
@@ -73,6 +77,13 @@ impl Vec4Ext for Vec4 {
     }
 
     #[inline]
+    fn all_equal3(self, other: Self, epsilon: f32) -> bool {
+        (self.x - other.x).abs() <= epsilon
+            && (self.y - other.y).abs() <= epsilon
+            && (self.z - other.z).abs() <= epsilon
+    }
+
+    #[inline]
     fn normalize_or_zero3(self) -> Self {
         let length = self.dot3(self).sqrt();
         if length == 0.0 {
@@ -97,6 +108,11 @@ mod tests {
             (a.x * b.x + a.y * b.y + a.z * b.z).to_bits()
         );
         assert_eq!(a.horizontal_add3().to_bits(), (a.x + a.y + a.z).to_bits());
+
+        // all_equal3: xyz-only tolerance comparison.
+        assert!(a.all_equal3(Vec4::new(a.x, a.y, a.z, 0.0), 0.0));
+        assert!(!a.all_equal3(Vec4::new(a.x + 1e-3, a.y, a.z, 0.0), 0.0));
+        assert!(a.all_equal3(Vec4::new(a.x + 1e-3, a.y, a.z, 9.0), 1e-2));
 
         // from_xyz zeroes w.
         assert_eq!(Vec4::from_xyz(1.0, 2.0, 3.0), Vec4::new(1.0, 2.0, 3.0, 0.0));

@@ -265,7 +265,7 @@ fn converts_body_fields_and_reports_bad_items() {
     let cinfo = body_cinfo_from_item(&bundle, 4).expect("ball body");
     assert_eq!(cinfo.motion_type, MotionType::Dynamic);
     assert_eq!(cinfo.mass, 1.0);
-    assert_eq!(cinfo.position, Vector4::from_xyz(0.0, 10.0, 0.0));
+    assert_eq!(cinfo.position, Vec4::from_xyz(0.0, 10.0, 0.0));
 
     assert!(matches!(
         shape_from_item(&bundle, 99),

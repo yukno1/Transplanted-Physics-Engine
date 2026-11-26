@@ -15,7 +15,7 @@ use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape};
 use proton::world::{World, WorldCinfo};
 
-fn body(world: &mut World, position: Vector4) -> BodyId {
+fn body(world: &mut World, position: Vec4) -> BodyId {
     let shape = Arc::new(BoxShape::with_convex_radius(
         Vec4::from_xyz(0.2, 0.2, 0.2),
         0.0,
@@ -27,14 +27,14 @@ fn body(world: &mut World, position: Vector4) -> BodyId {
             .with_position(position),
     );
     let motion_id = world.body(id).unwrap().motion_id;
-    world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+    world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.5);
     id
 }
 
 fn chain(world: &mut World) -> (Ragdoll, [BodyId; 2]) {
     let ids = [
-        body(world, Vector4::ZERO),
-        body(world, Vector4::from_xyz(0.0, 1.0, 0.0)),
+        body(world, Vec4::ZERO),
+        body(world, Vec4::from_xyz(0.0, 1.0, 0.0)),
     ];
     let mut data = RagdollData::new();
     data.add_bone("hips", None, Some(ids[0]), Transform::IDENTITY);

@@ -27,13 +27,13 @@ fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
 fn wheeled_cart(world: &mut World, drive: Option<(f32, f32)>) -> (BodyId, [ConstraintId; 2]) {
     world.create_body(
         &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-            .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let chassis = world.create_body(
         &BodyCinfo::new(box_shape(Vec4::from_xyz(1.0, 0.25, 0.5)))
             .with_motion_type(MotionType::Dynamic)
             .with_mass(2.0)
-            .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
     );
     let mut ids = [ConstraintId::INVALID; 2];
     for (index, x) in [0.7, -0.7].into_iter().enumerate() {
@@ -41,10 +41,10 @@ fn wheeled_cart(world: &mut World, drive: Option<(f32, f32)>) -> (BodyId, [Const
             &BodyCinfo::new(sphere_shape(0.3))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(0.2)
-                .with_position(Vector4::from_xyz(x, 0.3, 0.0)),
+                .with_position(Vec4::from_xyz(x, 0.3, 0.0)),
         );
         let motion_id = world.body(wheel).unwrap().motion_id;
-        world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.05);
+        world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.05);
         let mut info = WheelCinfo::new(
             wheel,
             chassis,

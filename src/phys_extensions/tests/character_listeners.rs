@@ -97,7 +97,7 @@ fn world_with_ground() -> (World, BodyId) {
     let id = world.create_body(
         &crate::phys_body::BodyCinfo::new(ground)
             .with_motion_type(MotionType::Static)
-            .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(G4::from_xyz(0.0, -0.5, 0.0)),
     );
     (world, id)
 }

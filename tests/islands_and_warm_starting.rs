@@ -26,7 +26,7 @@ fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
 
 fn ground(world: &mut World, half_extents: Vec4) -> proton::np_types::BodyId {
     world.create_body(
-        &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
+        &BodyCinfo::new(box_shape(half_extents)).with_position(Vec4::from_xyz(
             0.0,
             -half_extents.y,
             0.0,
@@ -40,7 +40,7 @@ fn stack_world(warm_starting: bool) -> World {
     for index in 0..5 {
         world.create_body(
             &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-                .with_position(Vector4::from_xyz(0.0, 1.0 + index as f32 * 1.1, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 1.0 + index as f32 * 1.1, 0.0)),
         );
     }
     world
@@ -64,7 +64,7 @@ fn two_stacks_on_one_ground_report_two_islands() {
         for index in 0..2 {
             world.create_body(
                 &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-                    .with_position(Vector4::from_xyz(x, 1.0 + index as f32 * 1.1, 0.0)),
+                    .with_position(Vec4::from_xyz(x, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }
     }
@@ -86,10 +86,10 @@ fn jointed_bodies_share_an_island_even_without_contacts() {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let a = world.create_body(&dynamic(BodyCinfo::new(sphere_shape(0.5))));
     let b = world.create_body(
-        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vec4::from_xyz(2.0, 0.0, 0.0)),
     );
     let c = world.create_body(
-        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vector4::from_xyz(8.0, 0.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vec4::from_xyz(8.0, 0.0, 0.0)),
     );
 
     let id = world.create_spring_constraint(&proton::world::SpringCinfo::new(

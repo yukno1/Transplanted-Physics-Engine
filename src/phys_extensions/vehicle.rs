@@ -61,7 +61,7 @@
 //! let ground = BoxShape::with_convex_radius(Vec4::from_xyz(20.0, 0.5, 20.0), 0.0);
 //! world.create_body(
 //!     &BodyCinfo::new(Arc::new(ground) as Arc<dyn Shape>)
-//!         .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+//!         .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
 //! );
 //!
 //! let chassis_shape = BoxShape::new(Vec4::from_xyz(0.5, 0.25, 1.0));
@@ -69,7 +69,7 @@
 //!     &BodyCinfo::new(Arc::new(chassis_shape) as Arc<dyn Shape>)
 //!         .with_motion_type(MotionType::Dynamic)
 //!         .with_mass(800.0)
-//!         .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+//!         .with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
 //! );
 //!
 //! let mut setup = VehicleSetup::new(chassis);
@@ -85,8 +85,9 @@
 //! }
 //! ```
 
-use crate::base_math::{Quaternion, Vector4};
+use crate::base_math::{QuatExt, Vec4, Vec4Ext, Vector4};
 use crate::phys_body::Motion;
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::BodyId;
 use crate::phys_world::{QueryFilter, World};
 
@@ -616,7 +617,14 @@ impl VehicleInstance {
             let dir_ws = chassis_transform.transform_vector(wheel.suspension_direction);
             let axle_ws = chassis_transform.transform_vector(wheel.axle);
             let steered_axle = if steer_angle != 0.0 {
-                Quaternion::from_axis_angle(dir_ws, steer_angle).rotate(axle_ws)
+                use crate::base_math::{Quat, QuatExt};
+                to_vector4(
+                    Quat::from_axis_angle(
+                        glam::Vec3::new(dir_ws.x, dir_ws.y, dir_ws.z),
+                        steer_angle,
+                    )
+                    .rotate_sdk(to_vec4(axle_ws)),
+                )
             } else {
                 axle_ws
             };
@@ -871,8 +879,8 @@ pub fn calc_engine(engine: &EngineSetup, transmission_rpm: f32, throttle: f32) -
 
 /// Velocity of a body at a world-space point (`v + ω × r`).
 fn velocity_at(motion: &Motion, point: Vector4) -> Vector4 {
-    let r = point - motion.position;
-    motion.linear_velocity + motion.angular_velocity.cross(r)
+    let r = to_vec4(point) - motion.position;
+    to_vector4(motion.linear_velocity + motion.angular_velocity.cross3(r))
 }
 
 /// Ground body velocity at `point` (`ZERO` for static bodies).
@@ -897,16 +905,18 @@ fn effective_mass(motion: &Motion, point: Vector4, dir: Vector4) -> f32 {
     if inverse_mass == 0.0 {
         return 0.0;
     }
+    let point = to_vec4(point);
+    let dir = to_vec4(dir);
     let r = point - motion.position;
-    let rxn = r.cross(dir);
-    let tau_motion = motion.orientation.rotate_inverse(rxn);
-    let omega_motion = Vector4::from_xyz(
+    let rxn = r.cross3(dir);
+    let tau_motion = motion.orientation.rotate_inverse_sdk(rxn);
+    let omega_motion = Vec4::from_xyz(
         tau_motion.x * motion.inverse_inertia.x,
         tau_motion.y * motion.inverse_inertia.y,
         tau_motion.z * motion.inverse_inertia.z,
     );
-    let omega_world = motion.orientation.rotate(omega_motion);
-    let angular_term = omega_world.cross(r).dot3(dir);
+    let omega_world = motion.orientation.rotate_sdk(omega_motion);
+    let angular_term = omega_world.cross3(r).dot3(dir);
     let total = inverse_mass + angular_term;
     if total > 1e-12 { 1.0 / total } else { 0.0 }
 }
@@ -926,19 +936,21 @@ fn apply_impulse_to_body(world: &mut World, body: BodyId, point: Vector4, impuls
     if motion.inverse_mass() == 0.0 {
         return;
     }
+    let point = to_vec4(point);
+    let impulse = to_vec4(impulse);
     let r = point - motion.position;
-    let torque = r.cross(impulse);
-    let tau_motion = motion.orientation.rotate_inverse(torque);
-    let delta_omega_motion = Vector4::from_xyz(
+    let torque = r.cross3(impulse);
+    let tau_motion = motion.orientation.rotate_inverse_sdk(torque);
+    let delta_omega_motion = Vec4::from_xyz(
         tau_motion.x * motion.inverse_inertia.x,
         tau_motion.y * motion.inverse_inertia.y,
         tau_motion.z * motion.inverse_inertia.z,
     );
-    let delta_omega = motion.orientation.rotate(delta_omega_motion);
+    let delta_omega = motion.orientation.rotate_sdk(delta_omega_motion);
     let new_linear = motion.linear_velocity + impulse * motion.inverse_mass();
     let new_angular = motion.angular_velocity + delta_omega;
-    world.set_body_linear_velocity(body_id, new_linear);
-    world.set_body_angular_velocity(body_id, new_angular);
+    world.set_body_linear_velocity(body_id, to_vector4(new_linear));
+    world.set_body_angular_velocity(body_id, to_vector4(new_angular));
 }
 
 /// Circular friction clamp (`hkVehicleFrictionSolverClipImpulse` subset):
@@ -956,6 +968,7 @@ fn clip_friction_circle(forward: f32, side: f32, max_impulse: f32) -> (f32, f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base_math::Quat;
     use crate::phys_types::MotionType;
 
     fn default_engine() -> EngineSetup {
@@ -1034,13 +1047,13 @@ mod tests {
     fn effective_mass_matches_inverse_mass_without_inertia() {
         let mut motion = Motion::new(
             MotionType::Dynamic,
-            Vector4::ZERO,
-            Quaternion::IDENTITY,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Quat::IDENTITY,
+            Vec4::ZERO,
+            Vec4::ZERO,
             2.0,
         );
-        motion.inverse_inertia = Vector4::ZERO;
+        motion.inverse_inertia = Vec4::ZERO;
         let mass = effective_mass(&motion, Vector4::UNIT_X, Vector4::UNIT_Y);
         assert!((mass - 2.0).abs() < 1e-5);
     }

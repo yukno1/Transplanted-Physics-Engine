@@ -4,18 +4,24 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::base_math::{DVec4, Mat3Ext, Matrix3, PreciseTransform, Quaternion, Transform, Vector4};
-use glam::Quat;
+use crate::base_math::{
+    DVec4, Mat3, Mat3Ext, Matrix3, PreciseTransform, QuatExt, Quaternion, Transform, Vec4, Vec4Ext,
+    Vector4,
+};
+use glam::{Quat, Vec3};
 use crate::base_thread::{TaskExecutor, ThreadPool, WorkStealingPool};
 use crate::phys_body::{
-    Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
-    inverse_inertia_is_diagonal, world_inverse_inertia_from_mass_properties,
+    Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_is_diagonal,
+    world_inverse_inertia_from_mass_properties,
 };
 use crate::phys_collide::{
     BodyAabb, BroadPhase, BroadPhaseConfig, CollisionFilter, closest_points,
     collide_with_tolerance, leaf_key_at_local_point,
 };
-use crate::phys_shape::{MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache};
+use crate::phys_shape::{
+    MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache, to_mat3, to_matrix3,
+    to_vec4, to_vector4,
+};
 use crate::phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
     HingeMotor, JointConstraint, JointImpulse, PointToPlaneJoint, PrismaticJoint, PrismaticMotor,
@@ -621,15 +627,15 @@ impl World {
                 continue;
             };
             let transform = body_properties.0;
-            let new_position = transform.translation;
+            let new_position = to_vec4(transform.translation);
             let mut detached = Motion::new(
                 motion.motion_type,
                 new_position,
-                transform.rotation_quaternion(),
+                Quat::from_matrix_sdk(to_mat3(&transform.rotation)),
                 motion.linear_velocity
                     + motion
                         .angular_velocity
-                        .cross(new_position - motion.position),
+                        .cross3(new_position - motion.position),
                 motion.angular_velocity,
                 if body_properties.1 > 0.0 {
                     body_properties.1
@@ -637,7 +643,7 @@ impl World {
                     motion.mass
                 },
             );
-            if body_properties.3 != Matrix3::ZERO {
+            if body_properties.3 != Mat3::ZERO {
                 detached.set_inverse_inertia_world(body_properties.3);
             } else {
                 detached.set_inverse_inertia_diagonal(body_properties.2);
@@ -709,22 +715,14 @@ impl World {
         if let Some(properties) = body.mass_properties {
             return Some(properties.transformed(&body.transform));
         }
-        let inverse_world = if body.inverse_inertia_world != Matrix3::ZERO
-            && (!inverse_inertia_is_diagonal(body.inverse_inertia_world, 1e-8)
-                || body.inverse_inertia == Vector4::ZERO)
-        {
-            body.inverse_inertia_world
-        } else {
-            inverse_inertia_diagonal_matrix(body.inverse_inertia)
-        };
-        let (inertia_tensor, _) = inverse_world.inverse();
+        let inverse_world = Self::body_inverse_inertia_world(body);
+        let (inertia_tensor, _) = inverse_world.inverse_sdk();
         Some(MassProperties {
             volume: 0.0,
             mass: body.mass,
-            // 过渡期边界：`MassProperties` 已迁移 glam（Phase 3 步骤 2），本
-            // 模块随 phys_world 迁移（步骤 5）时删除转换。
-            center_of_mass: crate::phys_shape::to_vec4(body.transform.translation),
-            inertia_tensor: crate::phys_shape::to_mat3(&inertia_tensor),
+            // 过渡期边界：`Body::transform` 仍为 legacy（Phase 3 后续步骤迁移）。
+            center_of_mass: to_vec4(body.transform.translation),
+            inertia_tensor,
             major_axis_space: Quat::IDENTITY,
         })
     }
@@ -752,11 +750,45 @@ impl World {
         let (inverse_world, _) = combined.inertia_tensor.inverse_sdk();
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.mass = combined.mass;
-            motion.position = crate::phys_shape::to_vector4(combined.center_of_mass);
-            motion.set_inverse_inertia_world(crate::phys_shape::to_matrix3(inverse_world));
-            motion.linear_velocity += motion.angular_velocity.cross(crate::phys_shape::to_vector4(
-                combined.center_of_mass - crate::phys_shape::to_vec4(old_position),
-            ));
+            motion.position = combined.center_of_mass;
+            motion.set_inverse_inertia_world(inverse_world);
+            motion.linear_velocity += motion
+                .angular_velocity
+                .cross3(combined.center_of_mass - old_position);
+        }
+    }
+
+    /// A body's effective world inverse inertia: the full matrix when present,
+    /// otherwise the diagonal rebuilt from the scalar view.
+    fn body_inverse_inertia_world(body: &Body) -> Mat3 {
+        if body.inverse_inertia_world != Mat3::ZERO
+            && (!inverse_inertia_is_diagonal(body.inverse_inertia_world, 1e-8)
+                || body.inverse_inertia == Vec4::ZERO)
+        {
+            body.inverse_inertia_world
+        } else {
+            Mat3::from_diagonal(Vec3::new(
+                body.inverse_inertia.x,
+                body.inverse_inertia.y,
+                body.inverse_inertia.z,
+            ))
+        }
+    }
+
+    /// A motion's effective world inverse inertia: the full matrix when present,
+    /// otherwise the diagonal rebuilt from the scalar view.
+    fn motion_inverse_inertia_world(motion: &Motion) -> Mat3 {
+        if motion.inverse_inertia_world != Mat3::ZERO
+            && (!inverse_inertia_is_diagonal(motion.inverse_inertia_world, 1e-8)
+                || motion.inverse_inertia == Vec4::ZERO)
+        {
+            motion.inverse_inertia_world
+        } else {
+            Mat3::from_diagonal(Vec3::new(
+                motion.inverse_inertia.x,
+                motion.inverse_inertia.y,
+                motion.inverse_inertia.z,
+            ))
         }
     }
 
@@ -768,12 +800,17 @@ impl World {
             return false;
         };
         let motion_id = body.motion_id;
+        let inverse = to_vec4(inverse);
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.set_inverse_inertia_diagonal(inverse);
         }
         if let Some(body) = self.bodies.get_mut(body_id) {
             body.inverse_inertia = inverse;
-            body.inverse_inertia_world = inverse_inertia_diagonal_matrix(inverse);
+            body.inverse_inertia_world = Mat3::from_diagonal(Vec3::new(
+                inverse.x,
+                inverse.y,
+                inverse.z,
+            ));
             body.mass_version = body.mass_version.wrapping_add(1);
         }
         self.emit_mass_change(body_id, MassChangeReason::InverseInertiaSet, old);
@@ -788,10 +825,11 @@ impl World {
             return false;
         };
         let motion_id = body.motion_id;
-        let diagonal = Vector4::from_xyz(
-            matrix.element(0, 0),
-            matrix.element(1, 1),
-            matrix.element(2, 2),
+        let matrix = to_mat3(&matrix);
+        let diagonal = Vec4::from_xyz(
+            matrix.element_sdk(0, 0),
+            matrix.element_sdk(1, 1),
+            matrix.element_sdk(2, 2),
         );
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.set_inverse_inertia_world(matrix);
@@ -808,7 +846,8 @@ impl World {
     fn body_mass_summary(&self, body_id: BodyId) -> Option<MassSummary> {
         let body = self.bodies.get(body_id)?;
         let mut summary = MassSummary::from_properties(body.mass_properties.as_ref())?;
-        summary.inverse_inertia_world = body.inverse_inertia_world;
+        // 过渡期边界：`MassSummary` 仍为 legacy（signals.rs 随步骤 5 迁移）。
+        summary.inverse_inertia_world = to_matrix3(body.inverse_inertia_world);
         Some(summary)
     }
 
@@ -930,7 +969,7 @@ impl World {
                 if let Some(motion) = self.motions.get_mut(motion_id) {
                     motion.mass = mass;
                     if mass == 0.0 {
-                        motion.set_inverse_inertia_diagonal(Vector4::ZERO);
+                        motion.set_inverse_inertia_diagonal(Vec4::ZERO);
                     }
                 }
                 if let Some(motion) = self.motions.get(motion_id) {
@@ -2237,7 +2276,7 @@ impl World {
         let motion_ids: Vec<_> = self.motions.iter().map(|(id, _)| id).collect();
         for id in motion_ids {
             if let Some(motion) = self.motions.get_mut(id) {
-                motion.position += shift;
+                motion.position += to_vec4(shift);
             }
         }
         for body in self.bodies.iter_mut() {
@@ -2259,7 +2298,7 @@ impl World {
         self.wake_if_dynamic(body_id);
         self.motions
             .get_mut(motion_id)
-            .map(|motion| motion.linear_velocity = velocity)
+            .map(|motion| motion.linear_velocity = to_vec4(velocity))
             .is_some()
     }
 
@@ -2275,7 +2314,7 @@ impl World {
         self.wake_if_dynamic(body_id);
         self.motions
             .get_mut(motion_id)
-            .map(|motion| motion.angular_velocity = velocity)
+            .map(|motion| motion.angular_velocity = to_vec4(velocity))
             .is_some()
     }
 
@@ -2351,7 +2390,7 @@ impl World {
         let body = self.bodies.get(body_id)?;
         self.motions
             .get(body.motion_id)
-            .map(|motion| motion.linear_velocity)
+            .map(|motion| to_vector4(motion.linear_velocity))
     }
 
     /// A body's angular velocity.
@@ -2359,7 +2398,7 @@ impl World {
         let body = self.bodies.get(body_id)?;
         self.motions
             .get(body.motion_id)
-            .map(|motion| motion.angular_velocity)
+            .map(|motion| to_vector4(motion.angular_velocity))
     }
 
     /// A body's world position.
@@ -2640,7 +2679,7 @@ impl World {
                 .collect();
             for motion_id in dynamic_motions {
                 if let Some(motion) = self.motions.get_mut(motion_id) {
-                    motion.linear_velocity += gravity * delta_time;
+                    motion.linear_velocity += to_vec4(gravity) * delta_time;
                 }
             }
         }
@@ -2658,33 +2697,25 @@ impl World {
             let motion = self.motions.get(body.motion_id);
             let (inverse_mass, inverse_inertia_world) = if body.is_dynamic() {
                 let matrix = motion
-                    .map(|motion| {
-                        if motion.inverse_inertia_world != Matrix3::ZERO
-                            && (!inverse_inertia_is_diagonal(motion.inverse_inertia_world, 1e-8)
-                                || motion.inverse_inertia == Vector4::ZERO)
-                        {
-                            motion.inverse_inertia_world
-                        } else {
-                            inverse_inertia_diagonal_matrix(motion.inverse_inertia)
-                        }
-                    })
-                    .unwrap_or(Matrix3::ZERO);
+                    .map(Self::motion_inverse_inertia_world)
+                    .unwrap_or(Mat3::ZERO);
                 (motion.map(Motion::inverse_mass).unwrap_or(0.0), matrix)
             } else {
-                (0.0, Matrix3::ZERO)
+                (0.0, Mat3::ZERO)
             };
             let linear_velocity = motion
                 .map(|motion| motion.linear_velocity)
-                .unwrap_or(Vector4::ZERO);
+                .unwrap_or(Vec4::ZERO);
             let angular_velocity = motion
                 .map(|motion| motion.angular_velocity)
-                .unwrap_or(Vector4::ZERO);
+                .unwrap_or(Vec4::ZERO);
+            // 过渡期边界：`SolverBody` 仍为 legacy（phys_solver 随步骤 5 迁移）。
             solver_bodies.push(SolverBody::new_with_inertia_matrix(
                 inverse_mass,
-                inverse_inertia_world,
+                to_matrix3(inverse_inertia_world),
                 body.transform.translation,
-                linear_velocity,
-                angular_velocity,
+                to_vector4(linear_velocity),
+                to_vector4(angular_velocity),
             ));
         }
 
@@ -2896,8 +2927,8 @@ impl World {
         if parallel_writeback {
             for candidate in velocity_writes {
                 if let Some(motion) = self.motions.get_mut(candidate.motion_id) {
-                    motion.linear_velocity = candidate.linear_velocity;
-                    motion.angular_velocity = candidate.angular_velocity;
+                    motion.linear_velocity = to_vec4(candidate.linear_velocity);
+                    motion.angular_velocity = to_vec4(candidate.angular_velocity);
                 }
             }
         } else {
@@ -2908,8 +2939,8 @@ impl World {
                 let solved = solver_bodies[index];
                 if solved.inverse_mass > 0.0 {
                     if let Some(motion) = self.motions.get_mut(body.motion_id) {
-                        motion.linear_velocity = solved.linear_velocity;
-                        motion.angular_velocity = solved.angular_velocity;
+                        motion.linear_velocity = to_vec4(solved.linear_velocity);
+                        motion.angular_velocity = to_vec4(solved.angular_velocity);
                     }
                 }
             }
@@ -2993,8 +3024,8 @@ impl World {
             for body_id in newly_sleeping {
                 if let Some(motion_id) = self.bodies.get(body_id).map(|body| body.motion_id) {
                     if let Some(motion) = self.motions.get_mut(motion_id) {
-                        motion.linear_velocity = Vector4::ZERO;
-                        motion.angular_velocity = Vector4::ZERO;
+                        motion.linear_velocity = Vec4::ZERO;
+                        motion.angular_velocity = Vec4::ZERO;
                     }
                 }
             }
@@ -3312,13 +3343,13 @@ impl World {
                     body: body.id,
                     position: body.transform.translation,
                     orientation: motion
-                        .map(|motion| motion.orientation)
+                        .map(|motion| crate::phys_shape::to_quaternion(motion.orientation))
                         .unwrap_or_else(|| body.transform.rotation_quaternion()),
                     linear_velocity: motion
-                        .map(|motion| motion.linear_velocity)
+                        .map(|motion| to_vector4(motion.linear_velocity))
                         .unwrap_or(Vector4::ZERO),
                     angular_velocity: motion
-                        .map(|motion| motion.angular_velocity)
+                        .map(|motion| to_vector4(motion.angular_velocity))
                         .unwrap_or(Vector4::ZERO),
                 }
             })
@@ -3463,15 +3494,15 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(1.0, 0.5, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(1.0, 0.5, 0.0)));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(-1.0, 0.5, 0.0)),
+                .with_position(Vec4::from_xyz(-1.0, 0.5, 0.0)),
         );
         world
     }
@@ -3525,16 +3556,16 @@ mod tests {
     fn step_integrates_dynamic_bodies_only() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let static_id = world.create_body(
-            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vector4::from_xyz(100.0, 0.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(100.0, 0.0, 0.0)),
         );
         let keyframed_id = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Keyframed)
-                .with_position(Vector4::from_xyz(0.0, 100.0, 0.0))
-                .with_linear_velocity(Vector4::UNIT_X),
+                .with_position(Vec4::from_xyz(0.0, 100.0, 0.0))
+                .with_linear_velocity(Vec4::from_xyz(1.0, 0.0, 0.0)),
         );
         let dynamic_id =
-            world.create_body(&dynamic_cinfo(1.0).with_linear_velocity(Vector4::UNIT_X));
+            world.create_body(&dynamic_cinfo(1.0).with_linear_velocity(Vec4::from_xyz(1.0, 0.0, 0.0)));
 
         world.step(0.5);
         assert_eq!(world.step_count(), 1);
@@ -3576,7 +3607,7 @@ mod tests {
     fn step_integrates_angular_velocity() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let id = world.create_body(
-            &dynamic_cinfo(1.0).with_angular_velocity(Vector4::from_xyz(0.0, 0.0, FRAC_PI_2)),
+            &dynamic_cinfo(1.0).with_angular_velocity(Vec4::from_xyz(0.0, 0.0, FRAC_PI_2)),
         );
         world.step(1.0);
         let body = world.body(id).unwrap();
@@ -3589,7 +3620,7 @@ mod tests {
     fn gravity_accelerates_dynamic_body() {
         let mut world = World::new(WorldCinfo::new());
         let id = world
-            .create_body(&dynamic_cinfo(1.0).with_position(Vector4::from_xyz(0.0, 100.0, 0.0)));
+            .create_body(&dynamic_cinfo(1.0).with_position(Vec4::from_xyz(0.0, 100.0, 0.0)));
         world.step(0.5);
         let velocity = world.body_linear_velocity(id).unwrap();
         assert!((velocity.y + 9.81 * 0.5).abs() < 1e-4, "vy {}", velocity.y);
@@ -3602,10 +3633,10 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         let ground = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let sphere =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
 
         for _ in 0..240 {
             world.step(1.0 / 60.0);
@@ -3637,7 +3668,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
         );
         let contacts = world.collect_contacts();
         assert_eq!(contacts.len(), 1);
@@ -3781,17 +3812,17 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_solver_settings(0.2, 0.0, 16));
         let anchor = Vector4::from_xyz(0.0, 10.0, 0.0);
         let anchor_body =
-            world.create_body(&BodyCinfo::new(sphere_shape(0.1)).with_position(anchor));
+            world.create_body(&BodyCinfo::new(sphere_shape(0.1)).with_position(to_vec4(anchor)));
         let bob = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(anchor + Vector4::from_xyz(2.0, 0.0, 0.0)),
+                .with_position(to_vec4(anchor) + Vec4::from_xyz(2.0, 0.0, 0.0)),
         );
         // Spheres carry no inverse inertia by default (Phase 8 decision); give
         // the bob rotational response so the pendulum can swing.
         let bob_motion = world.body(bob).unwrap().motion_id;
-        world.motion_mut(bob_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        world.motion_mut(bob_motion).unwrap().inverse_inertia = Vec4::splat(0.5);
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             anchor_body,
             bob,
@@ -3883,13 +3914,13 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 5.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let b = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(2.0, 5.0, 0.0)),
+                .with_position(Vec4::from_xyz(2.0, 5.0, 0.0)),
         );
         world.create_fixed_constraint(&FixedCinfo::between_bodies(
             a,
@@ -3919,15 +3950,15 @@ mod tests {
     fn hinge_joint_spins_about_the_axis() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let hub =
-            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::ZERO));
+            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::ZERO));
         let arm = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(2.0, 0.0, 0.0)),
         );
         let arm_motion = world.body(arm).unwrap().motion_id;
-        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vec4::splat(0.5);
         // Hinge about Z at the hub center: the arm can only rotate in-plane.
         world.create_hinge_constraint(&HingeCinfo::new(
             hub,
@@ -3951,15 +3982,15 @@ mod tests {
 
     fn hinged_arm(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
         let hub =
-            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::ZERO));
+            world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::ZERO));
         let arm = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(2.0, 0.0, 0.0)),
         );
         let arm_motion = world.body(arm).unwrap().motion_id;
-        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vector4::splat(0.5);
+        world.motion_mut(arm_motion).unwrap().inverse_inertia = Vec4::splat(0.5);
         let id = world.create_hinge_constraint(&HingeCinfo::new(
             hub,
             arm,
@@ -4103,7 +4134,7 @@ mod tests {
         );
         // Give the child real angular inertia so the cone row can act.
         let motion_id = world.body(child).unwrap().motion_id;
-        world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+        world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.5);
 
         let id = world.create_ragdoll_constraint(
             &RagdollCinfo::new(
@@ -4148,7 +4179,7 @@ mod tests {
         let build = || {
             let mut world = World::new(WorldCinfo::new());
             let root = world.create_body(
-                &BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
+                &BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
             );
             let mut previous = root;
             for index in 1..4 {
@@ -4156,10 +4187,10 @@ mod tests {
                     &BodyCinfo::new(sphere_shape(0.5))
                         .with_motion_type(MotionType::Dynamic)
                         .with_mass(1.0)
-                        .with_position(Vector4::from_xyz(0.0, 10.0, index as f32)),
+                        .with_position(Vec4::from_xyz(0.0, 10.0, index as f32)),
                 );
                 let motion_id = world.body(body).unwrap().motion_id;
-                world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+                world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.5);
                 world.create_ragdoll_constraint(
                     &RagdollCinfo::new(
                         body,
@@ -4270,7 +4301,7 @@ mod tests {
     fn spring_holds_the_pivot_distance() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let anchor = world.create_body(
-            &BodyCinfo::new(sphere_shape(0.5)).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+            &BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
         );
         let bob = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4304,7 +4335,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
         );
         let id = world.create_point_to_plane_constraint(&PointToPlaneCinfo::new(
             body,
@@ -4336,7 +4367,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
         );
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
@@ -4376,7 +4407,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(2.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(2.0, 0.0, 0.0)),
         );
         let first = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
@@ -4404,12 +4435,12 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         let ground = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let left =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(-3.0, 0.5, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(-3.0, 0.5, 0.0)));
         let right =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(3.0, 0.5, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(3.0, 0.5, 0.0)));
 
         for _ in 0..120 {
             world.step(1.0 / 60.0);
@@ -4438,19 +4469,19 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(4.0, 0.5, 4.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 0.6, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 0.6, 0.0)),
         );
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::from_xyz(0.0, 1.7, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 1.7, 0.0)),
         );
 
         for _ in 0..180 {
@@ -4467,10 +4498,10 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let sphere =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
 
         for _ in 0..120 {
             world.step(1.0 / 60.0);
@@ -4491,9 +4522,9 @@ mod tests {
         let mut world = World::new(WorldCinfo::new().with_warm_starting(false));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
         for _ in 0..120 {
             world.step(1.0 / 60.0);
         }
@@ -4618,7 +4649,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::ZERO),
+                .with_position(Vec4::ZERO),
         );
         let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
             slider,
@@ -4658,7 +4689,7 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(Vector4::ZERO),
+                .with_position(Vec4::ZERO),
         );
         let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
             slider,
@@ -4728,14 +4759,14 @@ mod tests {
                 &BodyCinfo::new(sphere_shape(0.5))
                     .with_motion_type(MotionType::Dynamic)
                     .with_mass(1.0)
-                    .with_position(Vector4::from_xyz(0.0, 4.0, 0.0))
-                    .with_linear_velocity(Vector4::UNIT_X),
+                    .with_position(Vec4::from_xyz(0.0, 4.0, 0.0))
+                    .with_linear_velocity(Vec4::from_xyz(1.0, 0.0, 0.0)),
             );
             let b = world.create_body(
                 &BodyCinfo::new(sphere_shape(0.5))
                     .with_motion_type(MotionType::Dynamic)
                     .with_mass(1.0)
-                    .with_position(Vector4::from_xyz(1.0, 4.0, 0.0)),
+                    .with_position(Vec4::from_xyz(1.0, 4.0, 0.0)),
             );
             world.create_fixed_constraint(&FixedCinfo::between_bodies(
                 a,
@@ -4767,10 +4798,10 @@ mod tests {
         let mut world = sleeping_world();
         let ground = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let ball =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)));
 
         for _ in 0..30 {
             world.step(1.0 / 60.0);
@@ -4799,10 +4830,10 @@ mod tests {
         let mut world = sleeping_world();
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let resting =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)));
         for _ in 0..30 {
             world.step(1.0 / 60.0);
         }
@@ -4810,7 +4841,7 @@ mod tests {
 
         // Drop an active ball onto the sleeping island: the contact with an
         // awake body must wake it.
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.5, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.5, 0.0)));
         for _ in 0..30 {
             world.step(1.0 / 60.0);
             if !world.body_is_sleeping(resting).unwrap() {
@@ -4864,10 +4895,10 @@ mod tests {
         let mut world = sleeping_world();
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let ball =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)));
         for _ in 0..30 {
             world.step(1.0 / 60.0);
         }
@@ -4895,7 +4926,7 @@ mod tests {
         );
         let anchor = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let pendulum =
-            world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
+            world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
         world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             pendulum,
             anchor,
@@ -4920,13 +4951,13 @@ mod tests {
     fn wheeled_cart(world: &mut World) -> (BodyId, [BodyId; 2], [ConstraintId; 2]) {
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
         let chassis = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(1.0, 0.25, 0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(2.0)
-                .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
         );
         let mut wheels = [BodyId::invalid(); 2];
         let mut ids = [ConstraintId::INVALID; 2];
@@ -4935,10 +4966,10 @@ mod tests {
                 &BodyCinfo::new(sphere_shape(0.3))
                     .with_motion_type(MotionType::Dynamic)
                     .with_mass(0.2)
-                    .with_position(Vector4::from_xyz(x, 0.3, 0.0)),
+                    .with_position(Vec4::from_xyz(x, 0.3, 0.0)),
             );
             let motion_id = world.body(wheel).unwrap().motion_id;
-            world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.05);
+            world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.05);
             // Hardpoint under the chassis bottom (y = 0.75 in chassis-local
             // space: 1.0 - 0.25), suspension axis down, wheel center 0.45
             // below the hardpoint at setup.
@@ -5030,11 +5061,11 @@ mod tests {
 
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let trigger = world.create_body(
-            &BodyCinfo::new(box_shape(Vec4::splat(1.0))).with_position(Vector4::ZERO),
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0))).with_position(Vec4::ZERO),
         );
         let other = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
-                .with_position(Vector4::from_xyz(0.5, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(0.5, 0.0, 0.0)),
         );
         assert!(world.set_body_trigger(trigger, true));
         assert!(world.is_body_trigger(trigger));
@@ -5080,9 +5111,9 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)));
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
@@ -5111,9 +5142,9 @@ mod tests {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
-                .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+                .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
         );
-        world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
+        world.create_body(&dynamic_cinfo(0.5).with_position(Vec4::from_xyz(0.0, 0.5, 0.0)));
 
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&seen);
@@ -5139,7 +5170,7 @@ mod tests {
         let a = world.create_body(&BodyCinfo::new(box_shape(Vec4::splat(0.5))));
         let b = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
-                .with_position(Vector4::from_xyz(8.0, 0.0, 0.0)),
+                .with_position(Vec4::from_xyz(8.0, 0.0, 0.0)),
         );
         let log = Arc::new(Mutex::new(Vec::new()));
         let sink = Arc::clone(&log);

@@ -7,7 +7,7 @@ use proton::body::BodyCinfo;
 use proton::extensions::{
     EaseConstraintsAction, LimitSnapshot, Ragdoll, RagdollData, RagdollLimits,
 };
-use proton::math::{Quaternion, Transform, Vector4, Vec4};
+use proton::math::{Mat3Ext, Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
@@ -15,7 +15,7 @@ use proton::world::{
     WorldJoint,
 };
 
-fn body(world: &mut World, position: Vector4, mass: f32) -> BodyId {
+fn body(world: &mut World, position: Vec4, mass: f32) -> BodyId {
     let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.2)) as Arc<dyn Shape>;
     let id = world.create_body(
         &BodyCinfo::new(shape)
@@ -32,8 +32,8 @@ fn d1_plane_angle_limits_are_configurable_and_default_off() {
     fn run() -> (String, bool) {
         let mut world = World::new(WorldCinfo::new());
         world.set_gravity(Vector4::ZERO);
-        let a = body(&mut world, Vector4::ZERO, 1.0);
-        let b = body(&mut world, Vector4::from_xyz(1.0, 0.0, 0.0), 1.0);
+        let a = body(&mut world, Vec4::ZERO, 1.0);
+        let b = body(&mut world, Vec4::from_xyz(1.0, 0.0, 0.0), 1.0);
         let mut data = RagdollData::new();
         data.add_bone("a", None, Some(a), Transform::IDENTITY);
         data.add_bone(
@@ -73,8 +73,8 @@ fn d1_plane_angle_limits_are_configurable_and_default_off() {
 fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
-    let a = body(&mut world, Vector4::ZERO, 1.0);
-    let b = body(&mut world, Vector4::ZERO, 1.0);
+    let a = body(&mut world, Vec4::ZERO, 1.0);
+    let b = body(&mut world, Vec4::ZERO, 1.0);
     let limits = SixDofLimitsCinfo::new(-1.0, 1.0, 1.0, 1.0, 1.0)
         .with_linear_axis(0, SixDofAxisMode::Limited, -0.1, 0.1)
         .with_linear_axis(1, SixDofAxisMode::Fixed, 0.0, 0.0);
@@ -126,8 +126,8 @@ fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
 fn d3_shared_motion_rebuilds_mass_com_and_inertia() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
-    let a = body(&mut world, Vector4::ZERO, 1.0);
-    let b = body(&mut world, Vector4::from_xyz(2.0, 0.0, 0.0), 3.0);
+    let a = body(&mut world, Vec4::ZERO, 1.0);
+    let b = body(&mut world, Vec4::from_xyz(2.0, 0.0, 0.0), 3.0);
     let motion = world.body_motion_id(a).unwrap();
     assert!(world.attach_bodies_with_mode(a, &[b], MotionMassUpdateMode::Rebuild));
     let combined = world.motion(motion).unwrap();
@@ -135,23 +135,23 @@ fn d3_shared_motion_rebuilds_mass_com_and_inertia() {
     assert!(
         combined
             .position
-            .all_equal3(Vector4::from_xyz(1.5, 0.0, 0.0), 1e-6)
+            .all_equal3(Vec4::from_xyz(1.5, 0.0, 0.0), 1e-6)
     );
     assert!(combined.inverse_inertia.x > 0.0);
-    assert!(combined.inverse_inertia_world.element(0, 0) > 0.0);
+    assert!(combined.inverse_inertia_world.element_sdk(0, 0) > 0.0);
     assert_eq!(
         combined.inverse_inertia,
-        Vector4::from_xyz(
-            combined.inverse_inertia_world.element(0, 0),
-            combined.inverse_inertia_world.element(1, 1),
-            combined.inverse_inertia_world.element(2, 2),
+        Vec4::from_xyz(
+            combined.inverse_inertia_world.element_sdk(0, 0),
+            combined.inverse_inertia_world.element_sdk(1, 1),
+            combined.inverse_inertia_world.element_sdk(2, 2),
         )
     );
 
     assert!(world.detach_bodies_with_mode(&[b], MotionMassUpdateMode::Rebuild));
     let remaining = world.motion(motion).unwrap();
     assert_eq!(remaining.mass, 1.0);
-    assert!(remaining.position.all_equal3(Vector4::ZERO, 1e-6));
+    assert!(remaining.position.all_equal3(Vec4::ZERO, 1e-6));
     assert_eq!(
         world.motion(world.body_motion_id(b).unwrap()).unwrap().mass,
         3.0
@@ -163,8 +163,8 @@ fn d4_detail_scenario_is_bitwise_deterministic() {
     fn trace() -> String {
         let mut world = World::new(WorldCinfo::new());
         world.set_gravity(Vector4::ZERO);
-        let a = body(&mut world, Vector4::ZERO, 2.0);
-        let b = body(&mut world, Vector4::from_xyz(1.0, 0.5, 0.0), 1.0);
+        let a = body(&mut world, Vec4::ZERO, 2.0);
+        let b = body(&mut world, Vec4::from_xyz(1.0, 0.5, 0.0), 1.0);
         let cinfo = SixDofCinfo::new(
             a,
             b,
@@ -193,8 +193,8 @@ fn d4_detail_scenario_is_bitwise_deterministic() {
 }
 
 fn plane_ragdoll(world: &mut World) -> (Vec<proton::np_types::ConstraintId>, BodyId) {
-    let a = body(world, Vector4::ZERO, 1.0);
-    let b = body(world, Vector4::from_xyz(1.0, 0.0, 0.0), 1.0);
+    let a = body(world, Vec4::ZERO, 1.0);
+    let b = body(world, Vec4::from_xyz(1.0, 0.0, 0.0), 1.0);
     let mut data = RagdollData::new();
     data.add_bone("a", None, Some(a), Transform::IDENTITY);
     data.add_bone(
@@ -243,8 +243,8 @@ fn d5_plane_angle_limits_are_saved_loosened_and_restored() {
 fn d6_six_dof_axis_limits_are_saved_loosened_and_restored() {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
-    let a = body(&mut world, Vector4::ZERO, 1.0);
-    let b = body(&mut world, Vector4::ZERO, 1.0);
+    let a = body(&mut world, Vec4::ZERO, 1.0);
+    let b = body(&mut world, Vec4::ZERO, 1.0);
     let limit = SixDofLimitsCinfo::new(-1.0, 1.0, 1.0, 1.0, 1.0)
         .with_linear_axis(0, SixDofAxisMode::Limited, -0.1, 0.1)
         .with_linear_axis(1, SixDofAxisMode::Fixed, 0.0, 0.0);

@@ -52,7 +52,7 @@ fn world_with_ground() -> (World, crate::phys_types::BodyId) {
     let ground = world.create_body(
         &BodyCinfo::new(ground)
             .with_motion_type(MotionType::Static)
-            .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(G4::from_xyz(0.0, -0.5, 0.0)),
     );
     (world, ground)
 }

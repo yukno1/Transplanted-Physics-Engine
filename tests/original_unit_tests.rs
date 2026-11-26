@@ -213,7 +213,7 @@ fn np_many_bodies_test() {
         let z = (index / 10) as f32 * 2.0;
         static_ids.push(
             world.create_body(
-                &BodyCinfo::new(sphere(0.5)).with_position(Vector4::from_xyz(x, 0.0, z)),
+                &BodyCinfo::new(sphere(0.5)).with_position(Vec4::from_xyz(x, 0.0, z)),
             ),
         );
     }
@@ -224,7 +224,7 @@ fn np_many_bodies_test() {
                 &BodyCinfo::new(sphere(0.25))
                     .with_motion_type(MotionType::Dynamic)
                     .with_mass(1.0)
-                    .with_position(Vector4::from_xyz(index as f32 * 3.0, 10.0, 0.0)),
+                    .with_position(Vec4::from_xyz(index as f32 * 3.0, 10.0, 0.0)),
             ),
         );
     }

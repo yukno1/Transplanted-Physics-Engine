@@ -22,10 +22,10 @@ fn body(world: &mut World, x: f32, y: f32) -> BodyId {
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
-            .with_position(Vector4::from_xyz(x, y, 0.0)),
+            .with_position(Vec4::from_xyz(x, y, 0.0)),
     );
     let motion_id = world.body(id).unwrap().motion_id;
-    world.motion_mut(motion_id).unwrap().inverse_inertia = Vector4::splat(0.5);
+    world.motion_mut(motion_id).unwrap().inverse_inertia = Vec4::splat(0.5);
     id
 }
 

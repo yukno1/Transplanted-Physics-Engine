@@ -45,7 +45,7 @@
 
 use std::sync::Arc;
 
-use crate::base_math::{Quaternion, Transform, Vector4};
+use crate::base_math::{Quaternion, Transform, Vec4Ext, Vector4};
 use crate::phys_body::{Body, BodyCinfo};
 use crate::phys_collide::{closest_points as gjk_closest_points, collide as collide_manifold};
 use crate::phys_shape::Shape;
@@ -733,8 +733,10 @@ impl CharacterProxy {
         if motion.motion_type == MotionType::Static {
             return Vector4::ZERO;
         }
-        let arm = contact.position - motion.position;
-        motion.linear_velocity + motion.angular_velocity.cross(arm)
+        let arm = crate::phys_shape::to_vec4(contact.position) - motion.position;
+        crate::phys_shape::to_vector4(
+            motion.linear_velocity + motion.angular_velocity.cross3(arm),
+        )
     }
 
     /// Similarity metric for two contacts (`compareContacts`); closer to zero
@@ -1348,7 +1350,7 @@ mod tests {
             0.0,
         )) as Arc<dyn Shape>;
         let id = world.create_body(
-            &crate::phys_body::BodyCinfo::new(ground).with_position(V4::from_xyz(0.0, -0.5, 0.0)),
+            &crate::phys_body::BodyCinfo::new(ground).with_position(G4::from_xyz(0.0, -0.5, 0.0)),
         );
         (world, id)
     }
@@ -1417,7 +1419,7 @@ mod tests {
             0.0,
         )) as Arc<dyn Shape>;
         world.create_body(
-            &crate::phys_body::BodyCinfo::new(wall).with_position(V4::from_xyz(2.0, 1.5, 0.0)),
+            &crate::phys_body::BodyCinfo::new(wall).with_position(G4::from_xyz(2.0, 1.5, 0.0)),
         );
         let mut proxy = capsule_proxy(V4::from_xyz(0.0, 1.05, 0.0));
         proxy.set_linear_velocity(V4::from_xyz(4.0, 0.0, 0.0));
@@ -1447,9 +1449,9 @@ mod tests {
         )) as Arc<dyn Shape>;
         world.create_body(
             &crate::phys_body::BodyCinfo::new(ramp)
-                .with_position(V4::from_xyz(4.0, 1.0, 0.0))
-                .with_orientation(crate::base_math::Quaternion::from_axis_angle(
-                    V4::from_xyz(0.0, 0.0, 1.0),
+                .with_position(G4::from_xyz(4.0, 1.0, 0.0))
+                .with_orientation(glam::Quat::from_axis_angle(
+                    glam::Vec3::new(0.0, 0.0, 1.0),
                     ramp_angle,
                 )),
         );
@@ -1480,7 +1482,7 @@ mod tests {
             &crate::phys_body::BodyCinfo::new(box_shape)
                 .with_motion_type(crate::phys_types::MotionType::Dynamic)
                 .with_mass(2.0)
-                .with_position(V4::from_xyz(0.9, 1.05, 0.0)),
+                .with_position(G4::from_xyz(0.9, 1.05, 0.0)),
         );
         let mut proxy = capsule_proxy(V4::from_xyz(0.0, 1.05, 0.0));
         proxy.refresh_manifold(&world);

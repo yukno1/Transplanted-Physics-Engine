@@ -7,7 +7,8 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::collide::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
-use proton::math::{Quaternion, Vector4, Vec4, Vec4Ext};
+use glam::Vec3;
+use proton::math::{Quat, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, CapsuleShape, CylinderShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
@@ -26,7 +27,7 @@ fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
 
 fn ground(world: &mut World, half_extents: Vec4) -> BodyId {
     world.create_body(
-        &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
+        &BodyCinfo::new(box_shape(half_extents)).with_position(Vec4::from_xyz(
             0.0,
             -half_extents.y,
             0.0,
@@ -44,7 +45,7 @@ fn run_steps(world: &mut World, steps: usize, delta_time: f32) {
 fn s1_free_fall_matches_analytic_integration() {
     let mut world = World::new(WorldCinfo::new());
     let body = world.create_body(
-        &dynamic(BodyCinfo::new(sphere(0.5))).with_position(Vector4::from_xyz(0.0, 100.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere(0.5))).with_position(Vec4::from_xyz(0.0, 100.0, 0.0)),
     );
 
     let steps = 60u32;
@@ -77,7 +78,7 @@ fn s2_sphere_rests_on_static_ground() {
     let mut world = World::new(WorldCinfo::new());
     let ground_id = ground(&mut world, Vec4::from_xyz(3.0, 0.5, 3.0));
     let sphere_id = world.create_body(
-        &dynamic(BodyCinfo::new(sphere(0.5))).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere(0.5))).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
     );
 
     run_steps(&mut world, 240, 1.0 / 60.0);
@@ -108,15 +109,15 @@ fn s3_three_boxes_stack_without_tunneling() {
     let _ground_id = ground(&mut world, Vec4::from_xyz(4.0, 0.5, 4.0));
     let box_a = world.create_body(
         &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-            .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
     );
     let box_b = world.create_body(
         &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-            .with_position(Vector4::from_xyz(0.0, 2.2, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 2.2, 0.0)),
     );
     let box_c = world.create_body(
         &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
-            .with_position(Vector4::from_xyz(0.0, 3.4, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 3.4, 0.0)),
     );
 
     run_steps(&mut world, 360, 1.0 / 60.0);
@@ -137,8 +138,8 @@ fn s4_friction_slows_sliding_sphere() {
     let _ground_id = ground(&mut world, Vec4::from_xyz(5.0, 0.5, 5.0));
     let sphere_id = world.create_body(
         &dynamic(BodyCinfo::new(sphere(0.5)))
-            .with_position(Vector4::from_xyz(0.0, 0.5, 0.0))
-            .with_linear_velocity(Vector4::from_xyz(2.0, 0.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 0.5, 0.0))
+            .with_linear_velocity(Vec4::from_xyz(2.0, 0.0, 0.0)),
     );
 
     run_steps(&mut world, 120, 1.0 / 60.0);
@@ -167,7 +168,7 @@ fn s5_capsule_rests_on_ground() {
         0.5,
     )) as Arc<dyn Shape>;
     let capsule_id = world.create_body(
-        &dynamic(BodyCinfo::new(capsule)).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+        &dynamic(BodyCinfo::new(capsule)).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
     );
 
     run_steps(&mut world, 240, 1.0 / 60.0);
@@ -189,7 +190,7 @@ fn s6_cylinder_rests_on_ground() {
         0.0,
     )) as Arc<dyn Shape>;
     let cylinder_id = world.create_body(
-        &dynamic(BodyCinfo::new(cylinder)).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+        &dynamic(BodyCinfo::new(cylinder)).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
     );
 
     run_steps(&mut world, 240, 1.0 / 60.0);
@@ -201,9 +202,9 @@ fn s6_cylinder_rests_on_ground() {
 #[test]
 fn s7_manifold_convention_is_consistent() {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
-    let a = world.create_body(&dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vector4::ZERO));
+    let a = world.create_body(&dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vec4::ZERO));
     let b = world.create_body(
-        &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
     );
     let contacts = world.collect_contacts();
     assert_eq!(contacts.len(), 1);
@@ -247,9 +248,9 @@ fn s9_transform_and_orientation_survive_step() {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let body = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0)))
-            .with_position(Vector4::from_xyz(1.0, 2.0, 3.0))
-            .with_orientation(Quaternion::from_axis_angle(
-                Vector4::UNIT_Z,
+            .with_position(Vec4::from_xyz(1.0, 2.0, 3.0))
+            .with_orientation(Quat::from_axis_angle(
+                Vec3::Z,
                 core::f32::consts::FRAC_PI_2,
             )),
     );
@@ -274,7 +275,7 @@ fn s10_dont_collide_is_filtered() {
             .with_flags(proton::np_types::CollisionFlags::DONT_COLLIDE),
     );
     let b = world.create_body(
-        &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vector4::from_xyz(1.5, 0.0, 0.0)),
+        &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
     );
     assert!(world.collect_contacts().is_empty());
     world.step(1.0 / 60.0);

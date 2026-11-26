@@ -4,7 +4,8 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Vector4, Vec4, Vec4Ext};
+use glam::Vec3;
+use proton::math::{Quat, Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::ThreadPool;
@@ -30,20 +31,20 @@ fn build_scene() -> World {
     let mut world = World::new(WorldCinfo::new());
     world.create_body(
         &BodyCinfo::new(box_shape(Vec4::from_xyz(4.0, 0.5, 4.0)))
-            .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     world.create_body(
         &BodyCinfo::new(sphere(0.5))
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
-            .with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
+            .with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
     );
     world.create_body(
         &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
-            .with_position(Vector4::from_xyz(1.5, 3.0, 0.0))
-            .with_orientation(Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.3)),
+            .with_position(Vec4::from_xyz(1.5, 3.0, 0.0))
+            .with_orientation(Quat::from_axis_angle(Vec3::Z, 0.3)),
     );
     world
 }
