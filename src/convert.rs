@@ -25,7 +25,7 @@ use std::sync::Arc;
 use glam::{Quat, Vec4};
 
 use crate::body::BodyCinfo;
-use crate::math::{Transform, Vector4};
+use crate::math::Transform;
 use crate::np_types::{BodyId, MotionType};
 use crate::serialize::{Bundle, Record, TypeId, Value};
 use crate::shape::{
@@ -338,7 +338,7 @@ fn shape_from_record(
         };
         let vertices = vertex_values
             .iter()
-            .map(|value| as_vector(value, "m_vertices").map(to_vector4))
+            .map(|value| as_vector(value, "m_vertices"))
             .collect::<Result<Vec<_>, _>>()?;
         let triangles = field(record, &["m_triangles", "triangles"])
             .ok_or(ConvertError::MissingField("m_triangles"))?;
@@ -352,9 +352,9 @@ fn shape_from_record(
         let size_z = field(record, &["m_numElemsZ", "size_z"])
             .ok_or(ConvertError::MissingField("m_numElemsZ"))?;
         let scale = field(record, &["m_scale", "scale"])
-            .map(|value| as_vector(value, "m_scale").map(to_vector4))
+            .map(|value| as_vector(value, "m_scale"))
             .transpose()?
-            .unwrap_or(Vector4::from_xyz(1.0, 1.0, 1.0));
+            .unwrap_or(Vec4::from_xyz(1.0, 1.0, 1.0));
         let heights = field(record, &["m_heights", "heights"])
             .ok_or(ConvertError::MissingField("m_heights"))?;
         let heights = as_floats(heights, "m_heights")?;

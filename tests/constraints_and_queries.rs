@@ -27,10 +27,10 @@ fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
 fn mesh_ground(size: f32) -> Arc<dyn Shape> {
     Arc::new(MeshShape::new(
         vec![
-            Vector4::from_xyz(-size, 0.0, -size),
-            Vector4::from_xyz(size, 0.0, -size),
-            Vector4::from_xyz(size, 0.0, size),
-            Vector4::from_xyz(-size, 0.0, size),
+            Vec4::from_xyz(-size, 0.0, -size),
+            Vec4::from_xyz(size, 0.0, -size),
+            Vec4::from_xyz(size, 0.0, size),
+            Vec4::from_xyz(-size, 0.0, size),
         ],
         vec![[0, 1, 2], [0, 2, 3]],
     )) as Arc<dyn Shape>

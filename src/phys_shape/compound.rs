@@ -228,9 +228,9 @@ mod tests {
     fn volume_is_none_when_a_child_has_no_volume() {
         let mesh = Arc::new(crate::phys_shape::MeshShape::new(
             vec![
-                Vector4::ZERO,
-                Vector4::from_xyz(1.0, 0.0, 0.0),
-                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::ZERO,
+                Vec4::from_xyz(1.0, 0.0, 0.0),
+                Vec4::from_xyz(0.0, 1.0, 0.0),
             ],
             vec![[0, 1, 2]],
         )) as Arc<dyn Shape>;

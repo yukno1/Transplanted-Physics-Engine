@@ -12,7 +12,10 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Vector4};
+use glam::Vec3A;
+use glam::Vec4;
+
+use crate::base_math::Aabb;
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
 use crate::phys_shape::mass::mass_from_aabb;
@@ -47,7 +50,7 @@ impl BvhNode {
 /// Triangle mesh (`hknpMeshShape`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct MeshShape {
-    vertices: Vec<Vector4>,
+    vertices: Vec<Vec4>,
     triangles: Vec<[u32; 3]>,
     aabb: Aabb,
     nodes: Vec<BvhNode>,
@@ -61,7 +64,7 @@ impl MeshShape {
     ///
     /// Panics in debug builds if the vertex list is empty or a triangle index is
     /// out of range.
-    pub fn new(vertices: Vec<Vector4>, triangles: Vec<[u32; 3]>) -> Self {
+    pub fn new(vertices: Vec<Vec4>, triangles: Vec<[u32; 3]>) -> Self {
         debug_assert!(!vertices.is_empty(), "mesh needs vertices");
         for triangle in &triangles {
             for &index in triangle {
@@ -72,21 +75,25 @@ impl MeshShape {
             }
         }
 
-        let aabb = vertices
-            .iter()
-            .fold(Aabb::new(vertices[0], vertices[0]), |aabb, vertex| {
+        let aabb = vertices.iter().fold(
+            Aabb::from_corners(
+                Vec3A::from(vertices[0].truncate()),
+                Vec3A::from(vertices[0].truncate()),
+            ),
+            |aabb, vertex| {
                 let mut result = aabb;
-                result.include_point(*vertex);
+                result.include_point3(Vec3A::from(vertex.truncate()));
                 result
-            });
+            },
+        );
 
         let triangle_aabbs: Vec<Aabb> = triangles
             .iter()
             .map(|&[a, b, c]| {
-                let pa = vertices[a as usize];
-                let pb = vertices[b as usize];
-                let pc = vertices[c as usize];
-                Aabb::new(pa.min(pb).min(pc), pa.max(pb).max(pc))
+                let pa = Vec3A::from(vertices[a as usize].truncate());
+                let pb = Vec3A::from(vertices[b as usize].truncate());
+                let pc = Vec3A::from(vertices[c as usize].truncate());
+                Aabb::from_corners(pa.min(pb).min(pc), pa.max(pb).max(pc))
             })
             .collect();
 
@@ -113,7 +120,7 @@ impl MeshShape {
 
     /// Mesh vertices.
     #[inline]
-    pub fn vertices(&self) -> &[Vector4] {
+    pub fn vertices(&self) -> &[Vec4] {
         &self.vertices
     }
 
@@ -177,11 +184,10 @@ impl Shape for MeshShape {
         }
         let mut properties = Vec::with_capacity(self.triangles.len());
         for &[a, b, c] in &self.triangles {
-            // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
             let triangle = TriangleShape::with_convex_radius(
-                crate::phys_shape::to_vec4(self.vertices[a as usize]),
-                crate::phys_shape::to_vec4(self.vertices[b as usize]),
-                crate::phys_shape::to_vec4(self.vertices[c as usize]),
+                self.vertices[a as usize],
+                self.vertices[b as usize],
+                self.vertices[c as usize],
                 0.0,
             );
             properties.push(triangle.mass_properties(config)?);
@@ -257,25 +263,26 @@ fn build_bvh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base_math::Vec4Ext;
     use glam::Vec3A;
 
-    fn quad() -> (Vec<Vector4>, Vec<[u32; 3]>) {
+    fn quad() -> (Vec<Vec4>, Vec<[u32; 3]>) {
         (
             vec![
-                Vector4::from_xyz(0.0, 0.0, 0.0),
-                Vector4::from_xyz(1.0, 0.0, 0.0),
-                Vector4::from_xyz(1.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, 0.0, 0.0),
+                Vec4::from_xyz(1.0, 0.0, 0.0),
+                Vec4::from_xyz(1.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, 1.0, 0.0),
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         )
     }
 
-    fn grid(size: usize) -> (Vec<Vector4>, Vec<[u32; 3]>) {
+    fn grid(size: usize) -> (Vec<Vec4>, Vec<[u32; 3]>) {
         let mut vertices = Vec::with_capacity(size * size);
         for z in 0..size {
             for x in 0..size {
-                vertices.push(Vector4::from_xyz(x as f32, 0.0, z as f32));
+                vertices.push(Vec4::from_xyz(x as f32, 0.0, z as f32));
             }
         }
         let mut triangles = Vec::new();
@@ -361,7 +368,7 @@ mod tests {
     #[test]
     fn empty_triangle_mesh_has_no_bvh() {
         let mesh = MeshShape::new(
-            vec![Vector4::ZERO, Vector4::from_xyz(1.0, 1.0, 1.0)],
+            vec![Vec4::ZERO, Vec4::from_xyz(1.0, 1.0, 1.0)],
             Vec::new(),
         );
         assert!(mesh.bvh_nodes().is_empty());

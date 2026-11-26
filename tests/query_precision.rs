@@ -15,10 +15,10 @@ use proton::world::{World, WorldCinfo};
 fn quad_mesh() -> Arc<dyn Shape> {
     Arc::new(MeshShape::new(
         vec![
-            Vector4::from_xyz(-2.0, 0.0, -2.0),
-            Vector4::from_xyz(2.0, 0.0, -2.0),
-            Vector4::from_xyz(2.0, 0.0, 2.0),
-            Vector4::from_xyz(-2.0, 0.0, 2.0),
+            Vec4::from_xyz(-2.0, 0.0, -2.0),
+            Vec4::from_xyz(2.0, 0.0, -2.0),
+            Vec4::from_xyz(2.0, 0.0, 2.0),
+            Vec4::from_xyz(-2.0, 0.0, 2.0),
         ],
         vec![[0, 1, 2], [0, 2, 3]],
     )) as Arc<dyn Shape>
@@ -52,7 +52,7 @@ fn analytic_normals_are_exposed_through_the_facade() {
         10.0,
     )
     .unwrap();
-    assert!(hit.normal.all_equal3(Vector4::UNIT_X, 1e-2));
+    assert!(hit.normal.all_equal3(Vec4::X, 1e-2));
 
     let cylinder: Arc<dyn Shape> = Arc::new(CylinderShape::with_params(
         Vec4::from_xyz(0.0, -1.0, 0.0),
@@ -69,7 +69,7 @@ fn analytic_normals_are_exposed_through_the_facade() {
         10.0,
     )
     .unwrap();
-    assert!(hit.normal.all_equal3(Vector4::UNIT_X, 1e-2));
+    assert!(hit.normal.all_equal3(Vec4::X, 1e-2));
 
     let hull: Arc<dyn Shape> = Arc::new(ConvexHullShape::from_points(cube_points(), 0.2));
     let hit = raycast(
@@ -80,7 +80,7 @@ fn analytic_normals_are_exposed_through_the_facade() {
         10.0,
     )
     .unwrap();
-    assert!(hit.normal.all_equal3(Vector4::UNIT_X, 1e-2));
+    assert!(hit.normal.all_equal3(Vec4::X, 1e-2));
 }
 
 fn trigger_world_with(
@@ -120,7 +120,7 @@ fn world_trigger_emits_mesh_triangle_leaf_key() {
 #[test]
 fn world_trigger_emits_height_field_cell_leaf_key() {
     let heightfield: Arc<dyn Shape> =
-        Arc::new(HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).unwrap());
+        Arc::new(HeightFieldShape::new(4, 4, Vec4::ONE, vec![0.0; 16]).unwrap());
     let (_, events) = trigger_world_with(heightfield, Vec4::from_xyz(1.5, 0.0, 1.5));
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].shape_key_b, leaf_key::height_field(1, 1, 0));

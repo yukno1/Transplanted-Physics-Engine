@@ -87,9 +87,9 @@ fn steep_slope_is_reported_as_unclimbable() {
     // approximate), so it reliably exercises the max-slope counter.
     let slope = Arc::new(MeshShape::new(
         vec![
-            V4::from_xyz(-2.0, 0.0, -2.0),
-            V4::from_xyz(2.0, 0.0, -2.0),
-            V4::from_xyz(0.0, 1.0, 2.0),
+            G4::from_xyz(-2.0, 0.0, -2.0),
+            G4::from_xyz(2.0, 0.0, -2.0),
+            G4::from_xyz(0.0, 1.0, 2.0),
         ],
         vec![[0, 1, 2]],
     )) as Arc<dyn Shape>;

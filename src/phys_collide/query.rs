@@ -30,14 +30,43 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Transform, Vector4};
+use glam::{Mat3, Vec3, Vec3A, Vec4};
+
+use crate::base_math::{Aabb, Mat3Ext, Transform, Vector4, Vec4Ext};
 use crate::phys_shape::{
     BoxShape, CapsuleShape, CompoundShape, ConvexHullShape, CylinderShape, HeightFieldShape,
-    MeshShape, Shape, SphereShape,
+    MeshShape, Shape, SphereShape, to_mat3, to_vec4, to_vector4,
 };
 use crate::phys_types::{ShapeKey, ShapeType};
 
 use crate::phys_collide::gjk::{GjkResult, closest_points};
+use crate::phys_collide::support::inverse_rotate;
+
+/// legacy `Matrix3::mul_vec`（列展开顺序，`matrix3.rs:123-131`）的 glam 版本，
+/// `w` 恒为零。
+#[inline]
+fn rotate_vec(rotation: Mat3, v: Vec4) -> Vec4 {
+    let rotated = rotation.mul_vec_sdk(Vec3::new(v.x, v.y, v.z));
+    Vec4::new(rotated.x, rotated.y, rotated.z, 0.0)
+}
+
+/// legacy `Transform::transform_point`（`R * p + t`，`transform.rs:88-90`）
+/// 的 glam 版本，逐位一致。
+#[inline]
+fn transform_point_glam(transform: &Transform, point: Vec4) -> Vec4 {
+    let rotated = rotate_vec(to_mat3(&transform.rotation), point);
+    rotated + to_vec4(transform.translation)
+}
+
+/// legacy `Transform::inverse_transform_point`（`R^T * (p - t)`，
+/// `transform.rs:98-105`）的 glam 版本，逐位一致。
+#[inline]
+fn inverse_transform_point(transform: &Transform, point: Vec4) -> Vec4 {
+    inverse_rotate(
+        to_mat3(&transform.rotation),
+        point - to_vec4(transform.translation),
+    )
+}
 
 /// Deterministic query-side leaf key kinds.
 ///
@@ -88,9 +117,9 @@ pub struct RayHit {
     /// Distance from the ray origin to the hit along the (normalized) ray.
     pub hit_fraction: f32,
     /// Hit point on the shape surface.
-    pub position: Vector4,
+    pub position: Vec4,
     /// Outward surface normal at the hit.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Leaf shape key (face index for a zero-radius convex hull, otherwise
     /// invalid for direct convex hits).
     pub shape_key: ShapeKey,
@@ -107,11 +136,24 @@ pub fn raycast(
     direction: Vector4,
     max_length: f32,
 ) -> Option<RayHit> {
+    let origin = to_vec4(origin);
+    let direction = to_vec4(direction);
     let direction_length = direction.length3();
     if direction_length <= 1e-10 || max_length <= 0.0 {
         return None;
     }
     let direction = direction / direction_length;
+    raycast_impl(shape, transform, origin, direction, max_length)
+}
+
+/// glam 内部实现：`direction` 已归一化。复合形状递归也走此入口。
+fn raycast_impl(
+    shape: &dyn Shape,
+    transform: &Transform,
+    origin: Vec4,
+    direction: Vec4,
+    max_length: f32,
+) -> Option<RayHit> {
     match shape.shape_type() {
         ShapeType::Mesh => raycast_mesh(
             shape
@@ -173,14 +215,13 @@ pub fn raycast(
 fn raycast_sphere(
     sphere: &SphereShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
-    let local_origin = transform.inverse_transform_point(origin);
-    let local_direction = transform.rotation.rotate_inverse(direction);
-    // 过渡期边界：`SphereShape` 字段已迁移 glam（Phase 3 步骤 2）。
-    let center = crate::phys_shape::to_vector4(sphere.center);
+    let local_origin = inverse_transform_point(transform, origin);
+    let local_direction = inverse_rotate(to_mat3(&transform.rotation), direction);
+    let center = sphere.center;
     let offset = local_origin - center;
     let b = offset.dot3(local_direction);
     let c = offset.dot3(offset) - sphere.radius * sphere.radius;
@@ -195,11 +236,11 @@ fn raycast_sphere(
         return None;
     }
     let local_point = local_origin + local_direction * near;
-    let local_normal = (local_point - center).normalized3();
+    let local_normal = (local_point - center).normalize_or_zero3();
     Some(RayHit {
         hit_fraction: near,
-        position: transform.transform_point(local_point),
-        normal: transform.rotation.rotate(local_normal),
+        position: transform_point_glam(transform, local_point),
+        normal: rotate_vec(to_mat3(&transform.rotation), local_normal),
         shape_key: ShapeKey::INVALID,
     })
 }
@@ -211,23 +252,22 @@ fn raycast_sphere(
 fn raycast_box(
     box_shape: &BoxShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
-    let local_origin = transform.inverse_transform_point(origin);
-    let local_direction = transform.rotation.rotate_inverse(direction);
+    let local_origin = inverse_transform_point(transform, origin);
+    let local_direction = inverse_rotate(to_mat3(&transform.rotation), direction);
     let radius = box_shape.convex_radius.max(0.0);
-    let half =
-        crate::phys_shape::to_vector4(box_shape.half_extents) + Vector4::splat(radius);
+    let half = box_shape.half_extents + Vec4::splat(radius);
     let mut entry = f32::NEG_INFINITY;
     let mut exit = f32::INFINITY;
     let mut axis = 0;
     let mut sign = 1.0f32;
     for index in 0..3 {
-        let origin_component = local_origin.component(index);
-        let direction_component = local_direction.component(index);
-        let extent = half.component(index);
+        let origin_component = local_origin[index];
+        let direction_component = local_direction[index];
+        let extent = half[index];
         if direction_component.abs() <= 1e-12 {
             if origin_component.abs() > extent {
                 return None;
@@ -254,14 +294,14 @@ fn raycast_box(
     }
     let local_point = local_origin + local_direction * entry;
     let local_normal = match axis {
-        0 => Vector4::UNIT_X * sign,
-        1 => Vector4::UNIT_Y * sign,
-        _ => Vector4::UNIT_Z * sign,
+        0 => Vec4::X * sign,
+        1 => Vec4::Y * sign,
+        _ => Vec4::Z * sign,
     };
     Some(RayHit {
         hit_fraction: entry,
-        position: transform.transform_point(local_point),
-        normal: transform.rotation.rotate(local_normal),
+        position: transform_point_glam(transform, local_point),
+        normal: rotate_vec(to_mat3(&transform.rotation), local_normal),
         shape_key: ShapeKey::INVALID,
     })
 }
@@ -274,17 +314,17 @@ fn raycast_box(
 fn raycast_convex_hull_faces(
     hull: &ConvexHullShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
     if hull.faces().is_empty() || hull.convex_radius().abs() > 1e-6 {
         return None;
     }
-    let local_origin = transform.inverse_transform_point(origin);
-    let local_direction = transform.rotation.rotate_inverse(direction);
+    let local_origin = inverse_transform_point(transform, origin);
+    let local_direction = inverse_rotate(to_mat3(&transform.rotation), direction);
     let vertices = hull.vertices();
-    let mut best: Option<(f32, usize, Vector4)> = None;
+    let mut best: Option<(f32, usize, Vec4)> = None;
     for (index, face) in hull.faces().iter().enumerate() {
         let (Some(&a), Some(&b), Some(&c)) = (
             vertices.get(face[0] as usize),
@@ -293,14 +333,7 @@ fn raycast_convex_hull_faces(
         ) else {
             continue;
         };
-        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
-        let Some((fraction, normal)) = ray_triangle(
-            local_origin,
-            local_direction,
-            crate::phys_shape::to_vector4(a),
-            crate::phys_shape::to_vector4(b),
-            crate::phys_shape::to_vector4(c),
-        ) else {
+        let Some((fraction, normal)) = ray_triangle(local_origin, local_direction, a, b, c) else {
             continue;
         };
         if fraction > max_length {
@@ -313,8 +346,8 @@ fn raycast_convex_hull_faces(
     }
     best.map(|(fraction, index, local_normal)| RayHit {
         hit_fraction: fraction,
-        position: transform.transform_point(local_origin + local_direction * fraction),
-        normal: transform.rotation.rotate(local_normal),
+        position: transform_point_glam(transform, local_origin + local_direction * fraction),
+        normal: rotate_vec(to_mat3(&transform.rotation), local_normal),
         shape_key: leaf_key::new(leaf_key::CONVEX_HULL_FACE, index as u32),
     })
 }
@@ -323,8 +356,8 @@ fn raycast_convex_hull_faces(
 fn raycast_convex(
     shape: &dyn Shape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
     if !shape.is_convex() {
@@ -348,12 +381,12 @@ fn raycast_convex(
         if result.distance <= HIT_EPSILON {
             // Keep the GJK hit distance/position; only replace the witness
             // normal when an analytic surface normal can be derived.
-            let local_point = transform.inverse_transform_point(result.point_b);
+            let local_point = inverse_transform_point(transform, result.point_b);
             let normal = refine_convex_normal(shape, local_point)
-                .map(|local| transform.rotation.rotate(local))
+                .map(|local| rotate_vec(to_mat3(&transform.rotation), local))
                 .filter(|candidate| candidate.length_squared3() > 0.5)
-                .map(|mut candidate| {
-                    candidate.normalize3();
+                .map(|candidate| {
+                    candidate.normalize_or_zero3();
                     if candidate.dot3(direction) > 0.0 {
                         -candidate
                     } else {
@@ -388,7 +421,7 @@ fn raycast_convex(
 }
 
 /// Refine a GJK witness normal using the shape's analytic surface.
-fn refine_convex_normal(shape: &dyn Shape, local_point: Vector4) -> Option<Vector4> {
+fn refine_convex_normal(shape: &dyn Shape, local_point: Vec4) -> Option<Vec4> {
     if let Some(capsule) = shape.as_any().downcast_ref::<CapsuleShape>() {
         return capsule_normal(capsule, local_point);
     }
@@ -401,10 +434,9 @@ fn refine_convex_normal(shape: &dyn Shape, local_point: Vector4) -> Option<Vecto
     None
 }
 
-fn capsule_normal(capsule: &CapsuleShape, point: Vector4) -> Option<Vector4> {
-    // 过渡期边界：`CapsuleShape` 字段已迁移 glam（Phase 3 步骤 2）。
-    let point_a = crate::phys_shape::to_vector4(capsule.point_a);
-    let point_b = crate::phys_shape::to_vector4(capsule.point_b);
+fn capsule_normal(capsule: &CapsuleShape, point: Vec4) -> Option<Vec4> {
+    let point_a = capsule.point_a;
+    let point_b = capsule.point_b;
     let segment = point_b - point_a;
     let length_sq = segment.length_squared3();
     let t = if length_sq <= f32::EPSILON {
@@ -417,14 +449,13 @@ fn capsule_normal(capsule: &CapsuleShape, point: Vector4) -> Option<Vector4> {
     if normal.length_squared3() <= 1e-12 {
         None
     } else {
-        Some(normal.normalized3())
+        Some(normal.normalize_or_zero3())
     }
 }
 
-fn cylinder_normal(cylinder: &CylinderShape, point: Vector4) -> Option<Vector4> {
-    // 过渡期边界：`CylinderShape` 字段已迁移 glam（Phase 3 步骤 2）。
-    let point_a = crate::phys_shape::to_vector4(cylinder.point_a);
-    let point_b = crate::phys_shape::to_vector4(cylinder.point_b);
+fn cylinder_normal(cylinder: &CylinderShape, point: Vec4) -> Option<Vec4> {
+    let point_a = cylinder.point_a;
+    let point_b = cylinder.point_b;
     let segment = point_b - point_a;
     let length_sq = segment.length_squared3();
     let center = (point_a + point_b) * 0.5;
@@ -433,11 +464,11 @@ fn cylinder_normal(cylinder: &CylinderShape, point: Vector4) -> Option<Vector4> 
         return if normal.length_squared3() <= 1e-12 {
             None
         } else {
-            Some(normal.normalized3())
+            Some(normal.normalize_or_zero3())
         };
     }
 
-    let axis = segment.normalized3();
+    let axis = segment.normalize_or_zero3();
     let half_height = length_sq.sqrt() * 0.5;
     let relative = point - center;
     let axial = relative.dot3(axis);
@@ -454,16 +485,16 @@ fn cylinder_normal(cylinder: &CylinderShape, point: Vector4) -> Option<Vector4> 
     if normal.length_squared3() <= 1e-12 {
         None
     } else {
-        Some(normal.normalized3())
+        Some(normal.normalize_or_zero3())
     }
 }
 
-fn hull_rounded_normal(hull: &ConvexHullShape, point: Vector4) -> Option<Vector4> {
+fn hull_rounded_normal(hull: &ConvexHullShape, point: Vec4) -> Option<Vec4> {
     if hull.faces().is_empty() {
         return None;
     }
     let vertices = hull.vertices();
-    let mut best: Option<(f32, Vector4)> = None;
+    let mut best: Option<(f32, Vec4)> = None;
     for &face in hull.faces() {
         let (Some(&a), Some(&b), Some(&c)) = (
             vertices.get(face[0] as usize),
@@ -472,13 +503,7 @@ fn hull_rounded_normal(hull: &ConvexHullShape, point: Vector4) -> Option<Vector4
         ) else {
             continue;
         };
-        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
-        let closest = closest_point_on_triangle(
-            point,
-            crate::phys_shape::to_vector4(a),
-            crate::phys_shape::to_vector4(b),
-            crate::phys_shape::to_vector4(c),
-        );
+        let closest = closest_point_on_triangle(point, a, b, c);
         let distance_sq = (point - closest).length_squared3();
         if best.is_none_or(|(current, _)| distance_sq < current) {
             best = Some((distance_sq, closest));
@@ -488,21 +513,21 @@ fn hull_rounded_normal(hull: &ConvexHullShape, point: Vector4) -> Option<Vector4
     if normal.length_squared3() <= 1e-12 {
         None
     } else {
-        Some(normal.normalized3())
+        Some(normal.normalize_or_zero3())
     }
 }
 
-fn stable_perpendicular(axis: Vector4) -> Vector4 {
+fn stable_perpendicular(axis: Vec4) -> Vec4 {
     let reference = if axis.x.abs() < 0.9 {
-        Vector4::UNIT_X
+        Vec4::X
     } else {
-        Vector4::UNIT_Y
+        Vec4::Y
     };
-    axis.cross(reference).normalized3()
+    axis.cross3(reference).normalize_or_zero3()
 }
 
 /// Closest point on triangle `ABC` to `P` (Ericson's barycentric algorithm).
-fn closest_point_on_triangle(p: Vector4, a: Vector4, b: Vector4, c: Vector4) -> Vector4 {
+fn closest_point_on_triangle(p: Vec4, a: Vec4, b: Vec4, c: Vec4) -> Vec4 {
     let ab = b - a;
     let ac = c - a;
     let ap = p - a;
@@ -562,22 +587,22 @@ pub fn leaf_key_at_local_point(shape: &dyn Shape, local_point: Vector4) -> Shape
     match shape.shape_type() {
         ShapeType::Convex => {
             if let Some(hull) = shape.as_any().downcast_ref::<ConvexHullShape>() {
-                return hull_face_key_at_local_point(hull, local_point);
+                return hull_face_key_at_local_point(hull, to_vec4(local_point));
             }
         }
         ShapeType::Mesh => {
             if let Some(mesh) = shape.as_any().downcast_ref::<MeshShape>() {
-                return mesh_leaf_key_at_local_point(mesh, local_point);
+                return mesh_leaf_key_at_local_point(mesh, to_vec4(local_point));
             }
         }
         ShapeType::HeightField => {
             if let Some(height_field) = shape.as_any().downcast_ref::<HeightFieldShape>() {
-                return height_field_leaf_key_at_local_point(height_field, local_point);
+                return height_field_leaf_key_at_local_point(height_field, to_vec4(local_point));
             }
         }
         ShapeType::Compound => {
             if let Some(compound) = shape.as_any().downcast_ref::<CompoundShape>() {
-                return compound_leaf_key_at_local_point(compound, local_point);
+                return compound_leaf_key_at_local_point(compound, to_vec4(local_point));
             }
         }
         _ => {}
@@ -585,7 +610,7 @@ pub fn leaf_key_at_local_point(shape: &dyn Shape, local_point: Vector4) -> Shape
     ShapeKey::INVALID
 }
 
-fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vector4) -> ShapeKey {
+fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vec4) -> ShapeKey {
     if hull.faces().is_empty() {
         return ShapeKey::INVALID;
     }
@@ -599,13 +624,7 @@ fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vector4) ->
         ) else {
             continue;
         };
-        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
-        let closest = closest_point_on_triangle(
-            local_point,
-            crate::phys_shape::to_vector4(a),
-            crate::phys_shape::to_vector4(b),
-            crate::phys_shape::to_vector4(c),
-        );
+        let closest = closest_point_on_triangle(local_point, a, b, c);
         let distance_sq = (local_point - closest).length_squared3();
         if best.is_none_or(|(current, _)| distance_sq < current) {
             best = Some((distance_sq, index as u32));
@@ -616,7 +635,7 @@ fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vector4) ->
     })
 }
 
-fn mesh_leaf_key_at_local_point(mesh: &MeshShape, local_point: Vector4) -> ShapeKey {
+fn mesh_leaf_key_at_local_point(mesh: &MeshShape, local_point: Vec4) -> ShapeKey {
     if mesh.bvh_nodes().is_empty() {
         return ShapeKey::INVALID;
     }
@@ -624,7 +643,11 @@ fn mesh_leaf_key_at_local_point(mesh: &MeshShape, local_point: Vector4) -> Shape
     let mut stack = vec![0usize];
     while let Some(node_index) = stack.pop() {
         let node = mesh.bvh_nodes()[node_index];
-        let aabb_distance = node.aabb.signed_distance_to_point(local_point).1.max(0.0);
+        let aabb_distance = node
+            .aabb
+            .signed_distance_to_point3(Vec3A::from(local_point.truncate()))
+            .1
+            .max(0.0);
         if best.is_some_and(|(current, _)| aabb_distance * aabb_distance > current) {
             continue;
         }
@@ -655,7 +678,7 @@ fn mesh_leaf_key_at_local_point(mesh: &MeshShape, local_point: Vector4) -> Shape
 
 fn height_field_leaf_key_at_local_point(
     height_field: &HeightFieldShape,
-    local_point: Vector4,
+    local_point: Vec4,
 ) -> ShapeKey {
     let size_x = height_field.int_size_x();
     let size_z = height_field.int_size_z();
@@ -685,10 +708,10 @@ fn height_field_leaf_key_at_local_point(
     })
 }
 
-fn compound_leaf_key_at_local_point(compound: &CompoundShape, local_point: Vector4) -> ShapeKey {
+fn compound_leaf_key_at_local_point(compound: &CompoundShape, local_point: Vec4) -> ShapeKey {
     let mut best: Option<(f32, usize, ShapeKey)> = None;
     for (child_index, child) in compound.children().iter().enumerate() {
-        let child_point = child.transform.inverse_transform_point(local_point);
+        let child_point = inverse_transform_point(&child.transform, local_point);
         let distance = closest_points(
             &PointShape(child_point),
             &Transform::IDENTITY,
@@ -700,12 +723,12 @@ fn compound_leaf_key_at_local_point(compound: &CompoundShape, local_point: Vecto
             child
                 .shape
                 .aabb()
-                .signed_distance_to_point(child_point)
+                .signed_distance_to_point3(Vec3A::from(child_point.truncate()))
                 .1
                 .max(0.0)
         });
         if best.is_none_or(|(current, _, _)| distance < current) {
-            let inner = leaf_key_at_local_point(child.shape.as_ref(), child_point);
+            let inner = leaf_key_at_local_point(child.shape.as_ref(), to_vector4(child_point));
             best = Some((distance, child_index, inner));
         }
     }
@@ -718,21 +741,22 @@ fn compound_leaf_key_at_local_point(compound: &CompoundShape, local_point: Vecto
 fn raycast_mesh(
     mesh: &MeshShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
     if mesh.bvh_nodes().is_empty() {
         return None;
     }
-    let local_origin = transform.inverse_transform_point(origin);
-    let local_direction = transform.rotation.rotate_inverse(direction);
-    let mut best: Option<(f32, ShapeKey, Vector4, Vector4)> = None;
+    let local_origin = inverse_transform_point(transform, origin);
+    let local_direction = inverse_rotate(to_mat3(&transform.rotation), direction);
+    let mut best: Option<(f32, ShapeKey, Vec4, Vec4)> = None;
 
     let mut stack = vec![0usize];
     while let Some(node_index) = stack.pop() {
         let node = mesh.bvh_nodes()[node_index];
-        let Some((entry, exit)) = ray_aabb(local_origin, local_direction, &node.aabb) else {
+        let Some((entry, exit)) = ray_aabb_intervals(local_origin, local_direction, &node.aabb)
+        else {
             continue;
         };
         if entry > max_length || exit < 0.0 {
@@ -771,22 +795,22 @@ fn raycast_mesh(
 
     best.map(|(fraction, key, position, normal)| RayHit {
         hit_fraction: fraction,
-        position: transform.transform_point(position),
-        normal: transform.rotation.rotate(normal),
+        position: transform_point_glam(transform, position),
+        normal: rotate_vec(to_mat3(&transform.rotation), normal),
         shape_key: key,
     })
 }
 
 /// Best height-field leaf hit: `(distance, leaf key, local position, local
 /// normal)`.
-type HeightFieldHit = (f32, ShapeKey, Vector4, Vector4);
+type HeightFieldHit = (f32, ShapeKey, Vec4, Vec4);
 
 /// Walk the height-field cells inside the ray interval.
 fn raycast_height_field(
     heightfield: &HeightFieldShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
     let size_x = heightfield.int_size_x();
@@ -794,9 +818,9 @@ fn raycast_height_field(
     if size_x < 2 || size_z < 2 {
         return None;
     }
-    let local_origin = transform.inverse_transform_point(origin);
-    let local_direction = transform.rotation.rotate_inverse(direction);
-    let (entry, exit) = ray_aabb(local_origin, local_direction, &heightfield.aabb())?;
+    let local_origin = inverse_transform_point(transform, origin);
+    let local_direction = inverse_rotate(to_mat3(&transform.rotation), direction);
+    let (entry, exit) = ray_aabb_intervals(local_origin, local_direction, &heightfield.aabb())?;
     let start = entry.max(0.0);
     let end = exit.min(max_length);
     if start > end {
@@ -852,8 +876,8 @@ fn raycast_height_field(
 
     best.map(|(fraction, key, position, normal)| RayHit {
         hit_fraction: fraction,
-        position: transform.transform_point(position),
-        normal: transform.rotation.rotate(normal),
+        position: transform_point_glam(transform, position),
+        normal: rotate_vec(to_mat3(&transform.rotation), normal),
         shape_key: key,
     })
 }
@@ -862,14 +886,14 @@ fn raycast_height_field(
 fn raycast_compound(
     compound: &CompoundShape,
     transform: &Transform,
-    origin: Vector4,
-    direction: Vector4,
+    origin: Vec4,
+    direction: Vec4,
     max_length: f32,
 ) -> Option<RayHit> {
     let mut best: Option<(f32, usize, RayHit)> = None;
     for (child_index, child) in compound.children().iter().enumerate() {
         let child_transform = compose_transform(transform, &child.transform);
-        let Some(hit) = raycast(
+        let Some(hit) = raycast_impl(
             child.shape.as_ref(),
             &child_transform,
             origin,
@@ -898,15 +922,15 @@ fn raycast_compound(
 /// Returns the ray parameter `t >= 0` and a unit normal oriented against the
 /// ray direction. Degenerate or parallel triangles return `None`.
 fn ray_triangle(
-    origin: Vector4,
-    direction: Vector4,
-    a: Vector4,
-    b: Vector4,
-    c: Vector4,
-) -> Option<(f32, Vector4)> {
+    origin: Vec4,
+    direction: Vec4,
+    a: Vec4,
+    b: Vec4,
+    c: Vec4,
+) -> Option<(f32, Vec4)> {
     let edge_ab = b - a;
     let edge_ac = c - a;
-    let pvec = direction.cross(edge_ac);
+    let pvec = direction.cross3(edge_ac);
     let determinant = edge_ab.dot3(pvec);
     if determinant.abs() <= 1e-10 {
         return None;
@@ -917,7 +941,7 @@ fn ray_triangle(
     if !(0.0..=1.0).contains(&u) {
         return None;
     }
-    let qvec = tvec.cross(edge_ab);
+    let qvec = tvec.cross3(edge_ab);
     let v = direction.dot3(qvec) * inverse;
     if v < 0.0 || u + v > 1.0 {
         return None;
@@ -926,7 +950,7 @@ fn ray_triangle(
     if t < 0.0 {
         return None;
     }
-    let mut normal = edge_ab.cross(edge_ac);
+    let mut normal = edge_ab.cross3(edge_ac);
     let length = normal.length3();
     if length <= 1e-10 {
         return None;
@@ -957,7 +981,12 @@ pub fn point_distance(
     transform: &Transform,
     point: Vector4,
 ) -> Option<GjkResult> {
-    closest_points(&PointShape(point), &Transform::IDENTITY, shape, transform)
+    closest_points(
+        &PointShape(to_vec4(point)),
+        &Transform::IDENTITY,
+        shape,
+        transform,
+    )
 }
 
 /// Ray/AABB slab test over the world axes.
@@ -967,11 +996,16 @@ pub fn point_distance(
 /// `None` when the ray misses. Axis order is fixed (x, y, z) for determinism;
 /// callers clip the interval against their own range.
 pub fn ray_aabb(origin: Vector4, direction: Vector4, aabb: &Aabb) -> Option<(f32, f32)> {
+    ray_aabb_intervals(to_vec4(origin), to_vec4(direction), aabb)
+}
+
+/// glam 内部版本：BVH/高度场遍历热路径直接使用，避免逐轴转换。
+fn ray_aabb_intervals(origin: Vec4, direction: Vec4, aabb: &Aabb) -> Option<(f32, f32)> {
     let mut tmin = f32::NEG_INFINITY;
     let mut tmax = f32::INFINITY;
     for axis in 0..3 {
-        let origin_component = origin.component(axis);
-        let direction_component = direction.component(axis);
+        let origin_component = origin[axis];
+        let direction_component = direction[axis];
         let (min, max) = (aabb.min[axis], aabb.max[axis]);
         if direction_component.abs() <= 1e-12 {
             if origin_component < min || origin_component > max {
@@ -999,7 +1033,7 @@ pub fn ray_aabb(origin: Vector4, direction: Vector4, aabb: &Aabb) -> Option<(f32
 /// Degenerate convex shape that is a single world-space point, used to run
 /// point-vs-shape queries through the GJK pipeline.
 #[derive(Clone, Copy, Debug)]
-struct PointShape(Vector4);
+struct PointShape(Vec4);
 
 impl Shape for PointShape {
     fn shape_type(&self) -> ShapeType {
@@ -1007,7 +1041,7 @@ impl Shape for PointShape {
     }
 
     fn aabb(&self) -> Aabb {
-        Aabb::from_point(self.0)
+        Aabb::from_point(to_vector4(self.0))
     }
 
     fn bounding_radius(&self) -> f32 {
@@ -1019,7 +1053,7 @@ impl Shape for PointShape {
     }
 
     fn support(&self, _direction: glam::Vec4) -> Option<glam::Vec4> {
-        Some(crate::phys_shape::to_vec4(self.0))
+        Some(self.0)
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1064,12 +1098,12 @@ mod tests {
         );
         assert!(
             hit.position
-                .all_equal3(Vector4::from_xyz(0.0, 4.0, 0.0), 1e-3),
+                .all_equal3(Vec4::from_xyz(0.0, 4.0, 0.0), 1e-3),
             "position {:?}",
             hit.position
         );
         assert!(
-            hit.normal.all_equal3(-Vector4::UNIT_Y, 1e-3),
+            hit.normal.all_equal3(-Vec4::Y, 1e-3),
             "normal {:?}",
             hit.normal
         );
@@ -1102,7 +1136,7 @@ mod tests {
         )
         .expect("inside ray must hit immediately");
         assert_eq!(hit.hit_fraction, 0.0);
-        assert!(hit.normal.dot3(Vector4::UNIT_Y) < 0.0);
+        assert!(hit.normal.dot3(Vec4::Y) < 0.0);
     }
 
     #[test]
@@ -1127,7 +1161,7 @@ mod tests {
             hit.hit_fraction
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            hit.normal.dot3(Vec4::Y) > 0.9,
             "normal {:?}",
             hit.normal
         );
@@ -1171,7 +1205,7 @@ mod tests {
         )
         .expect("ray must hit the capsule side");
         assert!(
-            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            hit.normal.all_equal3(Vec4::X, 1e-2),
             "normal {:?}",
             hit.normal
         );
@@ -1195,7 +1229,7 @@ mod tests {
         )
         .expect("ray must hit the cylinder side");
         assert!(
-            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            hit.normal.all_equal3(Vec4::X, 1e-2),
             "normal {:?}",
             hit.normal
         );
@@ -1223,7 +1257,7 @@ mod tests {
         )
         .expect("ray must hit the rounded hull");
         assert!(
-            hit.normal.all_equal3(Vector4::UNIT_X, 1e-2),
+            hit.normal.all_equal3(Vec4::X, 1e-2),
             "normal {:?}",
             hit.normal
         );
@@ -1279,7 +1313,7 @@ mod tests {
         )
         .expect("ray must hit the hull face");
         assert!((hit.hit_fraction - 4.0).abs() < 1e-5);
-        assert!(hit.normal.dot3(Vector4::UNIT_Y) > 0.999);
+        assert!(hit.normal.dot3(Vec4::Y) > 0.999);
         assert_eq!(hit.shape_key, leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0));
     }
 
@@ -1337,7 +1371,7 @@ mod tests {
         )
         .unwrap();
         assert!((result.distance - 2.0).abs() < 1e-3);
-        assert!(result.point_b.all_equal3(Vector4::UNIT_X, 1e-3));
+        assert!(result.point_b.all_equal3(Vec4::X, 1e-3));
         assert!(!result.intersects);
 
         let result = point_distance(shape.as_ref(), &Transform::IDENTITY, Vector4::ZERO).unwrap();
@@ -1347,10 +1381,10 @@ mod tests {
     fn quad_mesh(size: f32) -> Arc<dyn Shape> {
         Arc::new(MeshShape::new(
             vec![
-                Vector4::from_xyz(-size, 0.0, -size),
-                Vector4::from_xyz(size, 0.0, -size),
-                Vector4::from_xyz(size, 0.0, size),
-                Vector4::from_xyz(-size, 0.0, size),
+                Vec4::from_xyz(-size, 0.0, -size),
+                Vec4::from_xyz(size, 0.0, -size),
+                Vec4::from_xyz(size, 0.0, size),
+                Vec4::from_xyz(-size, 0.0, size),
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         )) as Arc<dyn Shape>
@@ -1373,13 +1407,13 @@ mod tests {
             hit.hit_fraction
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            hit.normal.dot3(Vec4::Y) > 0.9,
             "normal {:?}",
             hit.normal
         );
         assert!(
             hit.position
-                .all_equal3(Vector4::from_xyz(0.5, 0.0, 0.5), 1e-3),
+                .all_equal3(Vec4::from_xyz(0.5, 0.0, 0.5), 1e-3),
             "position {:?}",
             hit.position
         );
@@ -1420,7 +1454,7 @@ mod tests {
             hit.hit_fraction
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Z) > 0.9,
+            hit.normal.dot3(Vec4::Z) > 0.9,
             "normal {:?}",
             hit.normal
         );
@@ -1429,7 +1463,7 @@ mod tests {
     #[test]
     fn ray_hits_height_field() {
         let heightfield: Arc<dyn Shape> = Arc::new(
-            HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).expect("valid height field"),
+            HeightFieldShape::new(4, 4, Vec4::ONE, vec![0.0; 16]).expect("valid height field"),
         );
         let hit = raycast(
             heightfield.as_ref(),
@@ -1445,7 +1479,7 @@ mod tests {
             hit.hit_fraction
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            hit.normal.dot3(Vec4::Y) > 0.9,
             "normal {:?}",
             hit.normal
         );
@@ -1525,7 +1559,7 @@ mod tests {
             leaf_key::new(leaf_key::MESH, 0)
         );
 
-        let heightfield = HeightFieldShape::new(4, 4, Vector4::ONE, vec![0.0; 16]).unwrap();
+        let heightfield = HeightFieldShape::new(4, 4, Vec4::ONE, vec![0.0; 16]).unwrap();
         assert_eq!(
             leaf_key_at_local_point(&heightfield, Vector4::from_xyz(1.5, 0.0, 1.5)),
             leaf_key::height_field(1, 1, 0)

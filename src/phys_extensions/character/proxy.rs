@@ -48,7 +48,7 @@ use std::sync::Arc;
 use crate::base_math::{Quaternion, Transform, Vec4Ext, Vector4};
 use crate::phys_body::{Body, BodyCinfo};
 use crate::phys_collide::{closest_points as gjk_closest_points, collide as collide_manifold};
-use crate::phys_shape::Shape;
+use crate::phys_shape::{Shape, to_vector4};
 use crate::phys_types::{BodyId, CollisionFlags, MotionType, ShapeKey};
 use crate::phys_world::{QueryFilter, ShapeCastHitInfo, World};
 
@@ -697,8 +697,8 @@ impl CharacterProxy {
                     if let Some(point) = manifold.points.first() {
                         if point.distance <= tolerance {
                             contacts.push(Contact::from_closest_points(
-                                point.position,
-                                manifold.normal,
+                                to_vector4(point.position),
+                                to_vector4(manifold.normal),
                                 body.id,
                                 point.distance,
                                 self.keep_distance,
@@ -710,8 +710,8 @@ impl CharacterProxy {
             }
             if result.distance <= tolerance {
                 contacts.push(Contact::from_closest_points(
-                    result.point_b,
-                    result.normal,
+                    to_vector4(result.point_b),
+                    to_vector4(result.normal),
                     body.id,
                     result.distance,
                     self.keep_distance,

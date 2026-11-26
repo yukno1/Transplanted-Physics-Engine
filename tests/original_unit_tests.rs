@@ -135,7 +135,7 @@ fn np_mesh_shape_unit_test_structural() {
     let mut vertices = Vec::with_capacity(size * size);
     for z in 0..size {
         for x in 0..size {
-            vertices.push(Vector4::from_xyz(x as f32, 0.0, z as f32));
+            vertices.push(Vec4::from_xyz(x as f32, 0.0, z as f32));
         }
     }
     let mut triangles = Vec::new();
@@ -188,12 +188,12 @@ fn np_height_field_shape_unit_test_structural() {
     let heightfield = HeightFieldShape::new(
         3,
         3,
-        Vector4::new(1.0, 1.0, 1.0, 1.0),
+        Vec4::new(1.0, 1.0, 1.0, 1.0),
         vec![0.0, 1.0, 2.0, 3.0, 8.0, 5.0, 6.0, 7.0, 4.0],
     )
     .expect("height field");
     assert_eq!(heightfield.height(1, 1), 8.0);
-    assert_eq!(heightfield.vertex(1, 1), Vector4::from_xyz(1.0, 8.0, 1.0));
+    assert_eq!(heightfield.vertex(1, 1), Vec4::from_xyz(1.0, 8.0, 1.0));
     assert_eq!(heightfield.int_size_x(), 3);
     assert_eq!(heightfield.int_size_z(), 3);
     let aabb = heightfield.aabb();

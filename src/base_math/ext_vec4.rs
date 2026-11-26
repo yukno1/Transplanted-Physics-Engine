@@ -26,6 +26,10 @@ pub trait Vec4Ext: Sized {
     /// (legacy `Vector4::length_squared3`, `vector.rs:319-321`).
     fn length_squared3(self) -> f32;
 
+    /// `hkVector4f::length<3>` — `length_squared3().sqrt()`
+    /// (legacy `Vector4::length3`, `vector.rs:325-327`).
+    fn length3(self) -> f32;
+
     /// `hkVector4f::cross` — legacy `set_cross` scalar formula with `w` zeroed
     /// (legacy `Vector4::set_cross`, `vector.rs:294-301`). glam exposes `cross`
     /// only on `Vec3`/`Vec3A`, not `Vec4`.
@@ -59,6 +63,11 @@ impl Vec4Ext for Vec4 {
     #[inline]
     fn length_squared3(self) -> f32 {
         self.dot3(self)
+    }
+
+    #[inline]
+    fn length3(self) -> f32 {
+        self.length_squared3().sqrt()
     }
 
     #[inline]
@@ -108,6 +117,9 @@ mod tests {
             (a.x * b.x + a.y * b.y + a.z * b.z).to_bits()
         );
         assert_eq!(a.horizontal_add3().to_bits(), (a.x + a.y + a.z).to_bits());
+
+        // length3: sqrt of the fixed-order xyz dot with self.
+        assert_eq!(a.length3().to_bits(), a.length_squared3().sqrt().to_bits());
 
         // all_equal3: xyz-only tolerance comparison.
         assert!(a.all_equal3(Vec4::new(a.x, a.y, a.z, 0.0), 0.0));

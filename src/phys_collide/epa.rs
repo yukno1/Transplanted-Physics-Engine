@@ -9,8 +9,10 @@
 //! normal); `point_a`/`point_b` are the surface witnesses on A/B facing each
 //! other.
 
-use crate::base_math::{Transform, Vector4};
-use crate::phys_shape::Shape;
+use glam::Vec4;
+
+use crate::base_math::{Transform, Vec4Ext};
+use crate::phys_shape::{Shape, to_vec4};
 
 use crate::phys_collide::support::{SupportVertex, support_vertex};
 
@@ -20,11 +22,11 @@ pub(crate) struct Penetration {
     /// Penetration depth (positive).
     pub depth: f32,
     /// Unit normal from B to A.
-    pub normal_ba: Vector4,
+    pub normal_ba: Vec4,
     /// Witness point on A.
-    pub point_a: Vector4,
+    pub point_a: Vec4,
     /// Witness point on B.
-    pub point_b: Vector4,
+    pub point_b: Vec4,
 }
 
 /// Run EPA on the final GJK simplex.
@@ -157,12 +159,12 @@ fn build_tetrahedron(
     }
 
     let axes = [
-        Vector4::UNIT_X,
-        -Vector4::UNIT_X,
-        Vector4::UNIT_Y,
-        -Vector4::UNIT_Y,
-        Vector4::UNIT_Z,
-        -Vector4::UNIT_Z,
+        Vec4::X,
+        -Vec4::X,
+        Vec4::Y,
+        -Vec4::Y,
+        Vec4::Z,
+        -Vec4::Z,
     ];
     for direction in axes {
         if let Some(vertex) = support_vertex(shape_a, transform_a, shape_b, transform_b, direction)
@@ -171,9 +173,9 @@ fn build_tetrahedron(
         }
     }
 
-    let center_direction = transform_a.translation - transform_b.translation;
+    let center_direction = to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     if center_direction.length3() > 1e-8 {
-        let normalized = center_direction.normalized3();
+        let normalized = center_direction.normalize_or_zero3();
         for direction in [normalized, -normalized] {
             if let Some(vertex) =
                 support_vertex(shape_a, transform_a, shape_b, transform_b, direction)
@@ -195,7 +197,7 @@ fn build_tetrahedron(
                     let tetra = [candidates[a], candidates[b], candidates[c], candidates[d]];
                     let volume = (tetra[1].minkowski - tetra[0].minkowski).dot3(
                         (tetra[2].minkowski - tetra[0].minkowski)
-                            .cross(tetra[3].minkowski - tetra[0].minkowski),
+                            .cross3(tetra[3].minkowski - tetra[0].minkowski),
                     );
                     if volume.abs() <= 1e-9 {
                         continue;
@@ -237,18 +239,18 @@ fn push_unique(candidates: &mut Vec<SupportVertex>, vertex: SupportVertex) {
     }
 }
 
-fn origin_barycentric(a: Vector4, b: Vector4, c: Vector4, d: Vector4) -> Option<[f32; 4]> {
+fn origin_barycentric(a: Vec4, b: Vec4, c: Vec4, d: Vec4) -> Option<[f32; 4]> {
     let ab = b - a;
     let ac = c - a;
     let ad = d - a;
-    let denominator = ab.dot3(ac.cross(ad));
+    let denominator = ab.dot3(ac.cross3(ad));
     if denominator.abs() <= 1e-10 {
         return None;
     }
     let rhs = -a;
-    let wb = rhs.dot3(ac.cross(ad)) / denominator;
-    let wc = ab.dot3(rhs.cross(ad)) / denominator;
-    let wd = ab.dot3(ac.cross(rhs)) / denominator;
+    let wb = rhs.dot3(ac.cross3(ad)) / denominator;
+    let wc = ab.dot3(rhs.cross3(ad)) / denominator;
+    let wd = ab.dot3(ac.cross3(rhs)) / denominator;
     let wa = 1.0 - wb - wc - wd;
     Some([wa, wb, wc, wd])
 }
@@ -261,16 +263,16 @@ fn sampled_penetration(
     transform_b: &Transform,
 ) -> Option<Penetration> {
     let mut directions = vec![
-        Vector4::UNIT_X,
-        -Vector4::UNIT_X,
-        Vector4::UNIT_Y,
-        -Vector4::UNIT_Y,
-        Vector4::UNIT_Z,
-        -Vector4::UNIT_Z,
+        Vec4::X,
+        -Vec4::X,
+        Vec4::Y,
+        -Vec4::Y,
+        Vec4::Z,
+        -Vec4::Z,
     ];
-    let center_direction = transform_a.translation - transform_b.translation;
+    let center_direction = to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     if center_direction.length3() > 1e-8 {
-        let normalized = center_direction.normalized3();
+        let normalized = center_direction.normalize_or_zero3();
         directions.push(normalized);
         directions.push(-normalized);
     }
@@ -300,7 +302,7 @@ struct Face {
     i0: u32,
     i1: u32,
     i2: u32,
-    normal: Vector4,
+    normal: Vec4,
     distance: f32,
 }
 
@@ -309,7 +311,7 @@ impl Face {
         let a = vertices[i0 as usize].minkowski;
         let b = vertices[i1 as usize].minkowski;
         let c = vertices[i2 as usize].minkowski;
-        let mut normal = (b - a).cross(c - a);
+        let mut normal = (b - a).cross3(c - a);
         let length = normal.length3();
         if length <= 1e-12 {
             return None;
@@ -347,7 +349,7 @@ fn contact_from_face(vertices: &[SupportVertex], face: &Face) -> Penetration {
 }
 
 /// Barycentric coordinates of a point known to lie on the triangle plane.
-fn triangle_barycentric(a: Vector4, b: Vector4, c: Vector4, point: Vector4) -> [f32; 3] {
+fn triangle_barycentric(a: Vec4, b: Vec4, c: Vec4, point: Vec4) -> [f32; 3] {
     let v0 = b - a;
     let v1 = c - a;
     let v2 = point - a;
@@ -387,8 +389,7 @@ pub(crate) fn penetration_or_zero(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
-    use glam::Vec4;
+    use crate::base_math::{Quaternion, Vector4};
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use std::sync::Arc;
 
@@ -437,9 +438,9 @@ mod tests {
 
     #[test]
     fn barycentric_weights_reconstruct_point() {
-        let a = Vector4::ZERO;
-        let b = Vector4::UNIT_X;
-        let c = Vector4::UNIT_Y;
+        let a = Vec4::ZERO;
+        let b = Vec4::from_xyz(1.0, 0.0, 0.0);
+        let c = Vec4::from_xyz(0.0, 1.0, 0.0);
         let p = (a + b + c) / 3.0;
         let weights = triangle_barycentric(a, b, c, p);
         assert!((weights[0] + weights[1] + weights[2] - 1.0).abs() < 1e-5);

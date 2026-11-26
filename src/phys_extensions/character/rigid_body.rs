@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::base_math::{Aabb, Quaternion, Transform, Vector4};
 use crate::phys_body::BodyCinfo;
 use crate::phys_collide::closest_points;
-use crate::phys_shape::Shape;
+use crate::phys_shape::{Shape, to_vector4};
 use crate::phys_types::{BodyId, MotionType};
 use crate::phys_world::{QueryFilter, World};
 
@@ -363,8 +363,8 @@ impl CharacterRigidBody {
             }
             points.push(ContactPointInfo {
                 body: other,
-                position: result.point_b,
-                normal: result.normal,
+                position: to_vector4(result.point_b),
+                normal: to_vector4(result.normal),
                 distance: if result.intersects {
                     -result.distance.abs()
                 } else {

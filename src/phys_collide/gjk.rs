@@ -10,8 +10,10 @@
 //! from the witness point on B to the witness point on A, so the returned
 //! `normal` (B → A) is `v / |v|`.
 
-use crate::base_math::{Transform, Vector4};
-use crate::phys_shape::Shape;
+use glam::Vec4;
+
+use crate::base_math::{Transform, Vec4Ext};
+use crate::phys_shape::{Shape, to_vec4};
 
 use crate::phys_collide::support::{SupportVertex, support_vertex};
 
@@ -30,11 +32,11 @@ pub struct GjkResult {
     /// Distance between the shapes (0 when intersecting or touching).
     pub distance: f32,
     /// Unit normal from shape B to shape A (world space).
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Closest witness point on shape A.
-    pub point_a: Vector4,
+    pub point_a: Vec4,
     /// Closest witness point on shape B.
-    pub point_b: Vector4,
+    pub point_b: Vec4,
     /// Whether the shapes intersect (the simplex then contains the origin).
     pub intersects: bool,
     /// Final Minkowski simplex, used by [`crate::phys_collide::epa`] for penetration.
@@ -64,9 +66,10 @@ pub fn closest_points(
         return None;
     }
 
-    let mut initial_direction = transform_a.translation - transform_b.translation;
+    let mut initial_direction =
+        to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     if initial_direction.length3() <= ZERO_EPSILON {
-        initial_direction = Vector4::UNIT_X;
+        initial_direction = Vec4::X;
     }
     let first = support_vertex(
         shape_a,
@@ -129,13 +132,13 @@ pub fn intersects(
 #[derive(Clone, Debug)]
 pub(crate) struct SimplexReduction {
     /// Closest point on the Minkowski simplex.
-    pub point: Vector4,
+    pub point: Vec4,
     /// Whether the simplex contains the origin.
     pub inside: bool,
     /// Witness point on A.
-    pub point_a: Vector4,
+    pub point_a: Vec4,
     /// Witness point on B.
-    pub point_b: Vector4,
+    pub point_b: Vec4,
     /// Vertices with non-zero barycentric weight (the reduced simplex).
     pub kept: Vec<SupportVertex>,
 }
@@ -145,7 +148,7 @@ fn separated_result(simplex: &[SupportVertex], reduction: &SimplexReduction) -> 
     let normal = if distance > ZERO_EPSILON {
         reduction.point / distance
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     };
     GjkResult {
         distance,
@@ -166,16 +169,16 @@ fn intersection_result(
     transform_a: &Transform,
     transform_b: &Transform,
 ) -> GjkResult {
-    let center_direction = transform_a.translation - transform_b.translation;
+    let center_direction = to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     let normal = if center_direction.length3() > ZERO_EPSILON {
-        center_direction.normalized3()
+        center_direction.normalize_or_zero3()
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     };
     let last = simplex.last().copied().unwrap_or(SupportVertex {
-        minkowski: Vector4::ZERO,
-        point_a: Vector4::ZERO,
-        point_b: Vector4::ZERO,
+        minkowski: Vec4::ZERO,
+        point_a: Vec4::ZERO,
+        point_b: Vec4::ZERO,
     });
     GjkResult {
         distance: 0.0,
@@ -190,10 +193,10 @@ fn intersection_result(
 fn reduce_simplex(points: &[SupportVertex]) -> SimplexReduction {
     match points.len() {
         0 => SimplexReduction {
-            point: Vector4::ZERO,
+            point: Vec4::ZERO,
             inside: false,
-            point_a: Vector4::ZERO,
-            point_b: Vector4::ZERO,
+            point_a: Vec4::ZERO,
+            point_b: Vec4::ZERO,
             kept: Vec::new(),
         },
         1 => single_reduction(points),
@@ -227,12 +230,12 @@ fn single_reduction(points: &[SupportVertex]) -> SimplexReduction {
 fn build_reduction(
     points: &[SupportVertex],
     weights: &[f32],
-    point: Vector4,
+    point: Vec4,
     inside: bool,
 ) -> SimplexReduction {
     let count = points.len().min(weights.len());
-    let mut witness_a = Vector4::ZERO;
-    let mut witness_b = Vector4::ZERO;
+    let mut witness_a = Vec4::ZERO;
+    let mut witness_b = Vec4::ZERO;
     let mut kept = Vec::new();
     for index in 0..count {
         let weight = weights[index];
@@ -252,7 +255,7 @@ fn build_reduction(
 }
 
 /// Closest point on segment `a..b` to the origin.
-fn closest_point_segment(a: Vector4, b: Vector4) -> (Vector4, [f32; 2]) {
+fn closest_point_segment(a: Vec4, b: Vec4) -> (Vec4, [f32; 2]) {
     let ab = b - a;
     let length_squared = ab.length_squared3();
     if length_squared <= ZERO_EPSILON {
@@ -263,8 +266,8 @@ fn closest_point_segment(a: Vector4, b: Vector4) -> (Vector4, [f32; 2]) {
 }
 
 /// Closest point on triangle `a, b, c` to the origin (Ericson region tests).
-fn closest_point_triangle(a: Vector4, b: Vector4, c: Vector4) -> (Vector4, [f32; 3]) {
-    let normal = (b - a).cross(c - a);
+fn closest_point_triangle(a: Vec4, b: Vec4, c: Vec4) -> (Vec4, [f32; 3]) {
+    let normal = (b - a).cross3(c - a);
     if normal.length_squared3() <= 1e-20 {
         return closest_degenerate_triangle(a, b, c);
     }
@@ -320,7 +323,7 @@ fn closest_point_triangle(a: Vector4, b: Vector4, c: Vector4) -> (Vector4, [f32;
     (a + ab * v + ac * w, [1.0 - v - w, v, w])
 }
 
-fn closest_degenerate_triangle(a: Vector4, b: Vector4, c: Vector4) -> (Vector4, [f32; 3]) {
+fn closest_degenerate_triangle(a: Vec4, b: Vec4, c: Vec4) -> (Vec4, [f32; 3]) {
     let mut best = (a, [1.0, 0.0, 0.0]);
     let mut best_distance = a.length_squared3();
     let (point, weights) = closest_point_segment(a, b);
@@ -351,14 +354,14 @@ fn reduce_tetrahedron(points: &[SupportVertex]) -> SimplexReduction {
         points[3].minkowski,
     ) {
         if weights.iter().all(|weight| *weight >= -EPSILON) {
-            let mut witness_a = Vector4::ZERO;
-            let mut witness_b = Vector4::ZERO;
+            let mut witness_a = Vec4::ZERO;
+            let mut witness_b = Vec4::ZERO;
             for index in 0..4 {
                 witness_a += points[index].point_a * weights[index];
                 witness_b += points[index].point_b * weights[index];
             }
             return SimplexReduction {
-                point: Vector4::ZERO,
+                point: Vec4::ZERO,
                 inside: true,
                 point_a: witness_a,
                 point_b: witness_b,
@@ -368,7 +371,7 @@ fn reduce_tetrahedron(points: &[SupportVertex]) -> SimplexReduction {
     }
 
     let faces = [[0usize, 1, 2], [0, 1, 3], [0, 2, 3], [1, 2, 3]];
-    let mut best: Option<(Vector4, [f32; 4], f32)> = None;
+    let mut best: Option<(Vec4, [f32; 4], f32)> = None;
     for face in faces {
         let (point, weights) = closest_point_triangle(
             points[face[0]].minkowski,
@@ -392,18 +395,18 @@ fn reduce_tetrahedron(points: &[SupportVertex]) -> SimplexReduction {
 }
 
 /// Barycentric weights of the origin in a tetrahedron (Cramer's rule).
-fn tetrahedron_weights(a: Vector4, b: Vector4, c: Vector4, d: Vector4) -> Option<[f32; 4]> {
+fn tetrahedron_weights(a: Vec4, b: Vec4, c: Vec4, d: Vec4) -> Option<[f32; 4]> {
     let ab = b - a;
     let ac = c - a;
     let ad = d - a;
-    let denominator = ab.dot3(ac.cross(ad));
+    let denominator = ab.dot3(ac.cross3(ad));
     if denominator.abs() <= ZERO_EPSILON {
         return None;
     }
     let rhs = -a;
-    let wb = rhs.dot3(ac.cross(ad)) / denominator;
-    let wc = ab.dot3(rhs.cross(ad)) / denominator;
-    let wd = ab.dot3(ac.cross(rhs)) / denominator;
+    let wb = rhs.dot3(ac.cross3(ad)) / denominator;
+    let wc = ab.dot3(rhs.cross3(ad)) / denominator;
+    let wd = ab.dot3(ac.cross3(rhs)) / denominator;
     let wa = 1.0 - wb - wc - wd;
     Some([wa, wb, wc, wd])
 }
@@ -411,8 +414,7 @@ fn tetrahedron_weights(a: Vector4, b: Vector4, c: Vector4, d: Vector4) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
-    use glam::Vec4;
+    use crate::base_math::{Quaternion, Vector4};
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use std::sync::Arc;
 
@@ -444,16 +446,16 @@ mod tests {
             "distance {}",
             result.distance
         );
-        assert!((result.normal - Vector4::from_xyz(-1.0, 0.0, 0.0)).length3() < 1e-4);
+        assert!((result.normal - Vec4::from_xyz(-1.0, 0.0, 0.0)).length3() < 1e-4);
         assert!(
             result
                 .point_a
-                .all_equal3(Vector4::from_xyz(1.0, 0.0, 0.0), 1e-4)
+                .all_equal3(Vec4::from_xyz(1.0, 0.0, 0.0), 1e-4)
         );
         assert!(
             result
                 .point_b
-                .all_equal3(Vector4::from_xyz(4.0, 0.0, 0.0), 1e-4)
+                .all_equal3(Vec4::from_xyz(4.0, 0.0, 0.0), 1e-4)
         );
     }
 
@@ -491,7 +493,7 @@ mod tests {
         assert!(
             result
                 .normal
-                .all_equal3(Vector4::from_xyz(-1.0, 0.0, 0.0), 1e-3)
+                .all_equal3(Vec4::from_xyz(-1.0, 0.0, 0.0), 1e-3)
         );
     }
 
@@ -531,13 +533,14 @@ mod tests {
 /// Test-only helper shared with the narrow-phase tests.
 #[cfg(test)]
 pub(crate) mod tests_support {
-    use crate::base_math::Vector4;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use crate::phys_shape::{MeshShape, Shape};
     use std::sync::Arc;
 
     pub(crate) fn mesh_shape() -> Arc<dyn Shape> {
         Arc::new(MeshShape::new(
-            vec![Vector4::ZERO, Vector4::UNIT_X, Vector4::UNIT_Y],
+            vec![Vec4::ZERO, Vec4::from_xyz(1.0, 0.0, 0.0), Vec4::from_xyz(0.0, 1.0, 0.0)],
             vec![[0, 1, 2]],
         )) as Arc<dyn Shape>
     }

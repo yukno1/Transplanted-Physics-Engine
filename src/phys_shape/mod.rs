@@ -300,7 +300,7 @@ mod tests {
         assert!(!compound.is_convex());
         assert!(compound.flags().contains(ShapeFlags::IS_COMPOSITE_SHAPE));
 
-        let heightfield = HeightFieldShape::new(2, 2, Vector4::ONE, vec![0.0; 4]).unwrap();
+        let heightfield = HeightFieldShape::new(2, 2, Vec4::ONE, vec![0.0; 4]).unwrap();
         assert!(
             heightfield
                 .flags()

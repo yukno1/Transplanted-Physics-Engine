@@ -34,8 +34,12 @@
 //! * The query shape must be convex (sphere/box/capsule/cylinder/triangle/
 //!   hull). Composite query shapes are future work.
 
-use crate::base_math::{Aabb, Transform, Vector4};
-use crate::phys_shape::{CompoundShape, HeightFieldShape, MeshShape, Shape, TriangleShape};
+use glam::Vec4;
+
+use crate::base_math::{Aabb, Transform, Vector4, Vec4Ext};
+use crate::phys_shape::{
+    CompoundShape, HeightFieldShape, MeshShape, Shape, TriangleShape, to_vec4, to_vector4,
+};
 use crate::phys_types::{ShapeKey, ShapeType};
 
 use crate::phys_collide::gjk::closest_points;
@@ -53,11 +57,11 @@ pub struct ShapeCastHit {
     /// Distance travelled along the normalized cast direction at contact.
     pub fraction: f32,
     /// Contact point on the hit shape (world space).
-    pub position: Vector4,
+    pub position: Vec4,
     /// Contact normal pointing from the hit shape to the query shape.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Witness point on the query shape at the hit pose.
-    pub point_on_query: Vector4,
+    pub point_on_query: Vec4,
     /// Whether the query shape was already overlapping at the start.
     pub start_penetrating: bool,
     /// Leaf shape key (invalid for a direct convex hit).
@@ -80,13 +84,34 @@ pub fn shape_cast(
     if !query_shape.is_convex() {
         return None;
     }
+    let direction = to_vec4(direction);
     let direction_length = direction.length3();
     if direction_length <= 1e-10 || max_distance <= 0.0 {
         return None;
     }
     let direction = direction * (1.0 / direction_length);
     let tolerance = tolerance.max(0.0);
+    shape_cast_impl(
+        query_shape,
+        query_transform,
+        target_shape,
+        target_transform,
+        direction,
+        max_distance,
+        tolerance,
+    )
+}
 
+/// glam 内部实现：`direction` 已归一化。复合形状递归也走此入口。
+fn shape_cast_impl(
+    query_shape: &dyn Shape,
+    query_transform: &Transform,
+    target_shape: &dyn Shape,
+    target_transform: &Transform,
+    direction: Vec4,
+    max_distance: f32,
+    tolerance: f32,
+) -> Option<ShapeCastHit> {
     match target_shape.shape_type() {
         ShapeType::Mesh => cast_mesh(
             query_shape,
@@ -144,7 +169,7 @@ fn cast_convex(
     query_transform: &Transform,
     target_shape: &dyn Shape,
     target_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
     tolerance: f32,
     shape_key: ShapeKey,
@@ -169,13 +194,15 @@ fn cast_convex(
         if !advance.is_finite() || advance <= 0.0 {
             return None;
         }
-        let traveled = pose.translation + direction * advance;
-        if (traveled - query_transform.translation).length3() > max_distance {
+        let traveled =
+            to_vector4(to_vec4(pose.translation) + direction * advance);
+        if (to_vec4(traveled) - to_vec4(query_transform.translation)).length3() > max_distance {
             return None;
         }
         pose.translation = traveled;
         let result = closest_points(query_shape, &pose, target_shape, target_transform)?;
-        let traveled_distance = (pose.translation - query_transform.translation).length3();
+        let traveled_distance =
+            (to_vec4(pose.translation) - to_vec4(query_transform.translation)).length3();
         if result.intersects {
             let normal = unit_or(result.normal, -direction);
             return Some(contact_hit(
@@ -207,7 +234,7 @@ fn cast_convex(
 
 fn start_penetrating_hit(
     result: &crate::phys_collide::gjk::GjkResult,
-    direction: Vector4,
+    direction: Vec4,
     shape_key: ShapeKey,
 ) -> ShapeCastHit {
     ShapeCastHit {
@@ -223,7 +250,7 @@ fn start_penetrating_hit(
 fn contact_hit(
     fraction: f32,
     result: &crate::phys_collide::gjk::GjkResult,
-    normal: Vector4,
+    normal: Vec4,
     start_penetrating: bool,
     shape_key: ShapeKey,
 ) -> ShapeCastHit {
@@ -237,7 +264,7 @@ fn contact_hit(
     }
 }
 
-fn unit_or(direction: Vector4, fallback: Vector4) -> Vector4 {
+fn unit_or(direction: Vec4, fallback: Vec4) -> Vec4 {
     let length = direction.length3();
     if length > 1e-10 {
         direction * (1.0 / length)
@@ -250,13 +277,13 @@ fn unit_or(direction: Vector4, fallback: Vector4) -> Vector4 {
 fn swept_aabb(
     query_shape: &dyn Shape,
     query_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
 ) -> Aabb {
     let mut swept = query_shape.calc_aabb(query_transform);
     let end = Transform::new(
         query_transform.rotation,
-        query_transform.translation + direction * max_distance,
+        to_vector4(to_vec4(query_transform.translation) + direction * max_distance),
     );
     swept.include_aabb(&query_shape.calc_aabb(&end));
     swept
@@ -267,7 +294,7 @@ fn local_swept_aabb(
     query_shape: &dyn Shape,
     query_transform: &Transform,
     target_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
 ) -> Aabb {
     let swept = swept_aabb(query_shape, query_transform, direction, max_distance);
@@ -279,7 +306,7 @@ fn cast_mesh(
     query_transform: &Transform,
     mesh: &MeshShape,
     mesh_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
     tolerance: f32,
 ) -> Option<ShapeCastHit> {
@@ -315,13 +342,8 @@ fn cast_mesh(
                         mesh.vertices()[triangle[1] as usize],
                         mesh.vertices()[triangle[2] as usize],
                     ];
-                    // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
-                    let leaf = TriangleShape::with_convex_radius(
-                        crate::phys_shape::to_vec4(points[0]),
-                        crate::phys_shape::to_vec4(points[1]),
-                        crate::phys_shape::to_vec4(points[2]),
-                        0.0,
-                    );
+                    let leaf =
+                        TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
                     let key = leaf_key::new(leaf_key::MESH, triangle_index);
                     let Some(hit) = cast_convex(
                         query_shape,
@@ -356,7 +378,7 @@ fn cast_height_field(
     query_transform: &Transform,
     heightfield: &HeightFieldShape,
     heightfield_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
     tolerance: f32,
 ) -> Option<ShapeCastHit> {
@@ -392,13 +414,8 @@ fn cast_height_field(
             let p01 = heightfield.vertex(x, z + 1);
             let p11 = heightfield.vertex(x + 1, z + 1);
             for (points, sub) in [([p00, p10, p11], 0usize), ([p00, p11, p01], 1usize)] {
-                // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
-                let leaf = TriangleShape::with_convex_radius(
-                    crate::phys_shape::to_vec4(points[0]),
-                    crate::phys_shape::to_vec4(points[1]),
-                    crate::phys_shape::to_vec4(points[2]),
-                    0.0,
-                );
+                let leaf =
+                    TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
                 let key = leaf_key::height_field(z, x, sub);
                 let Some(hit) = cast_convex(
                     query_shape,
@@ -430,7 +447,7 @@ fn cast_compound(
     query_transform: &Transform,
     compound: &CompoundShape,
     compound_transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
     tolerance: f32,
 ) -> Option<ShapeCastHit> {
@@ -447,7 +464,7 @@ fn cast_compound(
             continue;
         }
         let child_transform = compose_transform(compound_transform, &child.transform);
-        let Some(hit) = shape_cast(
+        let Some(hit) = shape_cast_impl(
             query_shape,
             query_transform,
             child.shape.as_ref(),
@@ -522,12 +539,12 @@ mod tests {
             hit.fraction
         );
         assert!(
-            hit.position.all_equal3(Vector4::ZERO, 1e-2),
+            hit.position.all_equal3(Vec4::ZERO, 1e-2),
             "position {:?}",
             hit.position
         );
         assert!(
-            hit.normal.all_equal3(Vector4::UNIT_Y, 1e-2),
+            hit.normal.all_equal3(Vec4::Y, 1e-2),
             "normal {:?}",
             hit.normal
         );
@@ -607,9 +624,9 @@ mod tests {
         )) as Arc<dyn Shape>;
         let mesh = Arc::new(MeshShape::new(
             vec![
-                Vector4::from_xyz(-2.0, 0.0, -2.0),
-                Vector4::from_xyz(2.0, 0.0, -2.0),
-                Vector4::from_xyz(0.0, 0.0, 2.0),
+                Vec4::from_xyz(-2.0, 0.0, -2.0),
+                Vec4::from_xyz(2.0, 0.0, -2.0),
+                Vec4::from_xyz(0.0, 0.0, 2.0),
             ],
             vec![[0, 1, 2]],
         )) as Arc<dyn Shape>;
@@ -632,7 +649,7 @@ mod tests {
             hit.fraction
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            hit.normal.dot3(Vec4::Y) > 0.9,
             "normal {:?}",
             hit.normal
         );
@@ -644,10 +661,10 @@ mod tests {
         // second and a long one must reach it.
         let mesh = Arc::new(MeshShape::new(
             vec![
-                Vector4::from_xyz(-1.0, 0.0, -1.0),
-                Vector4::from_xyz(1.0, 0.0, -1.0),
-                Vector4::from_xyz(1.0, 0.0, 1.0),
-                Vector4::from_xyz(-1.0, 0.0, 1.0),
+                Vec4::from_xyz(-1.0, 0.0, -1.0),
+                Vec4::from_xyz(1.0, 0.0, -1.0),
+                Vec4::from_xyz(1.0, 0.0, 1.0),
+                Vec4::from_xyz(-1.0, 0.0, 1.0),
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         )) as Arc<dyn Shape>;
@@ -686,7 +703,7 @@ mod tests {
     #[test]
     fn cast_against_height_field_finds_the_surface() {
         let heightfield = Arc::new(
-            HeightFieldShape::new(3, 3, Vector4::ONE, vec![0.0; 9]).expect("valid height field"),
+            HeightFieldShape::new(3, 3, Vec4::ONE, vec![0.0; 9]).expect("valid height field"),
         ) as Arc<dyn Shape>;
         let query = sphere(1.0);
         let start =
@@ -746,9 +763,9 @@ mod tests {
     fn non_convex_query_shape_is_rejected() {
         let mesh = Arc::new(MeshShape::new(
             vec![
-                Vector4::ZERO,
-                Vector4::from_xyz(1.0, 0.0, 0.0),
-                Vector4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::ZERO,
+                Vec4::from_xyz(1.0, 0.0, 0.0),
+                Vec4::from_xyz(0.0, 1.0, 0.0),
             ],
             vec![[0, 1, 2]],
         )) as Arc<dyn Shape>;

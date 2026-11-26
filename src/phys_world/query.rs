@@ -17,7 +17,7 @@ use crate::phys_collide::query::ray_aabb;
 use crate::phys_collide::{
     DEFAULT_SHAPE_CAST_TOLERANCE, closest_points as gjk_closest_points, point_distance, shape_cast,
 };
-use crate::phys_shape::Shape;
+use crate::phys_shape::{Shape, to_vector4};
 use crate::phys_types::{BodyId, ShapeKey};
 
 use crate::phys_world::world::World;
@@ -238,8 +238,8 @@ impl World {
             let candidate = RayCastHit {
                 body: body.id,
                 hit_fraction: hit.hit_fraction,
-                position: hit.position,
-                normal: hit.normal,
+                position: to_vector4(hit.position),
+                normal: to_vector4(hit.normal),
                 shape_key: hit.shape_key,
             };
             best = Some(match best {
@@ -302,9 +302,9 @@ impl World {
             let candidate = ShapeCastHitInfo {
                 body: body.id,
                 distance: hit.fraction,
-                position: hit.position,
-                normal: hit.normal,
-                point_on_query: hit.point_on_query,
+                position: to_vector4(hit.position),
+                normal: to_vector4(hit.normal),
+                point_on_query: to_vector4(hit.point_on_query),
                 start_penetrating: hit.start_penetrating,
                 shape_key: hit.shape_key,
             };
@@ -366,7 +366,7 @@ impl World {
             }
             let candidate = ClosestPointHit {
                 body: body.id,
-                point: result.point_b,
+                point: to_vector4(result.point_b),
                 distance,
             };
             best = Some(match best {
@@ -431,9 +431,11 @@ impl World {
                         }
                         ClosestPointsHit {
                             body: body.id,
-                            point_on_body: point.position,
-                            point_on_query: point.position + manifold.normal * distance,
-                            normal: manifold.normal,
+                            point_on_body: to_vector4(point.position),
+                            point_on_query: to_vector4(
+                                point.position + manifold.normal * distance,
+                            ),
+                            normal: to_vector4(manifold.normal),
                             distance,
                         }
                     }
@@ -443,9 +445,9 @@ impl World {
                         }
                         ClosestPointsHit {
                             body: body.id,
-                            point_on_body: result.point_b,
-                            point_on_query: result.point_a,
-                            normal: result.normal,
+                            point_on_body: to_vector4(result.point_b),
+                            point_on_query: to_vector4(result.point_a),
+                            normal: to_vector4(result.normal),
                             distance: 0.0,
                         }
                     }
@@ -468,9 +470,9 @@ impl World {
             }
             let candidate = ClosestPointsHit {
                 body: body.id,
-                point_on_body: result.point_b,
-                point_on_query: result.point_a,
-                normal: result.normal,
+                point_on_body: to_vector4(result.point_b),
+                point_on_query: to_vector4(result.point_a),
+                normal: to_vector4(result.normal),
                 distance,
             };
             best = Some(match best {
@@ -541,10 +543,10 @@ mod tests {
     fn mesh_ground(size: f32) -> Arc<dyn Shape> {
         Arc::new(MeshShape::new(
             vec![
-                Vector4::from_xyz(-size, 0.0, -size),
-                Vector4::from_xyz(size, 0.0, -size),
-                Vector4::from_xyz(size, 0.0, size),
-                Vector4::from_xyz(-size, 0.0, size),
+                Vec4::from_xyz(-size, 0.0, -size),
+                Vec4::from_xyz(size, 0.0, -size),
+                Vec4::from_xyz(size, 0.0, size),
+                Vec4::from_xyz(-size, 0.0, size),
             ],
             vec![[0, 1, 2], [0, 2, 3]],
         )) as Arc<dyn Shape>

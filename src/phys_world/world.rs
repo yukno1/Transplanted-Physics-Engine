@@ -2478,13 +2478,13 @@ impl World {
             let mut points = Vec::with_capacity(contact.manifold.points.len());
             let mut dropped = 0usize;
             for point in &contact.manifold.points {
-                let initial_normal = contact.manifold.normal;
+                let initial_normal = crate::phys_shape::to_vector4(contact.manifold.normal);
                 let (initial_tangent_1, initial_tangent_2) = contact_tangents(initial_normal);
                 let mut editable = EditableContact {
                     body_a: contact.body_a,
                     body_b: contact.body_b,
                     normal: initial_normal,
-                    position: point.position,
+                    position: crate::phys_shape::to_vector4(point.position),
                     penetration: (-point.distance).max(0.0),
                     friction: 0.5,
                     tangent_1: initial_tangent_1,
@@ -3123,11 +3123,15 @@ impl World {
             return (
                 leaf_key_at_local_point(
                     body_a.shape.as_ref(),
-                    body_a.transform.inverse_transform_point(result.point_a),
+                    body_a
+                        .transform
+                        .inverse_transform_point(crate::phys_shape::to_vector4(result.point_a)),
                 ),
                 leaf_key_at_local_point(
                     body_b.shape.as_ref(),
-                    body_b.transform.inverse_transform_point(result.point_b),
+                    body_b
+                        .transform
+                        .inverse_transform_point(crate::phys_shape::to_vector4(result.point_b)),
                 ),
             );
         }

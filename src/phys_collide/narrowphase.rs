@@ -9,14 +9,16 @@
 //! Conventions follow [`crate::phys_collide::Manifold`]: manifold normal points from B to A,
 //! contact positions lie on B, and negative distance means penetration.
 
-use crate::base_math::{Transform, Vector4};
-use crate::phys_shape::{Shape, SphereShape};
+use glam::Vec4;
+
+use crate::base_math::{Transform, Vec4Ext};
+use crate::phys_shape::{Shape, SphereShape, to_mat3, to_vec4};
 use crate::phys_types::ShapeType;
 
 use crate::phys_collide::epa;
 use crate::phys_collide::gjk;
 use crate::phys_collide::manifold::{ContactPoint, Manifold};
-use crate::phys_collide::support::world_support;
+use crate::phys_collide::support::{transform_point, world_support};
 
 /// Generate a contact manifold for a pair of shapes.
 ///
@@ -100,15 +102,14 @@ fn sphere_sphere(
     transform_b: &Transform,
     tolerance: f32,
 ) -> Option<Manifold> {
-    // 过渡期边界：`SphereShape` 字段已迁移 glam（Phase 3 步骤 2）。
-    let center_a = transform_a.transform_point(crate::phys_shape::to_vector4(sphere_a.center));
-    let center_b = transform_b.transform_point(crate::phys_shape::to_vector4(sphere_b.center));
+    let center_a = transform_point(transform_a, to_mat3(&transform_a.rotation), sphere_a.center);
+    let center_b = transform_point(transform_b, to_mat3(&transform_b.rotation), sphere_b.center);
     let delta = center_a - center_b;
     let center_distance = delta.length3();
     let normal = if center_distance > 1e-8 {
         delta / center_distance
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     };
     let separation = center_distance - sphere_a.radius - sphere_b.radius;
     if separation > tolerance {
@@ -134,11 +135,11 @@ fn support_estimate(
     transform_b: &Transform,
     tolerance: f32,
 ) -> Option<Manifold> {
-    let center_direction = transform_a.translation - transform_b.translation;
+    let center_direction = to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     let normal = if center_direction.length3() > 1e-8 {
-        center_direction.normalized3()
+        center_direction.normalize_or_zero3()
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     };
     // Support points facing each other: A along -normal, B along +normal.
     let point_a = world_support(shape_a, transform_a, -normal)?;
@@ -159,9 +160,7 @@ fn support_estimate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
-    use crate::base_math::Vec4Ext;
-    use glam::Vec4;
+    use crate::base_math::{Quaternion, Vector4};
     use crate::phys_shape::{BoxShape, CapsuleShape};
     use std::sync::Arc;
 
@@ -189,7 +188,7 @@ mod tests {
         )
         .expect("contact");
         assert_eq!(manifold.num_points(), 1);
-        assert!((manifold.normal - Vector4::from_xyz(-1.0, 0.0, 0.0)).length3() < 1e-5);
+        assert!((manifold.normal - Vec4::from_xyz(-1.0, 0.0, 0.0)).length3() < 1e-5);
         let point = manifold.points[0];
         assert!((point.position.x - 0.5).abs() < 1e-5);
         assert!((point.distance + 0.5).abs() < 1e-5);
@@ -197,7 +196,7 @@ mod tests {
             manifold
                 .point_on_a(0)
                 .unwrap()
-                .all_equal3(Vector4::from_xyz(1.0, 0.0, 0.0), 1e-5)
+                .all_equal3(Vec4::from_xyz(1.0, 0.0, 0.0), 1e-5)
         );
     }
 

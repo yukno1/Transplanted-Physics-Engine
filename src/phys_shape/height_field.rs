@@ -8,7 +8,11 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Vector4};
+use glam::Vec3A;
+use glam::Vec4;
+
+use crate::base_math::Aabb;
+use crate::base_math::Vec4Ext;
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
 use crate::phys_shape::mass::mass_from_aabb;
@@ -51,7 +55,7 @@ impl std::error::Error for HeightFieldError {}
 pub struct HeightFieldShape {
     int_size_x: usize,
     int_size_z: usize,
-    scale: Vector4,
+    scale: Vec4,
     heights: Vec<f32>,
     aabb: Aabb,
 }
@@ -65,7 +69,7 @@ impl HeightFieldShape {
     pub fn new(
         int_size_x: usize,
         int_size_z: usize,
-        scale: Vector4,
+        scale: Vec4,
         heights: Vec<f32>,
     ) -> Result<Self, HeightFieldError> {
         if int_size_x == 0 || int_size_z == 0 {
@@ -88,12 +92,15 @@ impl HeightFieldShape {
 
         let min_height = heights.iter().copied().fold(f32::INFINITY, f32::min) * scale.y;
         let max_height = heights.iter().copied().fold(f32::NEG_INFINITY, f32::max) * scale.y;
-        let aabb = Aabb::new(
-            Vector4::from_xyz(0.0, min_height, 0.0),
-            Vector4::from_xyz(
-                (int_size_x - 1) as f32 * scale.x,
-                max_height,
-                (int_size_z - 1) as f32 * scale.z,
+        let aabb = Aabb::from_corners(
+            Vec3A::from(Vec4::from_xyz(0.0, min_height, 0.0).truncate()),
+            Vec3A::from(
+                Vec4::from_xyz(
+                    (int_size_x - 1) as f32 * scale.x,
+                    max_height,
+                    (int_size_z - 1) as f32 * scale.z,
+                )
+                .truncate(),
             ),
         );
 
@@ -120,7 +127,7 @@ impl HeightFieldShape {
 
     /// XZ cell scale and Y height scale (`getShapeFromGeometryScale`).
     #[inline]
-    pub fn scale(&self) -> Vector4 {
+    pub fn scale(&self) -> Vec4 {
         self.scale
     }
 
@@ -142,8 +149,8 @@ impl HeightFieldShape {
 
     /// World-space vertex at grid coordinates `(x, z)`.
     #[inline]
-    pub fn vertex(&self, x: usize, z: usize) -> Vector4 {
-        Vector4::from_xyz(
+    pub fn vertex(&self, x: usize, z: usize) -> Vec4 {
+        Vec4::from_xyz(
             x as f32 * self.scale.x,
             self.height(x, z) * self.scale.y,
             z as f32 * self.scale.z,
@@ -187,19 +194,10 @@ impl Shape for HeightFieldShape {
                 let p10 = self.vertex(x + 1, z);
                 let p01 = self.vertex(x, z + 1);
                 let p11 = self.vertex(x + 1, z + 1);
-                // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
-                let first = TriangleShape::with_convex_radius(
-                    crate::phys_shape::to_vec4(p00),
-                    crate::phys_shape::to_vec4(p10),
-                    crate::phys_shape::to_vec4(p11),
-                    0.0,
-                );
-                let second = TriangleShape::with_convex_radius(
-                    crate::phys_shape::to_vec4(p00),
-                    crate::phys_shape::to_vec4(p11),
-                    crate::phys_shape::to_vec4(p01),
-                    0.0,
-                );
+                let first =
+                    TriangleShape::with_convex_radius(p00, p10, p11, 0.0);
+                let second =
+                    TriangleShape::with_convex_radius(p00, p11, p01, 0.0);
                 properties.push(first.mass_properties(config)?);
                 properties.push(second.mass_properties(config)?);
             }
@@ -221,7 +219,7 @@ mod tests {
         HeightFieldShape::new(
             3,
             3,
-            Vector4::new(1.0, 1.0, 1.0, 1.0),
+            Vec4::new(1.0, 1.0, 1.0, 1.0),
             vec![0.0, 1.0, 2.0, 3.0, 8.0, 5.0, 6.0, 7.0, 4.0],
         )
     }
@@ -233,8 +231,8 @@ mod tests {
         assert_eq!(heightfield.int_size_z(), 3);
         assert_eq!(heightfield.height(0, 0), 0.0);
         assert_eq!(heightfield.height(1, 1), 8.0);
-        assert_eq!(heightfield.vertex(1, 1), Vector4::from_xyz(1.0, 8.0, 1.0));
-        assert_eq!(heightfield.vertex(2, 0), Vector4::from_xyz(2.0, 2.0, 0.0));
+        assert_eq!(heightfield.vertex(1, 1), Vec4::from_xyz(1.0, 8.0, 1.0));
+        assert_eq!(heightfield.vertex(2, 0), Vec4::from_xyz(2.0, 2.0, 0.0));
     }
 
     #[test]
@@ -250,12 +248,12 @@ mod tests {
         let heightfield = HeightFieldShape::new(
             2,
             2,
-            Vector4::new(2.0, 0.5, 3.0, 1.0),
+            Vec4::new(2.0, 0.5, 3.0, 1.0),
             vec![0.0, 4.0, 8.0, -2.0],
         )
         .unwrap();
-        assert_eq!(heightfield.vertex(1, 0), Vector4::from_xyz(2.0, 2.0, 0.0));
-        assert_eq!(heightfield.vertex(0, 1), Vector4::from_xyz(0.0, 4.0, 3.0));
+        assert_eq!(heightfield.vertex(1, 0), Vec4::from_xyz(2.0, 2.0, 0.0));
+        assert_eq!(heightfield.vertex(0, 1), Vec4::from_xyz(0.0, 4.0, 3.0));
         let aabb = heightfield.aabb();
         assert_eq!(aabb.min.y, -1.0);
         assert_eq!(aabb.max.y, 4.0);
@@ -264,18 +262,18 @@ mod tests {
     #[test]
     fn validation_errors() {
         assert_eq!(
-            HeightFieldShape::new(0, 2, Vector4::ONE, Vec::new()),
+            HeightFieldShape::new(0, 2, Vec4::ONE, Vec::new()),
             Err(HeightFieldError::InvalidDimensions)
         );
         assert_eq!(
-            HeightFieldShape::new(2, 2, Vector4::ONE, vec![0.0; 3]),
+            HeightFieldShape::new(2, 2, Vec4::ONE, vec![0.0; 3]),
             Err(HeightFieldError::LengthMismatch {
                 expected: 4,
                 actual: 3
             })
         );
         assert_eq!(
-            HeightFieldShape::new(2, 2, Vector4::new(0.0, 1.0, 1.0, 1.0), vec![0.0; 4]),
+            HeightFieldShape::new(2, 2, Vec4::new(0.0, 1.0, 1.0, 1.0), vec![0.0; 4]),
             Err(HeightFieldError::InvalidScale)
         );
     }

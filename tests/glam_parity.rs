@@ -72,6 +72,13 @@ fn vec4_ext_matches_legacy_bit_for_bit() {
             "length_squared3 {x:?}/{y:?}"
         );
 
+        // length3: sqrt of the fixed-order xyz length squared.
+        assert_eq!(
+            a.length3().to_bits(),
+            la.length3().to_bits(),
+            "length3 {x:?}/{y:?}"
+        );
+
         // all_equal3: xyz-only tolerance comparison (bool, no bit-level math).
         let eps = 1e-3;
         assert_eq!(

@@ -217,7 +217,7 @@ fn s7_manifold_convention_is_consistent() {
     let point = manifold.points[0];
     assert!(point.distance < 0.0, "overlap must be negative distance");
     let point_on_a = manifold.point_on_a(0).unwrap();
-    assert!(point_on_a.all_equal3(Vector4::from_xyz(1.0, 0.0, 0.0), 1e-4));
+    assert!(point_on_a.all_equal3(Vec4::from_xyz(1.0, 0.0, 0.0), 1e-4));
 }
 
 #[test]
