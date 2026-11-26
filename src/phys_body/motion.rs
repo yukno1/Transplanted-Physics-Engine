@@ -4,7 +4,7 @@ use crate::base_math::{
     Mat3, Mat3Ext, Quat, QuatExt, Transform, Vec4, Vec4Ext,
     quat::{quat_mul, quat_normalize},
 };
-use crate::phys_shape::{MassProperties, to_mat3, to_quaternion, to_vec4, to_vector4};
+use crate::phys_shape::{MassProperties, to_mat3, to_vec4};
 use crate::phys_types::MotionType;
 use glam::Vec3;
 
@@ -109,7 +109,7 @@ impl Motion {
 
     /// The motion transform (`orientation`, `position`).
     pub fn transform(&self) -> Transform {
-        Transform::from_quaternion(to_quaternion(self.orientation), to_vector4(self.position))
+        Transform::from_quat(self.orientation, self.position)
     }
 
     /// Update position/orientation from a transform.
@@ -255,9 +255,9 @@ mod tests {
         motion.integrate(1.0);
         let transform = motion.transform();
         // 90° about Z maps +X to +Y.
-        let mapped = transform.transform_point(crate::base_math::Vector4::UNIT_X);
+        let mapped = transform.transform_point(crate::base_math::Vec4::X);
         assert!(
-            mapped.all_equal3(crate::base_math::Vector4::UNIT_Y, 1e-5),
+            mapped.all_equal3(crate::base_math::Vec4::Y, 1e-5),
             "mapped {mapped:?}"
         );
         let length_squared = motion.orientation.x * motion.orientation.x

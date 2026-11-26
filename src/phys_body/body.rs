@@ -2,9 +2,11 @@
 
 use std::sync::Arc;
 
-use crate::base_math::{Aabb, Mat3, Quat, Transform, Vec4};
 use crate::base_math::QuatExt;
-use crate::phys_shape::{MassConfig, MassProperties, Shape, to_mat3, to_quaternion, to_vec4, to_vector4};
+use crate::base_math::{Aabb, Mat3, Quat, Transform, Vec4};
+use crate::phys_shape::{
+    MassConfig, MassProperties, Shape, to_mat3, to_quaternion, to_vec4, to_vector4,
+};
 use crate::phys_types::{
     BodyId, BodyIndex, BodyQualityId, CollisionFlags, MaterialId, MotionId, MotionPropertiesId,
     MotionType,
@@ -196,7 +198,7 @@ impl BodyCinfo {
 
     /// The initial transform implied by `position`/`orientation`.
     pub fn transform(&self) -> Transform {
-        Transform::from_quaternion(to_quaternion(self.orientation), to_vector4(self.position))
+        Transform::from_quat(self.orientation, self.position)
     }
 }
 
@@ -340,11 +342,10 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Vector4;
     use crate::base_math::Vec4Ext;
     use crate::phys_shape::SphereShape;
-    use glam::Vec3A;
     use glam::Vec3;
+    use glam::Vec3A;
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
@@ -377,7 +378,7 @@ mod tests {
         assert!(
             transform
                 .translation
-                .all_equal3(Vector4::from_xyz(1.0, 2.0, 3.0), 1e-6)
+                .all_equal3(Vec4::from_xyz(1.0, 2.0, 3.0), 1e-6)
         );
         assert_eq!(cinfo.name.as_deref(), Some("body"));
         assert_eq!(cinfo.user_data, 7);
@@ -393,9 +394,9 @@ mod tests {
             MotionId::PRESET_STATIC,
         );
         assert!(body.aabb.min.abs_diff_eq(Vec3A::splat(-2.0), 1e-6));
-        body.set_transform(Transform::from_quaternion(
-            crate::base_math::Quaternion::IDENTITY,
-            Vector4::from_xyz(10.0, 0.0, 0.0),
+        body.set_transform(Transform::from_quat(
+            crate::base_math::Quat::IDENTITY,
+            Vec4::new(10.0, 0.0, 0.0, 0.0),
         ));
         assert!(body.aabb.min.abs_diff_eq(Vec3A::new(8.0, -2.0, -2.0), 1e-6));
         assert!(body.aabb.max.abs_diff_eq(Vec3A::new(12.0, 2.0, 2.0), 1e-6));
