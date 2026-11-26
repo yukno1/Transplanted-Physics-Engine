@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::base_math::Vector4;
+use crate::base_math::Vec4;
 use crate::phys_types::BodyId;
 
 /// Listener handle returned by [`ContactModifierRegistry::register`].
@@ -39,17 +39,17 @@ pub struct EditableContact {
     /// Second body of the pair.
     pub body_b: BodyId,
     /// World-space contact normal (B → A).
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// World-space contact position (on B).
-    pub position: Vector4,
+    pub position: Vec4,
     /// Non-negative penetration depth.
     pub penetration: f32,
     /// Coulomb friction coefficient (default 0.5).
     pub friction: f32,
     /// Deterministic first tangent of `normal` (solver friction basis).
-    pub tangent_1: Vector4,
+    pub tangent_1: Vec4,
     /// Deterministic second tangent of `normal`.
-    pub tangent_2: Vector4,
+    pub tangent_2: Vec4,
     /// Cached normal impulse exposed by solver-data hooks.
     pub normal_impulse: f32,
     /// Cached first tangent impulse exposed by solver-data hooks.
@@ -165,12 +165,12 @@ mod tests {
         EditableContact {
             body_a: BodyId::new(1),
             body_b: BodyId::new(2),
-            normal: Vector4::UNIT_Y,
-            position: Vector4::ZERO,
+            normal: Vec4::Y,
+            position: Vec4::ZERO,
             penetration: 0.1,
             friction: 0.5,
-            tangent_1: Vector4::UNIT_X,
-            tangent_2: Vector4::UNIT_Z,
+            tangent_1: Vec4::X,
+            tangent_2: Vec4::Z,
             normal_impulse: 0.0,
             tangent_impulse_1: 0.0,
             tangent_impulse_2: 0.0,

@@ -47,7 +47,7 @@ fn single_bone_ragdoll(world: &mut World, body: BodyId) -> Ragdoll {
 #[test]
 fn p1_detects_root_embedded_in_ground_and_pushes_it_out() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     ground(&mut world);
     let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 0.2, 0.0));
     let child = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 1.0, 0.0));
@@ -104,7 +104,7 @@ fn p1_detects_root_embedded_in_ground_and_pushes_it_out() {
 #[test]
 fn p2_clean_scene_reports_resolved() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     ground(&mut world);
     let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 2.0, 0.0));
     let ragdoll = single_bone_ragdoll(&mut world, root);
@@ -120,13 +120,13 @@ fn p2_clean_scene_reports_resolved() {
         1.0 / 60.0,
         &mut output,
     ));
-    assert_eq!(world.body_linear_velocity(root), Some(Vector4::ZERO));
+    assert_eq!(world.body_linear_velocity(root), Some(Vec4::ZERO));
 }
 
 #[test]
 fn p3_hierarchy_ray_flags_parent_and_ancestor() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     ground(&mut world);
     let parent = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 1.0, 0.0));
     let child = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, -1.0, 0.0));
@@ -166,7 +166,7 @@ fn p3_hierarchy_ray_flags_parent_and_ancestor() {
 #[test]
 fn p4_controller_resolves_penetration_before_state_step() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     ground(&mut world);
     let root = dynamic_sphere(&mut world, Vec4::from_xyz(0.0, 0.2, 0.0));
     let ragdoll = single_bone_ragdoll(&mut world, root);

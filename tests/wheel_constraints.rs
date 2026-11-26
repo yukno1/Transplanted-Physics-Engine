@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Vector4, Vec4, Vec4Ext};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{
@@ -48,15 +48,15 @@ fn wheeled_cart(world: &mut World, drive: Option<(f32, f32)>) -> (BodyId, [Const
         let mut info = WheelCinfo::new(
             wheel,
             chassis,
-            Vector4::ZERO,
-            Vector4::from_xyz(x, -0.25, 0.0),
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::UNIT_X,
-            Vector4::UNIT_Z,
+            Vec4::ZERO,
+            Vec4::from_xyz(x, -0.25, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::X,
+            Vec4::Z,
         )
         .with_suspension(WheelSuspensionCinfo::new(0.45, 120.0, 8.0, 50.0))
         .with_travel(0.25, 0.65);
-        info.axle_b = Vector4::UNIT_X;
+        info.axle_b = Vec4::X;
         if let Some((velocity, max_impulse)) = drive {
             info.drive = Some(WheelDriveCinfo::new(velocity, max_impulse));
         }
@@ -138,7 +138,7 @@ fn w3_steering_turns_the_cart() {
 
 #[test]
 fn w4_steering_angle_setter_validates_ids() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let (_, ids) = wheeled_cart(&mut world, None);
     let id = ids[0];
     assert!(world.set_steering_angle(id, 0.3));
@@ -162,7 +162,7 @@ fn w5_wheel_scene_is_bitwise_deterministic() {
 
 #[test]
 fn w6_destroying_the_chassis_drops_the_wheel_joints() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let (chassis, ids) = wheeled_cart(&mut world, None);
     assert!(world.destroy_body(chassis));
     for id in ids {

@@ -286,18 +286,18 @@ fn benchmark_solver(iterations: u32) {
     let bodies = vec![
         SolverBody::new(
             1.0,
-            Vector4::ZERO,
-            Vector4::from_xyz(0.0, 1.0, 0.0),
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::ZERO,
         ),
-        SolverBody::static_body(Vector4::ZERO),
+        SolverBody::static_body(Vec4::ZERO),
     ];
     let contacts = vec![ContactConstraint::new(
         0,
         1,
-        Vector4::UNIT_Y,
-        Vector4::from_xyz(0.0, 0.5, 0.0),
+        Vec4::Y,
+        Vec4::from_xyz(0.0, 0.5, 0.0),
         0.1,
         0.5,
     )];
@@ -438,7 +438,7 @@ fn benchmark_world_stack(steps: usize) {
 }
 
 fn benchmark_raycast_world(iterations: u32) {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
         Vec4::from_xyz(6.0, 0.5, 6.0),
         0.0,
@@ -459,7 +459,7 @@ fn benchmark_raycast_world(iterations: u32) {
     }
     let mut hits = 0;
     let elapsed = measure(iterations, || {
-        let hit = world.raycast(Vector4::from_xyz(0.0, 20.0, 0.0), -Vector4::UNIT_Y, 30.0);
+        let hit = world.raycast(Vec4::from_xyz(0.0, 20.0, 0.0), -Vec4::Y, 30.0);
         if hit.is_some() {
             hits += 1;
         }
@@ -475,7 +475,7 @@ fn benchmark_raycast_world(iterations: u32) {
 }
 
 fn benchmark_shape_cast_world(iterations: u32) {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
         Vec4::from_xyz(6.0, 0.5, 6.0),
         0.0,
@@ -484,11 +484,14 @@ fn benchmark_shape_cast_world(iterations: u32) {
         &BodyCinfo::new(ground_shape).with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
     );
     let query = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
-    let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
+    let start = Transform::from_quaternion(
+        Quaternion::IDENTITY,
+        proton::math::Vector4::from_xyz(0.0, 5.0, 0.0),
+    );
     let filter = proton::world::QueryFilter::default();
     let mut hits = 0;
     let elapsed = measure(iterations, || {
-        let hit = world.cast_shape(query.as_ref(), &start, -Vector4::UNIT_Y, 10.0, &filter);
+        let hit = world.cast_shape(query.as_ref(), &start, -Vec4::Y, 10.0, &filter);
         if hit.is_some() {
             hits += 1;
         }
@@ -526,12 +529,12 @@ fn benchmark_joint_chain(body_count: usize, steps: usize) {
             &proton::world::RagdollCinfo::new(
                 body,
                 previous,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::UNIT_X,
-                Vector4::UNIT_X,
-                Vector4::UNIT_Z,
-                Vector4::UNIT_Z,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::X,
+                Vec4::X,
+                Vec4::Z,
+                Vec4::Z,
             )
             .with_limits(0.6, -0.3, 0.3),
         );

@@ -102,7 +102,7 @@
 //! mass compression in [`proton::shape::mass`] is deterministic but not verified
 //! bit-identical to SDK-packed assets.
 
-use crate::base_math::{Quaternion, Vector4};
+use crate::base_math::{Quat, Vec4};
 use crate::phys_collide::Manifold;
 use crate::phys_types::BodyId;
 
@@ -154,13 +154,13 @@ pub struct BodySnapshot {
     /// Body identifier.
     pub body: BodyId,
     /// World position (body transform translation).
-    pub position: Vector4,
+    pub position: Vec4,
     /// World orientation.
-    pub orientation: Quaternion,
+    pub orientation: Quat,
     /// World linear velocity.
-    pub linear_velocity: Vector4,
+    pub linear_velocity: Vec4,
     /// World angular velocity.
-    pub angular_velocity: Vector4,
+    pub angular_velocity: Vec4,
 }
 
 /// Debug snapshot of a world, used for determinism checks and golden traces.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use glam::Vec3;
-use proton::math::{Quat, Vector4, Vec4, Vec4Ext};
+use proton::math::{Quat, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::ThreadPool;
@@ -133,9 +133,16 @@ fn np_world_snapshot_test_partial() {
     assert_eq!(snapshot.step_count, world.step_count());
     for (index, body_snapshot) in snapshot.bodies.iter().enumerate() {
         let body = world.body(body_snapshot.body).expect("body must resolve");
-        assert_eq!(body_snapshot.position, body.transform.translation);
+        assert_eq!(
+            body_snapshot.position,
+            Vec4::from_xyz(
+                body.transform.translation.x,
+                body.transform.translation.y,
+                body.transform.translation.z,
+            )
+        );
         if index == 0 {
-            assert_eq!(body_snapshot.linear_velocity, Vector4::ZERO);
+            assert_eq!(body_snapshot.linear_velocity, Vec4::ZERO);
         }
     }
 }

@@ -14,6 +14,7 @@
 //! before/after `World::step`, as the vehicle extension does.
 
 use crate::base_math::{Quaternion, Transform, Vector4};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::{BodyId, ConstraintId};
 use crate::phys_world::{RagdollCinfo, World};
 
@@ -217,12 +218,12 @@ impl Ragdoll {
             let info = RagdollCinfo::new(
                 child_body,
                 parent_body,
-                pivot_a,
-                pivot_b,
-                twist_a,
-                twist_b,
-                plane_a,
-                plane_b,
+                to_vec4(pivot_a),
+                to_vec4(pivot_b),
+                to_vec4(twist_a),
+                to_vec4(twist_b),
+                to_vec4(plane_a),
+                to_vec4(plane_b),
             )
             .with_limits(
                 bone.limits.cone_angle,
@@ -342,7 +343,7 @@ impl Ragdoll {
             let mut linear = (desired[index].translation - current.translation) * inv_dt;
             linear.w = 0.0;
             if let Some(current_velocity) = world.body_linear_velocity(body) {
-                linear.set_interpolate(current_velocity, linear, weight);
+                linear.set_interpolate(to_vector4(current_velocity), linear, weight);
             }
             let mut angular = required_angular_velocity(
                 current.rotation_quaternion(),
@@ -351,11 +352,11 @@ impl Ragdoll {
             );
             angular.w = 0.0;
             if let Some(current_velocity) = world.body_angular_velocity(body) {
-                angular.set_interpolate(current_velocity, angular, weight);
+                angular.set_interpolate(to_vector4(current_velocity), angular, weight);
             }
 
-            world.set_body_linear_velocity(body, linear);
-            world.set_body_angular_velocity(body, angular);
+            world.set_body_linear_velocity(body, to_vec4(linear));
+            world.set_body_angular_velocity(body, to_vec4(angular));
         }
         Ok(())
     }
@@ -420,8 +421,8 @@ impl Ragdoll {
         );
         angular.w = 0.0;
         world.set_body_transform(body, pose_world);
-        world.set_body_linear_velocity(body, linear);
-        world.set_body_angular_velocity(body, angular);
+        world.set_body_linear_velocity(body, to_vec4(linear));
+        world.set_body_angular_velocity(body, to_vec4(angular));
         Ok(())
     }
 }

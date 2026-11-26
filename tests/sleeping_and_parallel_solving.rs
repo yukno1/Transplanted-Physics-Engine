@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Vector4, Vec4, Vec4Ext};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::{ThreadPool, WorkStealingPool};
@@ -155,8 +155,8 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
         world.create_ball_socket_constraint(&proton::world::BallAndSocketCinfo::new(
             b,
             a,
-            Vector4::ZERO,
-            Vector4::from_xyz(0.0, 1.1, 0.0),
+            Vec4::ZERO,
+            Vec4::from_xyz(0.0, 1.1, 0.0),
         ));
         for index in 0..3 {
             world.create_body(

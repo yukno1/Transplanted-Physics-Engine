@@ -9,7 +9,7 @@
 //! Only convex single-point contacts exist today, but the cache stores a list
 //! per pair so multi-point manifolds can reuse the same matching.
 
-use crate::base_math::Vector4;
+use crate::base_math::{Vec4, Vec4Ext};
 use crate::phys_solver::ContactImpulse;
 use crate::phys_types::BodyId;
 
@@ -28,9 +28,9 @@ pub(crate) struct ContactKey {
     /// Body B (manifold normal points from B to A).
     pub body_b: BodyId,
     /// Contact point on B in B's local space.
-    pub local_point_b: Vector4,
+    pub local_point_b: Vec4,
     /// Contact normal (B → A) in world space.
-    pub normal: Vector4,
+    pub normal: Vec4,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,11 +95,11 @@ impl ContactImpulseCache {
 mod tests {
     use super::*;
 
-    fn key(body_a: u64, local_x: f32, normal: Vector4) -> ContactKey {
+    fn key(body_a: u64, local_x: f32, normal: Vec4) -> ContactKey {
         ContactKey {
             body_a: BodyId::new(body_a),
             body_b: BodyId::new(body_a + 1),
-            local_point_b: Vector4::from_xyz(local_x, 0.0, 0.0),
+            local_point_b: Vec4::from_xyz(local_x, 0.0, 0.0),
             normal,
         }
     }
@@ -115,15 +115,15 @@ mod tests {
     #[test]
     fn matching_row_returns_cached_impulse() {
         let mut cache = ContactImpulseCache::default();
-        cache.replace([(key(1, 0.0, Vector4::UNIT_Y), impulse(2.0))].into_iter());
+        cache.replace([(key(1, 0.0, Vec4::Y), impulse(2.0))].into_iter());
         assert_eq!(cache.len(), 1);
         assert_eq!(
-            cache.match_impulse(key(1, 0.0, Vector4::UNIT_Y)).normal,
+            cache.match_impulse(key(1, 0.0, Vec4::Y)).normal,
             2.0
         );
         // Slightly displaced point still matches (within MATCH_DISTANCE).
         assert_eq!(
-            cache.match_impulse(key(1, 0.02, Vector4::UNIT_Y)).normal,
+            cache.match_impulse(key(1, 0.02, Vec4::Y)).normal,
             2.0
         );
     }
@@ -131,13 +131,13 @@ mod tests {
     #[test]
     fn distant_point_or_flipped_normal_does_not_match() {
         let mut cache = ContactImpulseCache::default();
-        cache.replace([(key(1, 0.0, Vector4::UNIT_Y), impulse(2.0))].into_iter());
+        cache.replace([(key(1, 0.0, Vec4::Y), impulse(2.0))].into_iter());
         assert_eq!(
-            cache.match_impulse(key(1, MATCH_DISTANCE * 2.0, Vector4::UNIT_Y)),
+            cache.match_impulse(key(1, MATCH_DISTANCE * 2.0, Vec4::Y)),
             ContactImpulse::default()
         );
         assert_eq!(
-            cache.match_impulse(key(1, 0.0, Vector4::UNIT_X)),
+            cache.match_impulse(key(1, 0.0, Vec4::X)),
             ContactImpulse::default()
         );
     }
@@ -145,9 +145,9 @@ mod tests {
     #[test]
     fn different_body_pair_does_not_match() {
         let mut cache = ContactImpulseCache::default();
-        cache.replace([(key(1, 0.0, Vector4::UNIT_Y), impulse(2.0))].into_iter());
+        cache.replace([(key(1, 0.0, Vec4::Y), impulse(2.0))].into_iter());
         assert_eq!(
-            cache.match_impulse(key(3, 0.0, Vector4::UNIT_Y)),
+            cache.match_impulse(key(3, 0.0, Vec4::Y)),
             ContactImpulse::default()
         );
     }
@@ -157,13 +157,13 @@ mod tests {
         let mut cache = ContactImpulseCache::default();
         cache.replace(
             [
-                (key(1, 0.0, Vector4::UNIT_Y), impulse(1.0)),
-                (key(1, 0.03, Vector4::UNIT_Y), impulse(3.0)),
+                (key(1, 0.0, Vec4::Y), impulse(1.0)),
+                (key(1, 0.03, Vec4::Y), impulse(3.0)),
             ]
             .into_iter(),
         );
         assert_eq!(
-            cache.match_impulse(key(1, 0.025, Vector4::UNIT_Y)).normal,
+            cache.match_impulse(key(1, 0.025, Vec4::Y)).normal,
             3.0
         );
     }
@@ -171,11 +171,11 @@ mod tests {
     #[test]
     fn replace_prunes_stale_rows() {
         let mut cache = ContactImpulseCache::default();
-        cache.replace([(key(1, 0.0, Vector4::UNIT_Y), impulse(2.0))].into_iter());
-        cache.replace([(key(7, 0.0, Vector4::UNIT_Y), impulse(1.0))].into_iter());
+        cache.replace([(key(1, 0.0, Vec4::Y), impulse(2.0))].into_iter());
+        cache.replace([(key(7, 0.0, Vec4::Y), impulse(1.0))].into_iter());
         assert_eq!(cache.len(), 1);
         assert_eq!(
-            cache.match_impulse(key(1, 0.0, Vector4::UNIT_Y)),
+            cache.match_impulse(key(1, 0.0, Vec4::Y)),
             ContactImpulse::default()
         );
         cache.clear();

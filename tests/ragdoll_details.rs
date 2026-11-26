@@ -23,7 +23,7 @@ fn body(world: &mut World, position: Vec4, mass: f32) -> BodyId {
             .with_mass(mass)
             .with_position(position),
     );
-    world.set_body_inverse_inertia(id, Vector4::splat(0.5));
+    world.set_body_inverse_inertia(id, Vec4::splat(0.5));
     id
 }
 
@@ -31,7 +31,7 @@ fn body(world: &mut World, position: Vec4, mass: f32) -> BodyId {
 fn d1_plane_angle_limits_are_configurable_and_default_off() {
     fn run() -> (String, bool) {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let a = body(&mut world, Vec4::ZERO, 1.0);
         let b = body(&mut world, Vec4::from_xyz(1.0, 0.0, 0.0), 1.0);
         let mut data = RagdollData::new();
@@ -72,7 +72,7 @@ fn d1_plane_angle_limits_are_configurable_and_default_off() {
 #[test]
 fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let a = body(&mut world, Vec4::ZERO, 1.0);
     let b = body(&mut world, Vec4::ZERO, 1.0);
     let limits = SixDofLimitsCinfo::new(-1.0, 1.0, 1.0, 1.0, 1.0)
@@ -81,12 +81,12 @@ fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
     let info = SixDofCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Z,
-        Vector4::UNIT_Z,
+        Vec4::ZERO,
+        Vec4::ZERO,
+        Vec4::Y,
+        Vec4::Y,
+        Vec4::Z,
+        Vec4::Z,
         limits,
     );
     let id = world.create_6dof_constraint(&info);
@@ -125,7 +125,7 @@ fn d2_six_dof_per_axis_modes_push_back_and_are_settable() {
 #[test]
 fn d3_shared_motion_rebuilds_mass_com_and_inertia() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let a = body(&mut world, Vec4::ZERO, 1.0);
     let b = body(&mut world, Vec4::from_xyz(2.0, 0.0, 0.0), 3.0);
     let motion = world.body_motion_id(a).unwrap();
@@ -162,18 +162,18 @@ fn d3_shared_motion_rebuilds_mass_com_and_inertia() {
 fn d4_detail_scenario_is_bitwise_deterministic() {
     fn trace() -> String {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let a = body(&mut world, Vec4::ZERO, 2.0);
         let b = body(&mut world, Vec4::from_xyz(1.0, 0.5, 0.0), 1.0);
         let cinfo = SixDofCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::from_xyz(-1.0, 0.0, 0.0),
-            Vector4::UNIT_Y,
-            Vector4::UNIT_Y,
-            Vector4::UNIT_X,
-            Vector4::UNIT_X,
+            Vec4::ZERO,
+            Vec4::from_xyz(-1.0, 0.0, 0.0),
+            Vec4::Y,
+            Vec4::Y,
+            Vec4::X,
+            Vec4::X,
             SixDofLimitsCinfo::new(-0.3, 0.3, 0.3, 0.3, 0.4).with_linear_axis(
                 0,
                 SixDofAxisMode::Limited,
@@ -183,7 +183,7 @@ fn d4_detail_scenario_is_bitwise_deterministic() {
         );
         world.create_6dof_constraint(&cinfo);
         world.attach_bodies_with_mode(a, &[b], MotionMassUpdateMode::Rebuild);
-        world.set_body_linear_velocity(a, Vector4::from_xyz(0.5, 0.0, 0.0));
+        world.set_body_linear_velocity(a, Vec4::from_xyz(0.5, 0.0, 0.0));
         for _ in 0..60 {
             world.step(1.0 / 60.0);
         }
@@ -242,7 +242,7 @@ fn d5_plane_angle_limits_are_saved_loosened_and_restored() {
 #[test]
 fn d6_six_dof_axis_limits_are_saved_loosened_and_restored() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let a = body(&mut world, Vec4::ZERO, 1.0);
     let b = body(&mut world, Vec4::ZERO, 1.0);
     let limit = SixDofLimitsCinfo::new(-1.0, 1.0, 1.0, 1.0, 1.0)
@@ -251,12 +251,12 @@ fn d6_six_dof_axis_limits_are_saved_loosened_and_restored() {
     let id = world.create_6dof_constraint(&SixDofCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_X,
-        Vector4::UNIT_X,
+        Vec4::ZERO,
+        Vec4::ZERO,
+        Vec4::Y,
+        Vec4::Y,
+        Vec4::X,
+        Vec4::X,
         limit,
     ));
     world.set_body_transform(

@@ -83,10 +83,10 @@ fn compound_ray_hits_carry_distinct_shape_keys() {
     );
     let filter = QueryFilter::default();
     let left = world
-        .raycast_filtered(V4::from_xyz(-2.0, -5.0, 0.0), V4::UNIT_Y, 10.0, &filter)
+        .raycast_filtered(G4::new(-2.0, -5.0, 0.0, 0.0), G4::Y, 10.0, &filter)
         .expect("left ray hit");
     let right = world
-        .raycast_filtered(V4::from_xyz(2.0, -5.0, 0.0), V4::UNIT_Y, 10.0, &filter)
+        .raycast_filtered(G4::new(2.0, -5.0, 0.0, 0.0), G4::Y, 10.0, &filter)
         .expect("right ray hit");
     assert_eq!(left.body, body);
     assert_eq!(right.body, body);

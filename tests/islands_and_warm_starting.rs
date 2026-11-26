@@ -7,7 +7,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Vector4, Vec4, Vec4Ext};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
@@ -83,7 +83,7 @@ fn two_stacks_on_one_ground_report_two_islands() {
 
 #[test]
 fn jointed_bodies_share_an_island_even_without_contacts() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(&dynamic(BodyCinfo::new(sphere_shape(0.5))));
     let b = world.create_body(
         &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vec4::from_xyz(2.0, 0.0, 0.0)),
@@ -95,8 +95,8 @@ fn jointed_bodies_share_an_island_even_without_contacts() {
     let id = world.create_spring_constraint(&proton::world::SpringCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
         2.0,
     ));
     assert!(id.is_valid());

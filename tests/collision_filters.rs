@@ -196,8 +196,8 @@ fn query_respects_world_filter_info() {
 
     // Default query filter info (layer 0) still sees the ground.
     let hit = world.raycast(
-        Vector4::from_xyz(0.0, 2.0, 0.0),
-        Vector4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::from_xyz(0.0, 2.0, 0.0),
+        Vec4::from_xyz(0.0, -1.0, 0.0),
         10.0,
     );
     assert!(hit.is_some(), "layer-0 query should hit the ground");
@@ -206,8 +206,8 @@ fn query_respects_world_filter_info() {
     let filtered =
         QueryFilter::default().with_filter_info(GroupCollisionFilter::calc_filter_info(2));
     let hit = world.raycast_filtered(
-        Vector4::from_xyz(0.0, 2.0, 0.0),
-        Vector4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::from_xyz(0.0, 2.0, 0.0),
+        Vec4::from_xyz(0.0, -1.0, 0.0),
         10.0,
         &filtered,
     );
@@ -222,7 +222,7 @@ fn query_respects_world_filter_info() {
     let hit = world.cast_shape(
         sphere.as_ref(),
         &transform,
-        Vector4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::from_xyz(0.0, -1.0, 0.0),
         10.0,
         &filtered,
     );

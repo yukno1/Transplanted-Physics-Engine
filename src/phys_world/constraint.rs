@@ -17,7 +17,8 @@
 //! refers to the same constraint and stale IDs cannot alias — the SDK's
 //! constraint groups and connectivity graph are not ported.
 
-use crate::base_math::{Quaternion, Transform, Vector4};
+use crate::base_math::{Quat, Transform, Vec4, Vec4Ext};
+use crate::phys_shape::{to_quat, to_vec4, to_vector4};
 use crate::phys_solver::JointImpulse;
 use crate::phys_types::{BodyId, ConstraintId, ConstraintIndex};
 
@@ -29,14 +30,14 @@ pub struct BallAndSocketCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
 }
 
 impl BallAndSocketCinfo {
     /// Construct with explicit local pivots.
-    pub fn new(body_a: BodyId, body_b: BodyId, pivot_a: Vector4, pivot_b: Vector4) -> Self {
+    pub fn new(body_a: BodyId, body_b: BodyId, pivot_a: Vec4, pivot_b: Vec4) -> Self {
         Self {
             body_a,
             body_b,
@@ -62,19 +63,19 @@ pub struct HingeCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Hinge axis in body A's local space (unit).
-    pub axis_a: Vector4,
+    pub axis_a: Vec4,
     /// Hinge axis in body B's local space (unit).
-    pub axis_b: Vector4,
+    pub axis_b: Vec4,
     /// Reference (twist) axis in body A's local space used to measure the
-    /// signed hinge angle (`Vector4::ZERO` uses a deterministic perpendicular
+    /// signed hinge angle (`Vec4::ZERO` uses a deterministic perpendicular
     /// of the hinge axis).
-    pub reference_axis_a: Vector4,
+    pub reference_axis_a: Vec4,
     /// Reference axis in body B's local space.
-    pub reference_axis_b: Vector4,
+    pub reference_axis_b: Vec4,
     /// Optional angle limits (measured about the hinge axis; `None` is
     /// unrestricted).
     pub limits: Option<HingeLimitsCinfo>,
@@ -87,10 +88,10 @@ impl HingeCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        axis_a: Vector4,
-        axis_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        axis_a: Vec4,
+        axis_b: Vec4,
     ) -> Self {
         Self {
             body_a,
@@ -99,8 +100,8 @@ impl HingeCinfo {
             pivot_b,
             axis_a,
             axis_b,
-            reference_axis_a: Vector4::ZERO,
-            reference_axis_b: Vector4::ZERO,
+            reference_axis_a: Vec4::ZERO,
+            reference_axis_b: Vec4::ZERO,
             limits: None,
             motor: None,
         }
@@ -110,7 +111,7 @@ impl HingeCinfo {
     /// (`setAngularLimits` reference frame). Both axes must be unit length in
     /// their bodies' local spaces and not parallel to the hinge axes.
     #[must_use]
-    pub fn with_reference_axes(mut self, axis_a: Vector4, axis_b: Vector4) -> Self {
+    pub fn with_reference_axes(mut self, axis_a: Vec4, axis_b: Vec4) -> Self {
         self.reference_axis_a = axis_a;
         self.reference_axis_b = axis_b;
         self
@@ -260,11 +261,11 @@ pub struct FixedCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Bound rotation of B relative to A's frame.
-    pub relative_orientation: Quaternion,
+    pub relative_orientation: Quat,
 }
 
 impl FixedCinfo {
@@ -272,9 +273,9 @@ impl FixedCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        relative_orientation: Quaternion,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        relative_orientation: Quat,
     ) -> Self {
         Self {
             body_a,
@@ -292,18 +293,20 @@ impl FixedCinfo {
     pub fn between_bodies(
         body_a: BodyId,
         body_b: BodyId,
-        pivot: Vector4,
+        pivot: Vec4,
         transform_a: &Transform,
         transform_b: &Transform,
     ) -> Self {
         Self {
             body_a,
             body_b,
-            pivot_a: transform_a.inverse_transform_point(pivot),
-            pivot_b: transform_b.inverse_transform_point(pivot),
-            relative_orientation: transform_a
-                .rotation_quaternion()
-                .inverse_mul(transform_b.rotation_quaternion()),
+            pivot_a: to_vec4(transform_a.inverse_transform_point(to_vector4(pivot))),
+            pivot_b: to_vec4(transform_b.inverse_transform_point(to_vector4(pivot))),
+            relative_orientation: to_quat(
+                transform_a
+                    .rotation_quaternion()
+                    .inverse_mul(transform_b.rotation_quaternion()),
+            ),
         }
     }
 }
@@ -324,18 +327,18 @@ pub struct RagdollCinfo {
     /// Second body (the "parent" body).
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Twist axis in body A's local space (unit).
-    pub twist_axis_a: Vector4,
+    pub twist_axis_a: Vec4,
     /// Twist axis in body B's local space (unit).
-    pub twist_axis_b: Vector4,
+    pub twist_axis_b: Vec4,
     /// Reference (plane) axis in body A's local space (unit, not parallel to
     /// the twist axis).
-    pub plane_axis_a: Vector4,
+    pub plane_axis_a: Vec4,
     /// Reference (plane) axis in body B's local space.
-    pub plane_axis_b: Vector4,
+    pub plane_axis_b: Vec4,
     /// Maximum swing angle between the twist axes, in radians.
     pub cone_angle: f32,
     /// Lower twist bound in radians.
@@ -354,12 +357,12 @@ impl RagdollCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        twist_axis_a: Vector4,
-        twist_axis_b: Vector4,
-        plane_axis_a: Vector4,
-        plane_axis_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        twist_axis_a: Vec4,
+        twist_axis_b: Vec4,
+        plane_axis_a: Vec4,
+        plane_axis_b: Vec4,
     ) -> Self {
         Self {
             body_a,
@@ -404,12 +407,12 @@ impl RagdollCinfo {
 }
 
 #[inline]
-fn unit_axis(vector: Vector4) -> Vector4 {
+fn unit_axis(vector: Vec4) -> Vec4 {
     let length = vector.length3();
     if length > 1e-10 {
         vector * (1.0 / length)
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     }
 }
 
@@ -420,20 +423,20 @@ fn unit_axis(vector: Vector4) -> Vector4 {
 /// the twist plane and falls back to a deterministic perpendicular when
 /// degenerate. This is the single source of truth for world construction,
 /// solver rows, warm-start replay and ragdoll easing.
-pub fn six_dof_constraint_frame_axes(twist: Vector4, plane: Vector4) -> [Vector4; 3] {
+pub fn six_dof_constraint_frame_axes(twist: Vec4, plane: Vec4) -> [Vec4; 3] {
     let twist = unit_axis(twist);
     let projected = plane - twist * plane.dot3(twist);
     let plane = if projected.length3() > 1e-10 {
         unit_axis(projected)
     } else {
         let helper = if twist.x.abs() < 0.9 {
-            Vector4::UNIT_X
+            Vec4::X
         } else {
-            Vector4::UNIT_Y
+            Vec4::Y
         };
-        unit_axis(twist.cross(helper))
+        unit_axis(twist.cross3(helper))
     };
-    let binormal = unit_axis(twist.cross(plane));
+    let binormal = unit_axis(twist.cross3(plane));
     [twist, plane, binormal]
 }
 
@@ -544,17 +547,17 @@ pub struct SixDofCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Twist axis in body A's local space (unit).
-    pub twist_axis_a: Vector4,
+    pub twist_axis_a: Vec4,
     /// Twist axis in body B's local space (unit).
-    pub twist_axis_b: Vector4,
+    pub twist_axis_b: Vec4,
     /// Reference (plane) axis in body A's local space.
-    pub plane_axis_a: Vector4,
+    pub plane_axis_a: Vec4,
     /// Reference (plane) axis in body B's local space.
-    pub plane_axis_b: Vector4,
+    pub plane_axis_b: Vec4,
     /// Twist, swing and linear limits.
     pub limits: SixDofLimitsCinfo,
 }
@@ -565,12 +568,12 @@ impl SixDofCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        twist_axis_a: Vector4,
-        twist_axis_b: Vector4,
-        plane_axis_a: Vector4,
-        plane_axis_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        twist_axis_a: Vec4,
+        twist_axis_b: Vec4,
+        plane_axis_a: Vec4,
+        plane_axis_b: Vec4,
         limits: SixDofLimitsCinfo,
     ) -> Self {
         Self {
@@ -607,15 +610,15 @@ pub struct PrismaticCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Slider axis in body A's local space (unit).
-    pub axis_a: Vector4,
+    pub axis_a: Vec4,
     /// Slider axis in body B's local space (unit).
-    pub axis_b: Vector4,
+    pub axis_b: Vec4,
     /// Bound rotation of B relative to A's frame.
-    pub relative_orientation: Quaternion,
+    pub relative_orientation: Quat,
     /// Lower translation bound (may be `-inf`).
     pub min_translation: f32,
     /// Upper translation bound (may be `+inf`).
@@ -629,10 +632,10 @@ impl PrismaticCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        axis_a: Vector4,
-        axis_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        axis_a: Vec4,
+        axis_b: Vec4,
     ) -> Self {
         Self {
             body_a,
@@ -641,7 +644,7 @@ impl PrismaticCinfo {
             pivot_b,
             axis_a,
             axis_b,
-            relative_orientation: Quaternion::IDENTITY,
+            relative_orientation: Quat::IDENTITY,
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
             motor: None,
@@ -653,21 +656,23 @@ impl PrismaticCinfo {
     pub fn between_bodies(
         body_a: BodyId,
         body_b: BodyId,
-        pivot: Vector4,
+        pivot: Vec4,
         transform_a: &Transform,
         transform_b: &Transform,
-        axis: Vector4,
+        axis: Vec4,
     ) -> Self {
         Self {
             body_a,
             body_b,
-            pivot_a: transform_a.inverse_transform_point(pivot),
-            pivot_b: transform_b.inverse_transform_point(pivot),
-            axis_a: transform_a.rotation.rotate_inverse(axis),
-            axis_b: transform_b.rotation.rotate_inverse(axis),
-            relative_orientation: transform_a
-                .rotation_quaternion()
-                .inverse_mul(transform_b.rotation_quaternion()),
+            pivot_a: to_vec4(transform_a.inverse_transform_point(to_vector4(pivot))),
+            pivot_b: to_vec4(transform_b.inverse_transform_point(to_vector4(pivot))),
+            axis_a: to_vec4(transform_a.rotation.rotate_inverse(to_vector4(axis))),
+            axis_b: to_vec4(transform_b.rotation.rotate_inverse(to_vector4(axis))),
+            relative_orientation: to_quat(
+                transform_a
+                    .rotation_quaternion()
+                    .inverse_mul(transform_b.rotation_quaternion()),
+            ),
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
             motor: None,
@@ -768,9 +773,9 @@ pub struct SpringCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Target pivot distance.
     pub rest_length: f32,
 }
@@ -780,8 +785,8 @@ impl SpringCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
         rest_length: f32,
     ) -> Self {
         Self {
@@ -798,13 +803,13 @@ impl SpringCinfo {
     pub fn between_bodies(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
         transform_a: &Transform,
         transform_b: &Transform,
     ) -> Self {
-        let world_a = transform_a.transform_point(pivot_a);
-        let world_b = transform_b.transform_point(pivot_b);
+        let world_a = transform_a.transform_point(to_vector4(pivot_a));
+        let world_b = transform_b.transform_point(to_vector4(pivot_b));
         Self {
             body_a,
             body_b,
@@ -826,11 +831,11 @@ pub struct PointToPlaneCinfo {
     /// Second body.
     pub body_b: BodyId,
     /// Pivot in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Plane normal in body B's local space (unit).
-    pub plane_normal_b: Vector4,
+    pub plane_normal_b: Vec4,
     /// Minimum signed distance along the plane normal.
     pub min_distance: f32,
     /// Maximum signed distance along the plane normal.
@@ -842,9 +847,9 @@ impl PointToPlaneCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        plane_normal_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        plane_normal_b: Vec4,
     ) -> Self {
         Self {
             body_a,
@@ -886,20 +891,20 @@ pub struct WheelCinfo {
     /// Chassis body.
     pub body_b: BodyId,
     /// Wheel center in body A's local space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Suspension hardpoint in body B's local space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Suspension direction in body B's local space (unit; typically down).
-    pub suspension_axis_b: Vector4,
+    pub suspension_axis_b: Vec4,
     /// Spin axle in body A's local space (unit).
-    pub axle_a: Vector4,
+    pub axle_a: Vec4,
     /// Initial axle in body B's local space (unit). Defaults to
     /// [`WheelCinfo::axle_a`]; use [`WheelCinfo::with_axle_b`] when the two
     /// local frames disagree on the axle direction. Steering rotates this
     /// axle about [`WheelCinfo::steering_axis_b`].
-    pub axle_b: Vector4,
+    pub axle_b: Vec4,
     /// Steering rotation axis in body B's local space (unit).
-    pub steering_axis_b: Vector4,
+    pub steering_axis_b: Vec4,
     /// Current steering angle in radians (B's axle rotates about
     /// [`WheelCinfo::steering_axis_b`] by this amount).
     pub steering_angle: f32,
@@ -920,11 +925,11 @@ impl WheelCinfo {
     pub fn new(
         body_a: BodyId,
         body_b: BodyId,
-        pivot_a: Vector4,
-        pivot_b: Vector4,
-        suspension_axis_b: Vector4,
-        axle_a: Vector4,
-        steering_axis_b: Vector4,
+        pivot_a: Vec4,
+        pivot_b: Vec4,
+        suspension_axis_b: Vec4,
+        axle_a: Vec4,
+        steering_axis_b: Vec4,
     ) -> Self {
         Self {
             body_a,
@@ -950,7 +955,7 @@ impl WheelCinfo {
     }
 
     /// Override the chassis-side initial axle (body B's local space).
-    pub fn with_axle_b(mut self, axle_b: Vector4) -> Self {
+    pub fn with_axle_b(mut self, axle_b: Vec4) -> Self {
         self.axle_b = axle_b;
         self
     }
@@ -1123,7 +1128,6 @@ pub(crate) fn constraint_id(slot: usize) -> ConstraintId {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
 
     #[test]
     fn constraint_ids_are_index_backed() {
@@ -1135,33 +1139,52 @@ mod tests {
 
     #[test]
     fn fixed_cinfo_between_bodies_binds_current_pose() {
-        let transform_a = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::ZERO);
+        // `Transform` 签名链保持 legacy，测试侧沿用 legacy 构造。
+        let transform_a = Transform::from_quaternion(
+            crate::base_math::Quaternion::IDENTITY,
+            crate::base_math::Vector4::ZERO,
+        );
         let transform_b = Transform::from_quaternion(
-            Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.3),
-            Vector4::from_xyz(2.0, 0.0, 0.0),
+            crate::base_math::Quaternion::from_axis_angle(
+                crate::base_math::Vector4::UNIT_Z,
+                0.3,
+            ),
+            crate::base_math::Vector4::from_xyz(2.0, 0.0, 0.0),
         );
         let cinfo = FixedCinfo::between_bodies(
             BodyId::new(1),
             BodyId::new(2),
-            Vector4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
             &transform_a,
             &transform_b,
         );
         // The shared world pivot maps into both local frames.
         assert!(
             transform_a
-                .transform_point(cinfo.pivot_a)
-                .all_equal3(Vector4::from_xyz(1.0, 0.0, 0.0), 1e-5)
+                .transform_point(to_vector4(cinfo.pivot_a))
+                .all_equal3(crate::base_math::Vector4::from_xyz(1.0, 0.0, 0.0), 1e-5)
         );
         assert!(
             transform_b
-                .transform_point(cinfo.pivot_b)
-                .all_equal3(Vector4::from_xyz(1.0, 0.0, 0.0), 1e-5)
+                .transform_point(to_vector4(cinfo.pivot_b))
+                .all_equal3(crate::base_math::Vector4::from_xyz(1.0, 0.0, 0.0), 1e-5)
         );
-        assert!(cinfo.relative_orientation.all_equal(
-            Quaternion::IDENTITY.inverse_mul(Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.3)),
-            1e-5
-        ));
+        let expected = crate::phys_shape::to_quat(
+            crate::base_math::Quaternion::IDENTITY.inverse_mul(
+                crate::base_math::Quaternion::from_axis_angle(
+                    crate::base_math::Vector4::UNIT_Z,
+                    0.3,
+                ),
+            ),
+        );
+        let actual = cinfo.relative_orientation;
+        assert!(
+            (actual.x - expected.x).abs() <= 1e-5
+                && (actual.y - expected.y).abs() <= 1e-5
+                && (actual.z - expected.z).abs() <= 1e-5
+                && (actual.w - expected.w).abs() <= 1e-5,
+            "relative_orientation {actual:?}"
+        );
     }
 
     #[test]
@@ -1169,8 +1192,8 @@ mod tests {
         let joint = WorldJoint::BallAndSocket(BallAndSocketCinfo::new(
             BodyId::new(3),
             BodyId::new(4),
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         assert_eq!(joint.bodies(), (BodyId::new(3), BodyId::new(4)));
     }

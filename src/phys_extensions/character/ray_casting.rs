@@ -11,7 +11,8 @@
 //! use integer counters, so the output is deterministic across runs and thread
 //! counts.
 
-use crate::base_math::{Quaternion, Vector4};
+use crate::base_math::{Quaternion, Vec4Ext, Vector4};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::BodyId;
 use crate::phys_world::{QueryFilter, World};
 
@@ -183,14 +184,15 @@ fn perform_vertical_casts(
 
     for spec in specs {
         let cast_length = (spec.end - spec.start).length3();
-        let Some(hit) = world.raycast_filtered(spec.start, -up, cast_length, filter) else {
+        let Some(hit) = world.raycast_filtered(to_vec4(spec.start), -to_vec4(up), cast_length, filter)
+        else {
             continue;
         };
         let distance = hit.hit_fraction;
         if distance < min_distance {
             min_distance = distance;
         }
-        if hit.normal.dot3(up) < info.max_slope.cos() {
+        if hit.normal.dot3(to_vec4(up)) < info.max_slope.cos() {
             max_slope_misses += 1;
         }
         diffs.push(info.max_step_height + 0.5 * info.body_height - distance);
@@ -201,7 +203,7 @@ fn perform_vertical_casts(
             if let Some(hit) = world.cast_shape(
                 body.shape.as_ref(),
                 &body.transform,
-                -up,
+                -to_vec4(up),
                 3.0 * info.max_step_height,
                 filter,
             ) {
@@ -284,7 +286,7 @@ fn bump_factor(
         return 1.0;
     };
     if world
-        .raycast_filtered(start, direction, half_width, filter)
+        .raycast_filtered(to_vec4(start), to_vec4(direction), half_width, filter)
         .is_some()
     {
         info.bump_factor
@@ -308,7 +310,7 @@ pub fn get_character_params(
         return param;
     };
     let position = body.transform.translation;
-    let up = unit(-world.gravity()).unwrap_or(Vector4::UNIT_Y);
+    let up = unit(to_vector4(-world.gravity())).unwrap_or(Vector4::UNIT_Y);
     let filter = info.query_filter.with_ignore_body(body_id);
 
     let directions = input_directions(up, info.forward);
@@ -361,7 +363,7 @@ pub fn shape_cast_from_body(
     world.cast_shape(
         body.shape.as_ref(),
         &body.transform,
-        direction,
+        to_vec4(direction),
         max_distance,
         &filter.with_ignore_body(body_id),
     )
@@ -384,7 +386,7 @@ mod tests {
 
     fn scene(height: f32) -> (World, BodyId) {
         let mut world =
-            World::new(WorldCinfo::new().with_gravity(Vector4::from_xyz(0.0, -9.81, 0.0)));
+            World::new(WorldCinfo::new().with_gravity(Vec4::from_xyz(0.0, -9.81, 0.0)));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vec4::from_xyz(0.0, height - 0.5, 0.0)),

@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::base_math::Vector4;
+use crate::base_math::Vec4;
 use crate::phys_types::{BodyId, ShapeKey};
 
 /// Status carried by a world-level trigger event.
@@ -115,9 +115,9 @@ impl TriggerEventMerger {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostCollideContactPoint {
     /// World-space contact position (on B, like a manifold point).
-    pub position: Vector4,
+    pub position: Vec4,
     /// World-space contact normal (B → A).
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Non-negative penetration depth.
     pub penetration: f32,
     /// Effective friction after contact modifiers ran.

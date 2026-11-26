@@ -88,7 +88,7 @@ fn trigger_world_with(
     trigger_position: Vec4,
 ) -> (World, Vec<WorldTriggerEvent>) {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let trigger = world.create_body(
         &BodyCinfo::new(Arc::new(SphereShape::new(Vec4::ZERO, 0.3)) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Static)

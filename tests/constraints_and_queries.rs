@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use glam::Vec3;
-use proton::math::{Quaternion, Quat, Transform, Vector4, Vec4, Vec4Ext};
+use proton::math::{Quat, Transform, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{BoxShape, MeshShape, Shape, SphereShape};
 use proton::world::{
@@ -55,18 +55,19 @@ fn ball_socket_pendulum_keeps_pivots_coincident() {
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         anchor_body,
         bob,
-        Vector4::UNIT_X,
-        -Vector4::UNIT_X,
+        Vec4::X,
+        -Vec4::X,
     ));
     assert!(id.is_valid());
 
-    let pivot = Vector4::new(anchor.x, anchor.y, anchor.z, 0.0) + Vector4::UNIT_X;
+    let pivot = proton::math::Vector4::new(anchor.x, anchor.y, anchor.z, 0.0)
+        + proton::math::Vector4::UNIT_X;
     for _ in 0..240 {
         world.step(1.0 / 60.0);
         let pivot_b = world
             .body_transform(bob)
             .unwrap()
-            .transform_point(-Vector4::UNIT_X);
+            .transform_point(-proton::math::Vector4::UNIT_X);
         assert!((pivot_b - pivot).length3() < 0.4, "pivots drifted apart");
     }
 }
@@ -79,7 +80,7 @@ fn fixed_pair_falls_rigidly() {
     let id = world.create_fixed_constraint(&FixedCinfo::between_bodies(
         a,
         b,
-        Vector4::from_xyz(1.0, 5.0, 0.0),
+        Vec4::from_xyz(1.0, 5.0, 0.0),
         &world.body_transform(a).unwrap(),
         &world.body_transform(b).unwrap(),
     ));
@@ -101,18 +102,18 @@ fn fixed_pair_falls_rigidly() {
 #[test]
 fn hinge_constraint_is_deterministic_across_runs() {
     let build = || {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let hub = world.create_body(&BodyCinfo::new(sphere(0.5)));
         let arm = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(2.0, 0.0, 0.0)));
         world.create_hinge_constraint(&HingeCinfo::new(
             hub,
             arm,
-            Vector4::UNIT_X,
-            -Vector4::UNIT_X,
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
+            Vec4::X,
+            -Vec4::X,
+            Vec4::Z,
+            Vec4::Z,
         ));
-        world.set_body_angular_velocity(arm, Vector4::from_xyz(0.0, 3.0, 1.0));
+        world.set_body_angular_velocity(arm, Vec4::from_xyz(0.0, 3.0, 1.0));
         (world, arm)
     };
 
@@ -124,21 +125,21 @@ fn hinge_constraint_is_deterministic_across_runs() {
     }
     assert_eq!(a.snapshot(), b.snapshot());
     // The hinge removes rotation about Y, so the arm stays close to the hub.
-    let distance = (a.body_position(arm_a).unwrap() - Vector4::ZERO).length3();
+    let distance = (a.body_position(arm_a).unwrap() - Vec4::ZERO).length3();
     assert!(distance < 4.0, "arm distance {}", distance);
     let _ = arm_b;
 }
 
 #[test]
 fn constraint_ids_survive_disable_and_destroy() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     let b = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(1.0, 0.0, 0.0)));
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
     ));
     assert_ne!(id, ConstraintId::INVALID);
     assert!(id.is_constraint_index());
@@ -155,8 +156,8 @@ fn constraint_ids_survive_disable_and_destroy() {
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
     ));
     assert!(world.destroy_body(b));
     assert!(world.constraint(id).is_none());
@@ -165,20 +166,20 @@ fn constraint_ids_survive_disable_and_destroy() {
 
 #[test]
 fn raycast_selects_closest_body_and_respects_range() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let near = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 4.0, 0.0)));
     world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 10.0, 0.0)));
 
-    let hit = world.raycast(Vector4::ZERO, Vector4::UNIT_Y, 50.0).unwrap();
+    let hit = world.raycast(Vec4::ZERO, Vec4::Y, 50.0).unwrap();
     assert_eq!(hit.body, near);
     assert!((hit.hit_fraction - 3.0).abs() < 1e-2);
-    assert!(world.raycast(Vector4::ZERO, Vector4::UNIT_Y, 2.0).is_none());
+    assert!(world.raycast(Vec4::ZERO, Vec4::Y, 2.0).is_none());
 }
 
 #[test]
 fn raycast_hits_rotated_boxes_deterministically() {
     let build = || {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_orientation(Quat::from_axis_angle(
@@ -195,13 +196,13 @@ fn raycast_hits_rotated_boxes_deterministically() {
         first.step(1.0 / 60.0);
         second.step(1.0 / 60.0);
     }
-    let hit_a = first.raycast(Vector4::from_xyz(0.0, 20.0, 0.0), -Vector4::UNIT_Y, 30.0);
-    let hit_b = second.raycast(Vector4::from_xyz(0.0, 20.0, 0.0), -Vector4::UNIT_Y, 30.0);
+    let hit_a = first.raycast(Vec4::from_xyz(0.0, 20.0, 0.0), -Vec4::Y, 30.0);
+    let hit_b = second.raycast(Vec4::from_xyz(0.0, 20.0, 0.0), -Vec4::Y, 30.0);
     assert_eq!(hit_a, hit_b);
     let hit = hit_a.unwrap();
     assert!(hit.hit_fraction < 15.0);
     assert!(
-        hit.normal.dot3(-Vector4::UNIT_Y) < -0.7,
+        hit.normal.dot3(-Vec4::Y) < -0.7,
         "normal {:?}",
         hit.normal
     );
@@ -209,32 +210,32 @@ fn raycast_hits_rotated_boxes_deterministically() {
 
 #[test]
 fn closest_point_finds_nearest_surface() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let near = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 3.0, 0.0)));
     world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 20.0, 0.0)));
 
-    let hit = world.closest_point(Vector4::ZERO, 50.0).unwrap();
+    let hit = world.closest_point(Vec4::ZERO, 50.0).unwrap();
     assert_eq!(hit.body, near);
     assert!((hit.distance - 2.0).abs() < 1e-2);
-    assert!(hit.point.all_equal3(Vector4::from_xyz(0.0, 2.0, 0.0), 1e-2));
-    assert!(world.closest_point(Vector4::ZERO, 1.0).is_none());
+    assert!(hit.point.all_equal3(Vec4::from_xyz(0.0, 2.0, 0.0), 1e-2));
+    assert!(world.closest_point(Vec4::ZERO, 1.0).is_none());
 
     // Inside a shape: distance 0.
     let inside = world
-        .closest_point(Vector4::from_xyz(0.0, 3.0, 0.0), 10.0)
+        .closest_point(Vec4::from_xyz(0.0, 3.0, 0.0), 10.0)
         .unwrap();
     assert_eq!(inside.distance, 0.0);
 }
 
 #[test]
 fn invalid_constraint_bodies_are_rejected() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let body = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         BodyId::invalid(),
         body,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
     ));
     assert_eq!(id, ConstraintId::INVALID);
     assert_eq!(world.constraint_count(), 0);
@@ -254,7 +255,7 @@ fn raycast_and_contacts_coexist_in_one_scene() {
     }
     // The settled ball rests on the ground and the ray hits its top surface.
     assert!(world.last_contact_count() > 0);
-    let hit = world.raycast(Vector4::from_xyz(0.0, 5.0, 0.0), -Vector4::UNIT_Y, 10.0);
+    let hit = world.raycast(Vec4::from_xyz(0.0, 5.0, 0.0), -Vec4::Y, 10.0);
     let hit = hit.expect("ray must reach the settled ball");
     assert_eq!(hit.body, ball.min(ground).max(ball));
     assert!(hit.hit_fraction < 5.0);
@@ -264,7 +265,7 @@ fn raycast_and_contacts_coexist_in_one_scene() {
 fn hinged_arm_world() -> (World, BodyId, BodyId, ConstraintId) {
     let mut world = World::new(
         WorldCinfo::new()
-            .with_gravity(Vector4::ZERO)
+            .with_gravity(Vec4::ZERO)
             .with_solver_settings(0.2, 0.0, 16),
     );
     let hub = world.create_body(&BodyCinfo::new(sphere(0.5)));
@@ -274,10 +275,10 @@ fn hinged_arm_world() -> (World, BodyId, BodyId, ConstraintId) {
     let id = world.create_hinge_constraint(&HingeCinfo::new(
         hub,
         arm,
-        Vector4::ZERO,
-        Vector4::from_xyz(-2.0, 0.0, 0.0),
-        Vector4::UNIT_Z,
-        Vector4::UNIT_Z,
+        Vec4::ZERO,
+        Vec4::from_xyz(-2.0, 0.0, 0.0),
+        Vec4::Z,
+        Vec4::Z,
     ));
     assert!(id.is_valid());
     (world, hub, arm, id)
@@ -290,13 +291,13 @@ fn hinge_angle_of(world: &World, hub: BodyId, arm: BodyId) -> f32 {
         .body_transform(hub)
         .unwrap()
         .rotation
-        .rotate(Vector4::UNIT_X);
+        .rotate(proton::math::Vector4::UNIT_X);
     let twist_b = world
         .body_transform(arm)
         .unwrap()
         .rotation
-        .rotate(Vector4::UNIT_X);
-    let sin = twist_a.cross(twist_b).dot3(Vector4::UNIT_Z);
+        .rotate(proton::math::Vector4::UNIT_X);
+    let sin = twist_a.cross(twist_b).dot3(proton::math::Vector4::UNIT_Z);
     sin.atan2(twist_a.dot3(twist_b))
 }
 
@@ -307,8 +308,8 @@ fn hinge_limits_stop_the_swing_at_the_bound() {
     world.set_body_transform(
         arm,
         proton::math::Transform::from_quaternion(
-            Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.6),
-            Vector4::from_xyz(2.0, 0.0, 0.0),
+            proton::math::Quaternion::from_axis_angle(proton::math::Vector4::UNIT_Z, 0.6),
+            proton::math::Vector4::from_xyz(2.0, 0.0, 0.0),
         ),
     );
     world.set_hinge_limits(id, Some(proton::world::HingeLimitsCinfo::new(-0.2, 0.2)));
@@ -373,8 +374,8 @@ fn hinge_limits_and_motor_are_bitwise_deterministic() {
         world.set_body_transform(
             arm,
             proton::math::Transform::from_quaternion(
-                Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.5),
-                Vector4::from_xyz(2.0, 0.0, 0.0),
+                proton::math::Quaternion::from_axis_angle(proton::math::Vector4::UNIT_Z, 0.5),
+                proton::math::Vector4::from_xyz(2.0, 0.0, 0.0),
             ),
         );
         for _ in 0..90 {
@@ -387,17 +388,20 @@ fn hinge_limits_and_motor_are_bitwise_deterministic() {
 
 #[test]
 fn shape_cast_reaches_mesh_ground_and_ignores_the_caster() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let ground = world.create_body(&BodyCinfo::new(mesh_ground(10.0)));
     let caster = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(0.0, 5.0, 0.0)));
     let query = sphere(0.5);
-    let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
+    let start = Transform::from_quaternion(
+        proton::math::Quaternion::IDENTITY,
+        proton::math::Vector4::from_xyz(0.0, 5.0, 0.0),
+    );
 
     let hit = world
         .cast_shape(
             query.as_ref(),
             &start,
-            -Vector4::UNIT_Y,
+            -Vec4::Y,
             10.0,
             &QueryFilter::default(),
         )
@@ -407,7 +411,7 @@ fn shape_cast_reaches_mesh_ground_and_ignores_the_caster() {
 
     let filter = QueryFilter::default().with_ignore_body(caster);
     let hit = world
-        .cast_shape(query.as_ref(), &start, -Vector4::UNIT_Y, 10.0, &filter)
+        .cast_shape(query.as_ref(), &start, -Vec4::Y, 10.0, &filter)
         .expect("cast must hit the mesh ground");
     assert_eq!(hit.body, ground);
     assert!(
@@ -415,14 +419,14 @@ fn shape_cast_reaches_mesh_ground_and_ignores_the_caster() {
         "distance {}",
         hit.distance
     );
-    assert!(hit.normal.dot3(Vector4::UNIT_Y) > 0.9);
+    assert!(hit.normal.dot3(Vec4::Y) > 0.9);
     assert!(!hit.start_penetrating);
 
     // The ray query reaches the same mesh ground when the caster is filtered.
     let ray = world
         .raycast_filtered(
-            Vector4::from_xyz(0.0, 5.0, 0.0),
-            -Vector4::UNIT_Y,
+            Vec4::from_xyz(0.0, 5.0, 0.0),
+            -Vec4::Y,
             10.0,
             &QueryFilter::default().with_ignore_body(caster),
         )
@@ -433,7 +437,7 @@ fn shape_cast_reaches_mesh_ground_and_ignores_the_caster() {
 
 #[test]
 fn closest_points_query_reports_the_nearest_body() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let body = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 3.0, 0.0)));
     let query = sphere(0.5);
     let hit = world
@@ -450,16 +454,19 @@ fn closest_points_query_reports_the_nearest_body() {
         "distance {}",
         hit.distance
     );
-    assert!(hit.normal.dot3(Vector4::UNIT_Y) < -0.9);
+    assert!(hit.normal.dot3(Vec4::Y) < -0.9);
 }
 
 #[test]
 fn aabb_query_respects_the_filter() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let first = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(0.0, 0.0, 0.0)));
     let second = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(1.5, 0.0, 0.0)));
     world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(20.0, 0.0, 0.0)));
-    let aabb = proton::math::Aabb::from_center_half_extents(Vector4::ZERO, Vector4::splat(1.0));
+    let aabb = proton::math::Aabb::from_center_half_extents(
+        proton::math::Vector4::ZERO,
+        proton::math::Vector4::splat(1.0),
+    );
     assert_eq!(
         world.query_aabb(&aabb, &QueryFilter::default()),
         vec![first, second]
@@ -472,7 +479,7 @@ fn aabb_query_respects_the_filter() {
 
 #[test]
 fn prismatic_slider_moves_along_its_axis() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let parent = world.create_body(&BodyCinfo::new(sphere(0.5)));
     let slider = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     let transform_a = world.body_transform(slider).unwrap();
@@ -481,16 +488,16 @@ fn prismatic_slider_moves_along_its_axis() {
         &PrismaticCinfo::between_bodies(
             slider,
             parent,
-            Vector4::ZERO,
+            Vec4::ZERO,
             &transform_a,
             &transform_b,
-            Vector4::UNIT_X,
+            Vec4::X,
         )
         .with_limits(-5.0, 5.0),
     );
     assert!(id.is_valid());
     assert!(world.set_constraint_collisions_enabled(id, false));
-    world.set_body_linear_velocity(slider, Vector4::from_xyz(2.0, 1.0, 0.0));
+    world.set_body_linear_velocity(slider, Vec4::from_xyz(2.0, 1.0, 0.0));
     for _ in 0..120 {
         world.step(1.0 / 60.0);
     }
@@ -504,21 +511,21 @@ fn prismatic_slider_moves_along_its_axis() {
 
 #[test]
 fn spring_constraint_holds_the_distance() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let anchor = world
         .create_body(&BodyCinfo::new(sphere(0.5)).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)));
     let bob = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     world.create_spring_constraint(&SpringCinfo::new(
         bob,
         anchor,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
         1.0,
     ));
     for _ in 0..240 {
         world.step(1.0 / 60.0);
     }
-    let distance = (world.body_position(bob).unwrap() - Vector4::from_xyz(0.0, 2.0, 0.0)).length3();
+    let distance = (world.body_position(bob).unwrap() - Vec4::from_xyz(0.0, 2.0, 0.0)).length3();
     assert!((distance - 1.0).abs() < 0.35, "spring distance {distance}");
 }
 
@@ -530,9 +537,9 @@ fn point_to_plane_keeps_the_pivot_on_the_plane() {
     let id = world.create_point_to_plane_constraint(&PointToPlaneCinfo::new(
         body,
         plane_body,
-        Vector4::from_xyz(0.0, -1.0, 0.0),
-        Vector4::ZERO,
-        Vector4::UNIT_Y,
+        Vec4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::ZERO,
+        Vec4::Y,
     ));
     assert!(id.is_valid());
     assert!(world.set_constraint_collisions_enabled(id, false));
@@ -545,7 +552,7 @@ fn point_to_plane_keeps_the_pivot_on_the_plane() {
 
 #[test]
 fn ragdoll_cone_limit_holds_the_swing() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let parent = world.create_body(&BodyCinfo::new(sphere(0.5)));
     let child = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     let motion = world.body(child).unwrap().motion_id;
@@ -554,12 +561,12 @@ fn ragdoll_cone_limit_holds_the_swing() {
         &RagdollCinfo::new(
             child,
             parent,
-            Vector4::ZERO,
-            Vector4::ZERO,
-            Vector4::UNIT_X,
-            Vector4::UNIT_X,
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Vec4::X,
+            Vec4::X,
+            Vec4::Z,
+            Vec4::Z,
         )
         .with_limits(0.2, -0.1, 0.1),
     );
@@ -568,8 +575,8 @@ fn ragdoll_cone_limit_holds_the_swing() {
     world.set_body_transform(
         child,
         Transform::from_quaternion(
-            Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.5),
-            Vector4::ZERO,
+            proton::math::Quaternion::from_axis_angle(proton::math::Vector4::UNIT_Z, 0.5),
+            proton::math::Vector4::ZERO,
         ),
     );
     for _ in 0..180 {
@@ -579,8 +586,8 @@ fn ragdoll_cone_limit_holds_the_swing() {
         .body_transform(child)
         .unwrap()
         .rotation
-        .rotate(Vector4::UNIT_X);
-    let angle = twist.dot3(Vector4::UNIT_X).clamp(-1.0, 1.0).acos();
+        .rotate(proton::math::Vector4::UNIT_X);
+    let angle = twist.dot3(proton::math::Vector4::UNIT_X).clamp(-1.0, 1.0).acos();
     assert!(angle < 0.35, "ragdoll swing {angle}");
 }
 
@@ -597,17 +604,17 @@ fn joint_scene_is_bitwise_deterministic() {
         world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             link,
             anchor,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         let arm = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(2.0, 4.0, 0.0)));
         world.create_hinge_constraint(&HingeCinfo::new(
             arm,
             link,
-            Vector4::from_xyz(-2.0, 0.0, 0.0),
-            Vector4::ZERO,
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
+            Vec4::from_xyz(-2.0, 0.0, 0.0),
+            Vec4::ZERO,
+            Vec4::Z,
+            Vec4::Z,
         ));
         let slider = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(-3.0, 0.0, 0.0)));
         let anchor2 = world.create_body(
@@ -616,10 +623,10 @@ fn joint_scene_is_bitwise_deterministic() {
         world.create_prismatic_constraint(&PrismaticCinfo::new(
             slider,
             anchor2,
-            Vector4::ZERO,
-            Vector4::ZERO,
-            Vector4::UNIT_X,
-            Vector4::UNIT_X,
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Vec4::X,
+            Vec4::X,
         ));
         world
     };
@@ -634,14 +641,14 @@ fn joint_scene_is_bitwise_deterministic() {
 
 #[test]
 fn joint_collision_suppression_removes_contacts() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(&dynamic_sphere(1.0, Vec4::ZERO));
     let b = world.create_body(&dynamic_sphere(1.0, Vec4::from_xyz(1.5, 0.0, 0.0)));
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
     ));
     assert!(!world.collect_contacts().is_empty());
     assert!(world.set_constraint_collisions_enabled(id, false));
@@ -652,14 +659,14 @@ fn joint_collision_suppression_removes_contacts() {
 
 #[test]
 fn invalid_joint_limits_are_rejected_for_wrong_types() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
     let b = world.create_body(&dynamic_sphere(0.5, Vec4::from_xyz(1.0, 0.0, 0.0)));
     let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::ZERO,
+        Vec4::ZERO,
+        Vec4::ZERO,
     ));
     assert!(!world.set_ragdoll_limits(id, 0.3, -0.1, 0.1));
     assert!(!world.set_prismatic_limits(id, -1.0, 1.0));

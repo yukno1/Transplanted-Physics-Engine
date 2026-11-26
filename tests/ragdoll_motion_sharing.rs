@@ -75,7 +75,7 @@ fn m3_detach_allocates_fresh_motion_and_keeps_velocity() {
     assert!(world.attach_bodies(target, &[child]));
     assert_eq!(world.body_motion_id(child), Some(motion));
 
-    let velocity = Vector4::from_xyz(2.0, 0.0, 0.0);
+    let velocity = Vec4::from_xyz(2.0, 0.0, 0.0);
     assert!(world.set_body_linear_velocity(target, velocity));
     assert!(world.detach_bodies(&[child]));
     let detached = world.body_motion_id(child).unwrap();
@@ -98,7 +98,7 @@ fn m4_shared_transform_updates_every_member() {
     assert!(world.set_body_transform(child, transform));
     assert_eq!(
         world.body_position(target),
-        Some(Vector4::from_xyz(3.0, 0.0, 0.0))
+        Some(Vec4::from_xyz(3.0, 0.0, 0.0))
     );
     assert_eq!(world.body_position(child), world.body_position(target));
 }
@@ -107,7 +107,7 @@ fn m4_shared_transform_updates_every_member() {
 fn m5_shared_motion_scenario_is_bit_deterministic() {
     fn run() -> String {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let target = body(&mut world, Vec4::ZERO, MotionType::Dynamic);
         let first = world
             .create_attached_body(target, &attached_cinfo())
@@ -118,7 +118,7 @@ fn m5_shared_motion_scenario_is_bit_deterministic() {
             MotionType::Dynamic,
         );
         assert!(world.attach_bodies(target, &[second]));
-        world.set_body_linear_velocity(target, Vector4::from_xyz(1.0, 0.0, 0.0));
+        world.set_body_linear_velocity(target, Vec4::from_xyz(1.0, 0.0, 0.0));
         world.set_body_transform(
             first,
             proton::math::Transform::from_quaternion(

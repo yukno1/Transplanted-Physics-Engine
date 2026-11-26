@@ -27,12 +27,12 @@ fn hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
     let info = HingeCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::from_xyz(-1.0, 0.0, 0.0),
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
+        Vec4::ZERO,
+        Vec4::from_xyz(-1.0, 0.0, 0.0),
+        Vec4::Y,
+        Vec4::Y,
     )
-    .with_reference_axes(Vector4::UNIT_X, Vector4::UNIT_X)
+    .with_reference_axes(Vec4::X, Vec4::X)
     .with_limits(HingeLimitsCinfo::new(-0.1, 0.1));
     (a, b, world.create_limited_hinge_constraint(&info))
 }
@@ -43,12 +43,12 @@ fn six_dof(world: &mut World) -> (BodyId, ConstraintId) {
     let info = SixDofCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::from_xyz(0.0, -1.0, 0.0),
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_X,
-        Vector4::UNIT_X,
+        Vec4::ZERO,
+        Vec4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::Y,
+        Vec4::Y,
+        Vec4::X,
+        Vec4::X,
         SixDofLimitsCinfo::new(-0.2, 0.2, 0.2, 0.2, 0.1),
     );
     (b, world.create_6dof_constraint(&info))

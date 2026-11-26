@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use crate::base_math::{Matrix3, Quaternion, Vector4};
+use crate::base_math::{Mat3, Quat, Vec4};
 use crate::phys_shape::MassProperties;
 use crate::phys_types::BodyId;
 
@@ -33,26 +33,22 @@ pub struct MassSummary {
     /// Unit-density volume.
     pub volume: f32,
     /// Centre of mass.
-    pub center_of_mass: Vector4,
+    pub center_of_mass: Vec4,
     /// World-space inverse inertia matrix.
-    pub inverse_inertia_world: Matrix3,
+    pub inverse_inertia_world: Mat3,
     /// Principal-axis frame.
-    pub major_axis_space: Quaternion,
+    pub major_axis_space: Quat,
 }
 
 impl MassSummary {
     /// Summarize optional full mass properties.
     pub fn from_properties(properties: Option<&MassProperties>) -> Option<Self> {
-        use crate::phys_shape::{to_quaternion, to_vector4};
-
         properties.map(|properties| Self {
             mass: properties.mass,
             volume: properties.volume,
-            // 过渡期边界：`MassProperties` 已迁移 glam（Phase 3 步骤 2），
-            // `MassSummary` 仍为 legacy（步骤 5 迁移时删除转换）。
-            center_of_mass: to_vector4(properties.center_of_mass),
-            inverse_inertia_world: Matrix3::ZERO,
-            major_axis_space: to_quaternion(properties.major_axis_space),
+            center_of_mass: properties.center_of_mass,
+            inverse_inertia_world: Mat3::ZERO,
+            major_axis_space: properties.major_axis_space,
         })
     }
 }

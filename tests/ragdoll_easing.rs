@@ -120,15 +120,15 @@ fn e3_at_rest_transition_checks_tagged_body_velocities() {
         )
         .unwrap();
 
-    world.set_body_linear_velocity(child, Vector4::from_xyz(2.0, 0.0, 0.0));
+    world.set_body_linear_velocity(child, Vec4::from_xyz(2.0, 0.0, 0.0));
     let pose = [Transform::IDENTITY; 2];
     controller
         .step(&mut world, &pose, Transform::IDENTITY, 1.0 / 60.0)
         .unwrap();
     assert_eq!(controller.state(), RagdollState::Dynamic);
 
-    world.set_body_linear_velocity(child, Vector4::ZERO);
-    world.set_body_angular_velocity(child, Vector4::ZERO);
+    world.set_body_linear_velocity(child, Vec4::ZERO);
+    world.set_body_angular_velocity(child, Vec4::ZERO);
     controller
         .step(&mut world, &pose, Transform::IDENTITY, 1.0 / 60.0)
         .unwrap();

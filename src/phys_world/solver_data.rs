@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::base_math::Vector4;
+use crate::base_math::Vec4;
 use crate::phys_types::BodyId;
 
 /// Listener handle returned by [`SolverDataHookRegistry::register`].
@@ -27,11 +27,11 @@ pub struct SolverDataView<'a> {
     /// Second body of the pair.
     pub body_b: BodyId,
     /// Unit contact normal (B → A).
-    pub normal: &'a mut Vector4,
+    pub normal: &'a mut Vec4,
     /// Deterministic first tangent from [`proton::solver::contact_tangents`].
-    pub tangent_1: &'a mut Vector4,
+    pub tangent_1: &'a mut Vec4,
     /// Deterministic second tangent from [`proton::solver::contact_tangents`].
-    pub tangent_2: &'a mut Vector4,
+    pub tangent_2: &'a mut Vec4,
     /// Non-negative penetration depth.
     pub penetration: &'a mut f32,
     /// Coulomb friction coefficient.
@@ -154,9 +154,9 @@ mod tests {
         let registry = SolverDataHookRegistry::default();
         let id = registry.register(Arc::new(ScaleImpulse(2.0)));
         let hooks = registry.snapshot();
-        let mut normal = Vector4::UNIT_Y;
-        let mut tangent_1 = Vector4::UNIT_X;
-        let mut tangent_2 = Vector4::UNIT_Z;
+        let mut normal = Vec4::Y;
+        let mut tangent_1 = Vec4::X;
+        let mut tangent_2 = Vec4::Z;
         let mut penetration = 0.1;
         let mut friction = 0.5;
         let mut normal_impulse = 2.0f32;

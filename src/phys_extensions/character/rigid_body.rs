@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use crate::base_math::{Aabb, Quaternion, Transform, Vector4};
 use crate::phys_body::BodyCinfo;
 use crate::phys_collide::closest_points;
-use crate::phys_shape::{Shape, to_vector4};
+use crate::phys_shape::{Shape, to_vec4, to_vector4};
 use crate::phys_types::{BodyId, MotionType};
 use crate::phys_world::{QueryFilter, World};
 
@@ -172,20 +172,24 @@ impl CharacterRigidBody {
 
     /// World position (`getPosition`).
     pub fn position(&self, world: &World) -> Vector4 {
-        world.body_position(self.body).unwrap_or(Vector4::ZERO)
+        world
+            .body_position(self.body)
+            .map(to_vector4)
+            .unwrap_or(Vector4::ZERO)
     }
 
     /// Linear velocity (`getLinearVelocity`).
     pub fn linear_velocity(&self, world: &World) -> Vector4 {
         world
             .body_linear_velocity(self.body)
+            .map(to_vector4)
             .unwrap_or(Vector4::ZERO)
     }
 
     /// Set linear velocity (`setLinearVelocity`).
     pub fn set_linear_velocity(&self, world: &mut World, velocity: Vector4) -> bool {
         let _ = world.wake_body(self.body);
-        world.set_body_linear_velocity(self.body, velocity)
+        world.set_body_linear_velocity(self.body, to_vec4(velocity))
     }
 
     /// Set world position (`setPosition`).
@@ -279,7 +283,7 @@ impl CharacterRigidBody {
             }
         }
         let _ = world.wake_body(self.body);
-        let _ = world.set_body_linear_velocity(self.body, velocity);
+        let _ = world.set_body_linear_velocity(self.body, to_vec4(velocity));
         self.cached_position = self.position(world);
         self.cached_velocity = self.linear_velocity(world);
         self.fire_monitor(

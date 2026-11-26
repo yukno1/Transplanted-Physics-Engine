@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use glam::Vec3;
-use proton::math::{Mat3, Mat3Ext, Matrix3, Quaternion, Transform, Vec4, Vec4Ext, Vector4};
+use proton::math::{Mat3, Mat3Ext, Quaternion, Transform, Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::mass::{MassConfig, MassError};
 use proton::shape::{BoxShape, CompoundShape, Shape, ShapeInstance, ShapeMassCache, SphereShape};
@@ -87,10 +87,10 @@ fn negative_mass_bodies_derive_shape_inertia() {
     assert!(motion.inverse_inertia_world.element_sdk(0, 0) > 0.0);
     assert!(motion.inverse_inertia.x > 0.0);
 
-    let matrix = Matrix3::from_cols(
-        Vector4::from_xyz(0.3, 0.0, 0.1),
-        Vector4::from_xyz(0.0, 0.2, 0.0),
-        Vector4::from_xyz(0.1, 0.0, 0.4),
+    let matrix = proton::math::Mat3::from_cols(
+        glam::Vec3::new(0.3, 0.0, 0.1),
+        glam::Vec3::new(0.0, 0.2, 0.0),
+        glam::Vec3::new(0.1, 0.0, 0.4),
     );
     assert!(world.set_body_inverse_inertia_world(body_id, matrix));
     let motion = world

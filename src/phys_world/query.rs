@@ -11,7 +11,7 @@
 //! and shape casts through [`crate::phys_collide`]'s leaf traversal. Closest-point
 //! queries remain convex-only (GJK needs a support function).
 
-use crate::base_math::{Aabb, Transform, Vector4};
+use crate::base_math::{Aabb, Transform, Vec4, Vec4Ext};
 use crate::phys_body::Body;
 use crate::phys_collide::query::ray_aabb;
 use crate::phys_collide::{
@@ -30,9 +30,9 @@ pub struct RayCastHit {
     /// Distance from the ray origin to the hit along the normalized direction.
     pub hit_fraction: f32,
     /// Hit point on the body's shape surface (world space).
-    pub position: Vector4,
+    pub position: Vec4,
     /// Outward surface normal at the hit.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Leaf shape key (convex-hull face or composite leaf; invalid for other
     /// direct convex hits).
     pub shape_key: ShapeKey,
@@ -46,11 +46,11 @@ pub struct ShapeCastHitInfo {
     /// Distance travelled by the query shape before contact.
     pub distance: f32,
     /// Contact point on the hit body (world space).
-    pub position: Vector4,
+    pub position: Vec4,
     /// Contact normal pointing from the hit body to the query shape.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Witness point on the query shape at the hit pose.
-    pub point_on_query: Vector4,
+    pub point_on_query: Vec4,
     /// Whether the query shape started overlapping the body.
     pub start_penetrating: bool,
     /// Leaf shape key (invalid for a direct convex hit).
@@ -63,7 +63,7 @@ pub struct ClosestPointHit {
     /// The hit body.
     pub body: BodyId,
     /// Closest point on the body's shape surface (world space).
-    pub point: Vector4,
+    pub point: Vec4,
     /// Distance from the query; `0` when the query is inside the shape.
     pub distance: f32,
 }
@@ -74,11 +74,11 @@ pub struct ClosestPointsHit {
     /// The hit body.
     pub body: BodyId,
     /// Closest point on the body's shape (world space).
-    pub point_on_body: Vector4,
+    pub point_on_body: Vec4,
     /// Closest point on the query shape (world space).
-    pub point_on_query: Vector4,
+    pub point_on_query: Vec4,
     /// Unit separating normal, from the body towards the query shape.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Signed distance (negative when the shapes overlap).
     pub distance: f32,
 }
@@ -193,8 +193,8 @@ impl World {
     /// against their shape(s), including composite leaves.
     pub fn raycast(
         &self,
-        origin: Vector4,
-        direction: Vector4,
+        origin: Vec4,
+        direction: Vec4,
         max_length: f32,
     ) -> Option<RayCastHit> {
         self.raycast_filtered(origin, direction, max_length, &QueryFilter::default())
@@ -203,8 +203,8 @@ impl World {
     /// Ray cast restricted by `filter`.
     pub fn raycast_filtered(
         &self,
-        origin: Vector4,
-        direction: Vector4,
+        origin: Vec4,
+        direction: Vec4,
         max_length: f32,
         filter: &QueryFilter,
     ) -> Option<RayCastHit> {
@@ -220,7 +220,9 @@ impl World {
                 continue;
             }
             // Coarse AABB clip against the ray interval.
-            let Some((entry, exit)) = ray_aabb(origin, direction, &body.aabb) else {
+            let Some((entry, exit)) =
+                ray_aabb(to_vector4(origin), to_vector4(direction), &body.aabb)
+            else {
                 continue;
             };
             if entry > max_length || exit < 0.0 {
@@ -229,8 +231,8 @@ impl World {
             let Some(hit) = crate::phys_collide::raycast(
                 body.shape.as_ref(),
                 &body.transform,
-                origin,
-                direction,
+                to_vector4(origin),
+                to_vector4(direction),
                 max_length,
             ) else {
                 continue;
@@ -238,8 +240,8 @@ impl World {
             let candidate = RayCastHit {
                 body: body.id,
                 hit_fraction: hit.hit_fraction,
-                position: to_vector4(hit.position),
-                normal: to_vector4(hit.normal),
+                position: hit.position,
+                normal: hit.normal,
                 shape_key: hit.shape_key,
             };
             best = Some(match best {
@@ -266,7 +268,7 @@ impl World {
         &self,
         shape: &dyn Shape,
         transform: &Transform,
-        direction: Vector4,
+        direction: Vec4,
         max_distance: f32,
         filter: &QueryFilter,
     ) -> Option<ShapeCastHitInfo> {
@@ -293,7 +295,7 @@ impl World {
                 transform,
                 body.shape.as_ref(),
                 &body.transform,
-                direction,
+                to_vector4(direction),
                 max_distance,
                 DEFAULT_SHAPE_CAST_TOLERANCE,
             ) else {
@@ -302,9 +304,9 @@ impl World {
             let candidate = ShapeCastHitInfo {
                 body: body.id,
                 distance: hit.fraction,
-                position: to_vector4(hit.position),
-                normal: to_vector4(hit.normal),
-                point_on_query: to_vector4(hit.point_on_query),
+                position: hit.position,
+                normal: hit.normal,
+                point_on_query: hit.point_on_query,
                 start_penetrating: hit.start_penetrating,
                 shape_key: hit.shape_key,
             };
@@ -327,14 +329,14 @@ impl World {
     ///
     /// `max_distance` bounds the search; convex shapes only. When the point
     /// lies inside a shape, the hit reports that body with distance `0`.
-    pub fn closest_point(&self, position: Vector4, max_distance: f32) -> Option<ClosestPointHit> {
+    pub fn closest_point(&self, position: Vec4, max_distance: f32) -> Option<ClosestPointHit> {
         self.closest_point_filtered(position, max_distance, &QueryFilter::default())
     }
 
     /// Point query restricted by `filter`.
     pub fn closest_point_filtered(
         &self,
-        position: Vector4,
+        position: Vec4,
         max_distance: f32,
         filter: &QueryFilter,
     ) -> Option<ClosestPointHit> {
@@ -344,7 +346,7 @@ impl World {
                 continue;
             }
             // Coarse rejection: distance to the cached AABB (clamped point).
-            let clamped = Vector4::from_xyz(
+            let clamped = Vec4::from_xyz(
                 position.x.clamp(body.aabb.min.x, body.aabb.max.x),
                 position.y.clamp(body.aabb.min.y, body.aabb.max.y),
                 position.z.clamp(body.aabb.min.z, body.aabb.max.z),
@@ -352,7 +354,8 @@ impl World {
             if (position - clamped).length3() > max_distance {
                 continue;
             }
-            let Some(result) = point_distance(body.shape.as_ref(), &body.transform, position)
+            let Some(result) =
+                point_distance(body.shape.as_ref(), &body.transform, to_vector4(position))
             else {
                 continue;
             };
@@ -366,7 +369,7 @@ impl World {
             }
             let candidate = ClosestPointHit {
                 body: body.id,
-                point: to_vector4(result.point_b),
+                point: result.point_b,
                 distance,
             };
             best = Some(match best {
@@ -431,11 +434,9 @@ impl World {
                         }
                         ClosestPointsHit {
                             body: body.id,
-                            point_on_body: to_vector4(point.position),
-                            point_on_query: to_vector4(
-                                point.position + manifold.normal * distance,
-                            ),
-                            normal: to_vector4(manifold.normal),
+                            point_on_body: point.position,
+                            point_on_query: point.position + manifold.normal * distance,
+                            normal: manifold.normal,
                             distance,
                         }
                     }
@@ -445,9 +446,9 @@ impl World {
                         }
                         ClosestPointsHit {
                             body: body.id,
-                            point_on_body: to_vector4(result.point_b),
-                            point_on_query: to_vector4(result.point_a),
-                            normal: to_vector4(result.normal),
+                            point_on_body: result.point_b,
+                            point_on_query: result.point_a,
+                            normal: result.normal,
                             distance: 0.0,
                         }
                     }
@@ -470,9 +471,9 @@ impl World {
             }
             let candidate = ClosestPointsHit {
                 body: body.id,
-                point_on_body: to_vector4(result.point_b),
-                point_on_query: to_vector4(result.point_a),
-                normal: to_vector4(result.normal),
+                point_on_body: result.point_b,
+                point_on_query: result.point_a,
+                normal: result.normal,
                 distance,
             };
             best = Some(match best {
@@ -508,13 +509,13 @@ impl World {
 fn swept_aabb(
     shape: &dyn Shape,
     transform: &Transform,
-    direction: Vector4,
+    direction: Vec4,
     max_distance: f32,
 ) -> Aabb {
     let mut swept = shape.calc_aabb(transform);
     let end = Transform::new(
         transform.rotation,
-        transform.translation + direction * max_distance,
+        transform.translation + to_vector4(direction) * max_distance,
     );
     swept.include_aabb(&shape.calc_aabb(&end));
     swept
@@ -523,13 +524,10 @@ fn swept_aabb(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
     use crate::phys_body::BodyCinfo;
     use crate::phys_shape::{BoxShape, MeshShape, Shape, SphereShape};
     use crate::phys_types::MotionType;
     use crate::phys_world::WorldCinfo;
-    use crate::base_math::Vec4Ext;
-    use glam::Vec4;
     use std::sync::Arc;
 
     fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
@@ -554,7 +552,7 @@ mod tests {
 
     #[test]
     fn raycast_finds_closest_body() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
         );
@@ -563,7 +561,7 @@ mod tests {
         );
 
         let hit = world
-            .raycast(Vector4::ZERO, Vector4::UNIT_Y, 50.0)
+            .raycast(Vec4::ZERO, Vec4::Y, 50.0)
             .expect("ray must hit a sphere");
         assert_eq!(hit.body, near);
         assert!(
@@ -572,17 +570,17 @@ mod tests {
             hit.hit_fraction
         );
         assert!(
-            hit.normal.all_equal3(-Vector4::UNIT_Y, 1e-2),
+            hit.normal.all_equal3(-Vec4::Y, 1e-2),
             "normal {:?}",
             hit.normal
         );
 
-        assert!(world.raycast(Vector4::ZERO, Vector4::UNIT_Y, 2.0).is_none());
+        assert!(world.raycast(Vec4::ZERO, Vec4::Y, 2.0).is_none());
     }
 
     #[test]
     fn raycast_breaks_ties_by_lower_body_id() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let first = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_position(Vec4::from_xyz(0.0, 10.0, 0.0)),
@@ -594,7 +592,7 @@ mod tests {
         // Two identical boxes share a pose: both produce the same hit fraction
         // and the lower body id wins.
         let hit = world
-            .raycast(Vector4::ZERO, Vector4::UNIT_Y, 100.0)
+            .raycast(Vec4::ZERO, Vec4::Y, 100.0)
             .expect("ray must hit a box");
         assert_eq!(hit.body, first);
         assert!(first < second);
@@ -602,7 +600,7 @@ mod tests {
 
     #[test]
     fn raycast_hits_rotated_body() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_orientation(glam::Quat::from_axis_angle(
@@ -612,19 +610,19 @@ mod tests {
                 .with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let hit = world
-            .raycast(Vector4::from_xyz(0.0, 10.0, 0.0), -Vector4::UNIT_Y, 20.0)
+            .raycast(Vec4::from_xyz(0.0, 10.0, 0.0), -Vec4::Y, 20.0)
             .expect("ray must hit the rotated box");
         assert!(hit.hit_fraction < 5.0, "fraction {}", hit.hit_fraction);
     }
 
     #[test]
     fn raycast_hits_mesh_body() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let ground = world.create_body(
             &BodyCinfo::new(mesh_ground(5.0)).with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
         let hit = world
-            .raycast(Vector4::from_xyz(1.0, 4.0, 1.0), -Vector4::UNIT_Y, 10.0)
+            .raycast(Vec4::from_xyz(1.0, 4.0, 1.0), -Vec4::Y, 10.0)
             .expect("ray must hit the mesh ground");
         assert_eq!(hit.body, ground);
         assert!(
@@ -632,12 +630,12 @@ mod tests {
             "fraction {}",
             hit.hit_fraction
         );
-        assert!(hit.normal.dot3(Vector4::UNIT_Y) > 0.9);
+        assert!(hit.normal.dot3(Vec4::Y) > 0.9);
     }
 
     #[test]
     fn raycast_filter_excludes_bodies() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let ignored = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
@@ -649,7 +647,7 @@ mod tests {
         );
         let filter = QueryFilter::default().with_ignore_body(ignored);
         let hit = world
-            .raycast_filtered(Vector4::ZERO, Vector4::UNIT_Y, 50.0, &filter)
+            .raycast_filtered(Vec4::ZERO, Vec4::Y, 50.0, &filter)
             .expect("ray must skip the ignored body");
         assert_eq!(hit.body, far);
 
@@ -658,14 +656,14 @@ mod tests {
             .include_keyframed(false)
             .include_dynamic(true);
         let hit = world
-            .raycast_filtered(Vector4::ZERO, Vector4::UNIT_Y, 50.0, &filter)
+            .raycast_filtered(Vec4::ZERO, Vec4::Y, 50.0, &filter)
             .expect("dynamic-only filter must hit the ignored body");
         assert_eq!(hit.body, ignored);
     }
 
     #[test]
     fn closest_point_finds_nearest_body() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let near = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 3.0, 0.0)),
         );
@@ -674,7 +672,7 @@ mod tests {
         );
 
         let hit = world
-            .closest_point(Vector4::from_xyz(0.0, 0.0, 0.0), 50.0)
+            .closest_point(Vec4::from_xyz(0.0, 0.0, 0.0), 50.0)
             .expect("a sphere is within range");
         assert_eq!(hit.body, near);
         assert!(
@@ -683,22 +681,22 @@ mod tests {
             hit.distance
         );
         assert!(
-            hit.point.all_equal3(Vector4::from_xyz(0.0, 2.0, 0.0), 1e-2),
+            hit.point.all_equal3(Vec4::from_xyz(0.0, 2.0, 0.0), 1e-2),
             "point {:?}",
             hit.point
         );
 
-        assert!(world.closest_point(Vector4::ZERO, 1.0).is_none());
+        assert!(world.closest_point(Vec4::ZERO, 1.0).is_none());
     }
 
     #[test]
     fn closest_point_reports_inside_shapes() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let hit = world
-            .closest_point(Vector4::from_xyz(0.0, 5.0, 0.0), 10.0)
+            .closest_point(Vec4::from_xyz(0.0, 5.0, 0.0), 10.0)
             .expect("point is inside a sphere");
         assert_eq!(hit.body, body);
         assert_eq!(hit.distance, 0.0);
@@ -706,7 +704,7 @@ mod tests {
 
     #[test]
     fn closest_points_to_shape_finds_nearest_surface() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 4.0, 0.0)),
         );
@@ -714,7 +712,7 @@ mod tests {
         let hit = world
             .closest_points_to_shape(
                 query.as_ref(),
-                &Transform::from_quaternion(Quaternion::IDENTITY, Vector4::ZERO),
+                &Transform::from_quaternion(crate::base_math::Quaternion::IDENTITY, crate::base_math::Vector4::ZERO),
                 10.0,
                 &QueryFilter::default(),
             )
@@ -727,22 +725,22 @@ mod tests {
         );
         assert!(
             hit.point_on_body
-                .all_equal3(Vector4::from_xyz(0.0, 3.0, 0.0), 1e-2),
+                .all_equal3(Vec4::from_xyz(0.0, 3.0, 0.0), 1e-2),
             "point_on_body {:?}",
             hit.point_on_body
         );
         assert!(
             hit.point_on_query
-                .all_equal3(Vector4::from_xyz(0.0, 0.5, 0.0), 1e-2),
+                .all_equal3(Vec4::from_xyz(0.0, 0.5, 0.0), 1e-2),
             "point_on_query {:?}",
             hit.point_on_query
         );
-        assert!(hit.normal.dot3(Vector4::UNIT_Y) < -0.9);
+        assert!(hit.normal.dot3(Vec4::Y) < -0.9);
     }
 
     #[test]
     fn closest_points_report_overlap_as_negative_distance() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 1.0, 0.0)),
         );
@@ -761,16 +759,18 @@ mod tests {
 
     #[test]
     fn cast_shape_finds_mesh_ground() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let ground = world.create_body(&BodyCinfo::new(mesh_ground(5.0)));
         let query = sphere_shape(0.5);
-        let start =
-            Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
+        let start = Transform::from_quaternion(
+            crate::base_math::Quaternion::IDENTITY,
+            crate::base_math::Vector4::from_xyz(0.0, 5.0, 0.0),
+        );
         let hit = world
             .cast_shape(
                 query.as_ref(),
                 &start,
-                -Vector4::UNIT_Y,
+                -Vec4::Y,
                 10.0,
                 &QueryFilter::default(),
             )
@@ -782,7 +782,7 @@ mod tests {
             hit.distance
         );
         assert!(
-            hit.normal.dot3(Vector4::UNIT_Y) > 0.9,
+            hit.normal.dot3(Vec4::Y) > 0.9,
             "normal {:?}",
             hit.normal
         );
@@ -791,7 +791,7 @@ mod tests {
 
     #[test]
     fn cast_shape_ignores_the_casting_body() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let ground = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vec4::from_xyz(0.0, -0.5, 0.0)),
@@ -800,29 +800,34 @@ mod tests {
             &BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::from_xyz(0.0, 5.0, 0.0)),
         );
         let query = sphere_shape(0.5);
-        let start =
-            Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
+        let start = Transform::from_quaternion(
+            crate::base_math::Quaternion::IDENTITY,
+            crate::base_math::Vector4::from_xyz(0.0, 5.0, 0.0),
+        );
         let filter = QueryFilter::default().with_ignore_body(caster);
         let hit = world
-            .cast_shape(query.as_ref(), &start, -Vector4::UNIT_Y, 10.0, &filter)
+            .cast_shape(query.as_ref(), &start, -Vec4::Y, 10.0, &filter)
             .expect("cast must hit the ground, not the caster");
         assert_eq!(hit.body, ground);
     }
 
     #[test]
     fn cast_shape_reports_start_penetration() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
         let query = sphere_shape(0.5);
-        let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::ZERO);
+        let start = Transform::from_quaternion(
+            crate::base_math::Quaternion::IDENTITY,
+            crate::base_math::Vector4::ZERO,
+        );
         let hit = world
             .cast_shape(
                 query.as_ref(),
                 &start,
-                Vector4::UNIT_X,
+                Vec4::X,
                 5.0,
                 &QueryFilter::default(),
             )
@@ -834,7 +839,7 @@ mod tests {
 
     #[test]
     fn aabb_query_reports_overlapping_bodies_in_slot_order() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let first = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(0.0, 0.0, 0.0)),
         );
@@ -844,7 +849,10 @@ mod tests {
         world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(20.0, 0.0, 0.0)),
         );
-        let aabb = Aabb::from_center_half_extents(Vector4::ZERO, Vector4::splat(1.0));
+        let aabb = Aabb::from_center_half_extents(
+            crate::base_math::Vector4::ZERO,
+            crate::base_math::Vector4::splat(1.0),
+        );
         let bodies = world.query_aabb(&aabb, &QueryFilter::default());
         assert_eq!(bodies, vec![first, second]);
 
@@ -858,7 +866,7 @@ mod tests {
 
     #[test]
     fn raycast_respects_dynamic_motion() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let body = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
@@ -868,7 +876,7 @@ mod tests {
         );
         world.step(0.5);
         let hit = world
-            .raycast(Vector4::ZERO, Vector4::UNIT_Y, 50.0)
+            .raycast(Vec4::ZERO, Vec4::Y, 50.0)
             .expect("sphere moved into the ray");
         assert_eq!(hit.body, body);
         // Sphere center is now at y = 10 - 0.5*1 = 9.5; surface at 8.5.

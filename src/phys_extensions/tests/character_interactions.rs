@@ -102,7 +102,7 @@ fn object_interaction_result_can_cancel_push() {
     );
     assert_eq!(
         world.body_linear_velocity(body),
-        Some(V4::ZERO),
+        Some(G4::ZERO),
         "cancelled push must not change body velocity"
     );
     assert!(proxy.deferred_interactions().is_empty());

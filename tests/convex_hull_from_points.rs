@@ -3,7 +3,7 @@ use std::sync::Arc;
 use proton::body::BodyCinfo;
 use proton::extensions::hash_world;
 use proton::geometry::{WeldOptions, weld_vertices};
-use proton::math::{Vec4, Vec4Ext, Vector4};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{ConvexHullShape, MassConfig, Shape};
 use proton::world::{World, WorldCinfo};
@@ -69,7 +69,7 @@ fn lower_dimensional_cloud_stays_queryable() {
 
 fn falling_hull_world() -> World {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::from_xyz(0.0, -9.81, 0.0));
+    world.set_gravity(Vec4::from_xyz(0.0, -9.81, 0.0));
     let shape = ConvexHullShape::from_points(cube_points(0.5), 0.0);
     world.create_body(
         &BodyCinfo::new(Arc::new(shape) as Arc<dyn Shape>)

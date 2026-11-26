@@ -5,10 +5,9 @@ use std::fmt;
 use std::sync::Arc;
 
 use crate::base_math::{
-    DVec4, Mat3, Mat3Ext, Matrix3, PreciseTransform, QuatExt, Quaternion, Transform, Vec4, Vec4Ext,
-    Vector4,
+    DVec4, Mat3, Mat3Ext, PreciseTransform, Quat, QuatExt, Transform, Vec4, Vec4Ext,
 };
-use glam::{Quat, Vec3};
+use glam::Vec3;
 use crate::base_thread::{TaskExecutor, ThreadPool, WorkStealingPool};
 use crate::phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_is_diagonal,
@@ -19,8 +18,8 @@ use crate::phys_collide::{
     collide_with_tolerance, leaf_key_at_local_point,
 };
 use crate::phys_shape::{
-    MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache, to_mat3, to_matrix3,
-    to_vec4, to_vector4,
+    MassConfig, MassDistribution, MassProperties, Shape, ShapeMassCache, to_mat3, to_quat,
+    to_quaternion, to_vec4, to_vector4,
 };
 use crate::phys_solver::{
     BallAndSocketJoint, ContactConstraint, ContactImpulse, FixedJoint, HingeJoint, HingeLimits,
@@ -61,6 +60,25 @@ use crate::phys_world::{
     BodySnapshot, ContactManifold, ExecutorKind, SchedulerConfig, WorldCinfo, WorldSnapshot,
     WorldStats,
 };
+
+/// glam `Vec4` 进出 legacy `Transform` 的逐位复制边界（`Transform` 签名链
+/// 保持 legacy，见 docs/refactor-glam-plan.md Phase 3 惯例①）。
+#[inline]
+fn transform_point_glam(transform: &Transform, point: Vec4) -> Vec4 {
+    to_vec4(transform.transform_point(to_vector4(point)))
+}
+
+/// [`transform_point_glam`] 的逆变换版本。
+#[inline]
+fn inverse_transform_point_glam(transform: &Transform, point: Vec4) -> Vec4 {
+    to_vec4(transform.inverse_transform_point(to_vector4(point)))
+}
+
+/// legacy `Matrix3::rotate` 的 glam 包装（列乘分量顺序逐位不变）。
+#[inline]
+fn rotate_glam(rotation: &crate::base_math::Matrix3, v: Vec4) -> Vec4 {
+    to_vec4(rotation.rotate(to_vector4(v)))
+}
 
 /// Per-body deactivation state (the world's deactivation-manager subset).
 #[derive(Clone, Copy, Debug, Default)]
@@ -114,7 +132,7 @@ pub(crate) struct ContactCandidate {
 /// pipeline.
 pub struct World {
     cinfo: WorldCinfo,
-    gravity: Vector4,
+    gravity: Vec4,
     /// f64 world origin for large-world coordinates; body/motion transforms stay
     /// small f32 values relative to it.
     world_origin: DVec4,
@@ -343,12 +361,12 @@ impl World {
     }
 
     /// Current gravity (`getGravity`).
-    pub fn gravity(&self) -> Vector4 {
+    pub fn gravity(&self) -> Vec4 {
         self.gravity
     }
 
     /// Set gravity (`setGravity`).
-    pub fn set_gravity(&mut self, gravity: Vector4) {
+    pub fn set_gravity(&mut self, gravity: Vec4) {
         self.gravity = gravity;
     }
 
@@ -794,13 +812,12 @@ impl World {
 
     /// Set a body's local inverse inertia, keeping the stored mass-merge
     /// source in sync with its motion.
-    pub fn set_body_inverse_inertia(&mut self, body_id: BodyId, inverse: Vector4) -> bool {
+    pub fn set_body_inverse_inertia(&mut self, body_id: BodyId, inverse: Vec4) -> bool {
         let old = self.body_mass_summary(body_id);
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
         let motion_id = body.motion_id;
-        let inverse = to_vec4(inverse);
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.set_inverse_inertia_diagonal(inverse);
         }
@@ -819,13 +836,12 @@ impl World {
 
     /// Set a body's full world-space inverse inertia matrix, keeping the
     /// legacy diagonal view in sync.
-    pub fn set_body_inverse_inertia_world(&mut self, body_id: BodyId, matrix: Matrix3) -> bool {
+    pub fn set_body_inverse_inertia_world(&mut self, body_id: BodyId, matrix: Mat3) -> bool {
         let old = self.body_mass_summary(body_id);
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
         let motion_id = body.motion_id;
-        let matrix = to_mat3(&matrix);
         let diagonal = Vec4::from_xyz(
             matrix.element_sdk(0, 0),
             matrix.element_sdk(1, 1),
@@ -846,8 +862,7 @@ impl World {
     fn body_mass_summary(&self, body_id: BodyId) -> Option<MassSummary> {
         let body = self.bodies.get(body_id)?;
         let mut summary = MassSummary::from_properties(body.mass_properties.as_ref())?;
-        // 过渡期边界：`MassSummary` 仍为 legacy（signals.rs 随步骤 5 迁移）。
-        summary.inverse_inertia_world = to_matrix3(body.inverse_inertia_world);
+        summary.inverse_inertia_world = body.inverse_inertia_world;
         Some(summary)
     }
 
@@ -1844,25 +1859,27 @@ impl World {
                         JointConstraint::BallAndSocket(BallAndSocketJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                         }),
                     ));
                 }
                 WorldJoint::Hinge(info) | WorldJoint::LimitedHinge(info) => {
-                    let axis_a = transform_a.rotation.rotate(info.axis_a);
-                    let axis_b = transform_b.rotation.rotate(info.axis_b);
+                    let axis_a = rotate_glam(&transform_a.rotation, info.axis_a);
+                    let axis_b = rotate_glam(&transform_b.rotation, info.axis_b);
                     // The hinge angle is measured against the reference axes
                     // whether or not limits are attached (motors need it too);
                     // degenerate references fall back to a deterministic
                     // perpendicular of the LOCAL hinge axis (computed in local
                     // space so the fallback rotates with the body).
-                    let reference_a = transform_a
-                        .rotation
-                        .rotate(perpendicular_reference(info.axis_a, info.reference_axis_a));
-                    let reference_b = transform_b
-                        .rotation
-                        .rotate(perpendicular_reference(info.axis_b, info.reference_axis_b));
+                    let reference_a = rotate_glam(
+                        &transform_a.rotation,
+                        perpendicular_reference(info.axis_a, info.reference_axis_a),
+                    );
+                    let reference_b = rotate_glam(
+                        &transform_b.rotation,
+                        perpendicular_reference(info.axis_b, info.reference_axis_b),
+                    );
                     let angle = hinge_angle(axis_a, axis_b, reference_a, reference_b);
                     let limits = info.limits.map(|limits| HingeLimits {
                         min_angle: limits.min_angle,
@@ -1902,8 +1919,8 @@ impl World {
                         JointConstraint::Hinge(HingeJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                             axis_a,
                             axis_b,
                             angle,
@@ -1918,37 +1935,37 @@ impl World {
                     // Rotation of B in A's frame, and the error rotation that
                     // applied to A would restore the bound orientation.
                     let relative = q_a.inverse_mul(q_b);
-                    let error = relative.mul_inverse(info.relative_orientation);
+                    let error = relative.mul_inverse(to_quaternion(info.relative_orientation));
                     result.push((
                         slot_index,
                         JointConstraint::Fixed(FixedJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                             orientation_error: orientation_error_vector(error),
                         }),
                     ));
                 }
                 WorldJoint::Ragdoll(info) => {
-                    let twist_a = unit_vector(transform_a.rotation.rotate(info.twist_axis_a));
-                    let twist_b = unit_vector(transform_b.rotation.rotate(info.twist_axis_b));
+                    let twist_a = unit_vector(rotate_glam(&transform_a.rotation, info.twist_axis_a));
+                    let twist_b = unit_vector(rotate_glam(&transform_b.rotation, info.twist_axis_b));
                     let swing_angle = twist_a.dot3(twist_b).clamp(-1.0, 1.0).acos();
                     // Reference axes perpendicular to the twist axis define the
                     // twist zero; degenerate reference axes fall back to a
                     // deterministic perpendicular basis.
                     let plane_a = perpendicular_reference(
                         twist_a,
-                        transform_a.rotation.rotate(info.plane_axis_a),
+                        rotate_glam(&transform_a.rotation, info.plane_axis_a),
                     );
                     let plane_b = perpendicular_reference(
                         twist_a,
-                        transform_b.rotation.rotate(info.plane_axis_b),
+                        rotate_glam(&transform_b.rotation, info.plane_axis_b),
                     );
                     let twist_angle = twist_a
-                        .dot3(plane_a.cross(plane_b))
+                        .dot3(plane_a.cross3(plane_b))
                         .atan2(plane_a.dot3(plane_b));
-                    let plane_axis_b = unit_vector(transform_b.rotation.rotate(info.plane_axis_b));
+                    let plane_axis_b = unit_vector(rotate_glam(&transform_b.rotation, info.plane_axis_b));
                     let (plane_enabled, plane_angle, plane_min, plane_max) = match info.plane_limits
                     {
                         Some((sdk_min, sdk_max)) => (
@@ -1965,8 +1982,8 @@ impl World {
                         JointConstraint::Ragdoll(RagdollJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                             twist_axis_a: twist_a,
                             twist_axis_b: twist_b,
                             plane_axis_b,
@@ -1983,26 +2000,26 @@ impl World {
                     ));
                 }
                 WorldJoint::SixDof(info) => {
-                    let twist_a = unit_vector(transform_a.rotation.rotate(info.twist_axis_a));
-                    let twist_b = unit_vector(transform_b.rotation.rotate(info.twist_axis_b));
-                    let pivot_a = transform_a.transform_point(info.pivot_a);
-                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                    let twist_a = unit_vector(rotate_glam(&transform_a.rotation, info.twist_axis_a));
+                    let twist_b = unit_vector(rotate_glam(&transform_b.rotation, info.twist_axis_b));
+                    let pivot_a = transform_point_glam(&transform_a, info.pivot_a);
+                    let pivot_b = transform_point_glam(&transform_b, info.pivot_b);
                     // Constraint-frame columns are `[twist, plane, twist×plane]`,
                     // matching `hknp6DofConstraintData::getConstraintFrameA/B`.
                     let frame_axes = six_dof_constraint_frame_axes(
                         twist_a,
-                        transform_a.rotation.rotate(info.plane_axis_a),
+                        rotate_glam(&transform_a.rotation, info.plane_axis_a),
                     );
                     let u = frame_axes[1];
                     let v = frame_axes[2];
-                    let error = twist_a.cross(twist_b);
+                    let error = twist_a.cross3(twist_b);
                     let plane_a = frame_axes[1];
                     let plane_b = perpendicular_reference(
                         twist_a,
-                        transform_b.rotation.rotate(info.plane_axis_b),
+                        rotate_glam(&transform_b.rotation, info.plane_axis_b),
                     );
                     let twist_angle = twist_a
-                        .dot3(plane_a.cross(plane_b))
+                        .dot3(plane_a.cross3(plane_b))
                         .atan2(plane_a.dot3(plane_b));
                     let axis_vectors = frame_axes;
                     let mut linear_axis_enabled = [false; 3];
@@ -2058,10 +2075,10 @@ impl World {
                     let q_a = transform_a.rotation_quaternion();
                     let q_b = transform_b.rotation_quaternion();
                     let relative = q_a.inverse_mul(q_b);
-                    let error = relative.mul_inverse(info.relative_orientation);
-                    let axis_a = unit_vector(transform_a.rotation.rotate(info.axis_a));
-                    let pivot_a = transform_a.transform_point(info.pivot_a);
-                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                    let error = relative.mul_inverse(to_quaternion(info.relative_orientation));
+                    let axis_a = unit_vector(rotate_glam(&transform_a.rotation, info.axis_a));
+                    let pivot_a = transform_point_glam(&transform_a, info.pivot_a);
+                    let pivot_b = transform_point_glam(&transform_b, info.pivot_b);
                     let motor = info.motor.map(|motor| match motor {
                         PrismaticMotorCinfo::Position(motor) => PrismaticMotor::Position {
                             target_translation: motor.target_translation,
@@ -2083,7 +2100,7 @@ impl World {
                             pivot_a,
                             pivot_b,
                             axis_a,
-                            axis_b: unit_vector(transform_b.rotation.rotate(info.axis_b)),
+                            axis_b: unit_vector(rotate_glam(&transform_b.rotation, info.axis_b)),
                             orientation_error: orientation_error_vector(error),
                             translation: (pivot_a - pivot_b).dot3(axis_a),
                             min_translation: info.min_translation,
@@ -2098,8 +2115,8 @@ impl World {
                         JointConstraint::Spring(SpringJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                             rest_length: info.rest_length,
                         }),
                     ));
@@ -2110,10 +2127,10 @@ impl World {
                         JointConstraint::PointToPlane(PointToPlaneJoint {
                             body_a: index_a,
                             body_b: index_b,
-                            pivot_a: transform_a.transform_point(info.pivot_a),
-                            pivot_b: transform_b.transform_point(info.pivot_b),
+                            pivot_a: transform_point_glam(&transform_a, info.pivot_a),
+                            pivot_b: transform_point_glam(&transform_b, info.pivot_b),
                             plane_normal: unit_vector(
-                                transform_b.rotation.rotate(info.plane_normal_b),
+                                rotate_glam(&transform_b.rotation, info.plane_normal_b),
                             ),
                             min_distance: info.min_distance,
                             max_distance: info.max_distance,
@@ -2124,20 +2141,20 @@ impl World {
                     // Steering rotates the chassis-side axle about the
                     // steering axis (in chassis-local space), matching
                     // `hknpWheelConstraintData::setSteeringAngle`.
-                    let steering = Quaternion::from_axis_angle(
-                        unit_vector(info.steering_axis_b),
+                    let steering_axis = unit_vector(info.steering_axis_b);
+                    let steering = Quat::from_axis_angle(
+                        Vec3::new(steering_axis.x, steering_axis.y, steering_axis.z),
                         info.steering_angle,
                     );
-                    let axle_b = unit_vector(
-                        transform_b
-                            .rotation
-                            .rotate(steering.rotate(unit_vector(info.axle_b))),
-                    );
-                    let axle_a = unit_vector(transform_a.rotation.rotate(info.axle_a));
+                    let axle_b = unit_vector(rotate_glam(
+                        &transform_b.rotation,
+                        steering.rotate_sdk(unit_vector(info.axle_b)),
+                    ));
+                    let axle_a = unit_vector(rotate_glam(&transform_a.rotation, info.axle_a));
                     let suspension_axis =
-                        unit_vector(transform_b.rotation.rotate(info.suspension_axis_b));
-                    let pivot_a = transform_a.transform_point(info.pivot_a);
-                    let pivot_b = transform_b.transform_point(info.pivot_b);
+                        unit_vector(rotate_glam(&transform_b.rotation, info.suspension_axis_b));
+                    let pivot_a = transform_point_glam(&transform_a, info.pivot_a);
+                    let pivot_b = transform_point_glam(&transform_b, info.pivot_b);
                     let suspension = info.suspension.map(|suspension| WheelSuspension {
                         stiffness: suspension.stiffness,
                         damping: suspension.damping,
@@ -2215,12 +2232,15 @@ impl World {
     }
 
     /// Set a body's world position, preserving its orientation.
-    pub fn set_body_position(&mut self, body_id: BodyId, position: Vector4) -> bool {
+    pub fn set_body_position(&mut self, body_id: BodyId, position: Vec4) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
         let rotation = body.transform.rotation_quaternion();
-        self.set_body_transform(body_id, Transform::from_quaternion(rotation, position))
+        self.set_body_transform(
+            body_id,
+            Transform::from_quaternion(rotation, to_vector4(position)),
+        )
     }
 
     /// Current f64 world origin (`hkWorldShiftUtil` origin subset).
@@ -2254,12 +2274,15 @@ impl World {
             return false;
         };
         let rotation = body.transform.rotation_quaternion();
-        let local = Vector4::from_xyz(
+        let local = Vec4::from_xyz(
             (position.x - self.world_origin.x) as f32,
             (position.y - self.world_origin.y) as f32,
             (position.z - self.world_origin.z) as f32,
         );
-        self.set_body_transform(body_id, Transform::from_quaternion(rotation, local))
+        self.set_body_transform(
+            body_id,
+            Transform::from_quaternion(rotation, to_vector4(local)),
+        )
     }
 
     /// Move the world origin by `offset`, keeping body/motion transforms small.
@@ -2271,23 +2294,23 @@ impl World {
         if !offset.x.is_finite() || !offset.y.is_finite() || !offset.z.is_finite() {
             return false;
         }
-        let shift = Vector4::from_xyz(-(offset.x as f32), -(offset.y as f32), -(offset.z as f32));
+        let shift = Vec4::from_xyz(-(offset.x as f32), -(offset.y as f32), -(offset.z as f32));
         self.world_origin += offset;
         let motion_ids: Vec<_> = self.motions.iter().map(|(id, _)| id).collect();
         for id in motion_ids {
             if let Some(motion) = self.motions.get_mut(id) {
-                motion.position += to_vec4(shift);
+                motion.position += shift;
             }
         }
         for body in self.bodies.iter_mut() {
-            body.transform.translation += shift;
+            body.transform.translation += to_vector4(shift);
             body.refresh_aabb();
         }
         true
     }
 
     /// Set a body's linear velocity (dynamic/keyframed motions only).
-    pub fn set_body_linear_velocity(&mut self, body_id: BodyId, velocity: Vector4) -> bool {
+    pub fn set_body_linear_velocity(&mut self, body_id: BodyId, velocity: Vec4) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
@@ -2298,12 +2321,12 @@ impl World {
         self.wake_if_dynamic(body_id);
         self.motions
             .get_mut(motion_id)
-            .map(|motion| motion.linear_velocity = to_vec4(velocity))
+            .map(|motion| motion.linear_velocity = velocity)
             .is_some()
     }
 
     /// Set a body's angular velocity (dynamic/keyframed motions only, world space).
-    pub fn set_body_angular_velocity(&mut self, body_id: BodyId, velocity: Vector4) -> bool {
+    pub fn set_body_angular_velocity(&mut self, body_id: BodyId, velocity: Vec4) -> bool {
         let Some(body) = self.bodies.get(body_id) else {
             return false;
         };
@@ -2314,7 +2337,7 @@ impl World {
         self.wake_if_dynamic(body_id);
         self.motions
             .get_mut(motion_id)
-            .map(|motion| motion.angular_velocity = to_vec4(velocity))
+            .map(|motion| motion.angular_velocity = velocity)
             .is_some()
     }
 
@@ -2386,26 +2409,26 @@ impl World {
     }
 
     /// A body's linear velocity.
-    pub fn body_linear_velocity(&self, body_id: BodyId) -> Option<Vector4> {
+    pub fn body_linear_velocity(&self, body_id: BodyId) -> Option<Vec4> {
         let body = self.bodies.get(body_id)?;
         self.motions
             .get(body.motion_id)
-            .map(|motion| to_vector4(motion.linear_velocity))
+            .map(|motion| motion.linear_velocity)
     }
 
     /// A body's angular velocity.
-    pub fn body_angular_velocity(&self, body_id: BodyId) -> Option<Vector4> {
+    pub fn body_angular_velocity(&self, body_id: BodyId) -> Option<Vec4> {
         let body = self.bodies.get(body_id)?;
         self.motions
             .get(body.motion_id)
-            .map(|motion| to_vector4(motion.angular_velocity))
+            .map(|motion| motion.angular_velocity)
     }
 
     /// A body's world position.
-    pub fn body_position(&self, body_id: BodyId) -> Option<Vector4> {
+    pub fn body_position(&self, body_id: BodyId) -> Option<Vec4> {
         self.bodies
             .get(body_id)
-            .map(|body| body.transform.translation)
+            .map(|body| to_vec4(body.transform.translation))
     }
 
     /// A body's cached world AABB.
@@ -2478,13 +2501,13 @@ impl World {
             let mut points = Vec::with_capacity(contact.manifold.points.len());
             let mut dropped = 0usize;
             for point in &contact.manifold.points {
-                let initial_normal = crate::phys_shape::to_vector4(contact.manifold.normal);
+                let initial_normal = contact.manifold.normal;
                 let (initial_tangent_1, initial_tangent_2) = contact_tangents(initial_normal);
                 let mut editable = EditableContact {
                     body_a: contact.body_a,
                     body_b: contact.body_b,
                     normal: initial_normal,
-                    position: crate::phys_shape::to_vector4(point.position),
+                    position: point.position,
                     penetration: (-point.distance).max(0.0),
                     friction: 0.5,
                     tangent_1: initial_tangent_1,
@@ -2508,7 +2531,7 @@ impl World {
                 let lookup_key = ContactKey {
                     body_a: contact.body_a,
                     body_b: contact.body_b,
-                    local_point_b: transform_b.inverse_transform_point(editable.position),
+                    local_point_b: inverse_transform_point_glam(&transform_b, editable.position),
                     normal: editable.normal,
                 };
                 let cached = if self.cinfo.enable_warm_starting {
@@ -2679,7 +2702,7 @@ impl World {
                 .collect();
             for motion_id in dynamic_motions {
                 if let Some(motion) = self.motions.get_mut(motion_id) {
-                    motion.linear_velocity += to_vec4(gravity) * delta_time;
+                    motion.linear_velocity += gravity * delta_time;
                 }
             }
         }
@@ -2709,13 +2732,12 @@ impl World {
             let angular_velocity = motion
                 .map(|motion| motion.angular_velocity)
                 .unwrap_or(Vec4::ZERO);
-            // 过渡期边界：`SolverBody` 仍为 legacy（phys_solver 随步骤 5 迁移）。
             solver_bodies.push(SolverBody::new_with_inertia_matrix(
                 inverse_mass,
-                to_matrix3(inverse_inertia_world),
-                body.transform.translation,
-                to_vector4(linear_velocity),
-                to_vector4(angular_velocity),
+                inverse_inertia_world,
+                to_vec4(body.transform.translation),
+                linear_velocity,
+                angular_velocity,
             ));
         }
 
@@ -2927,8 +2949,8 @@ impl World {
         if parallel_writeback {
             for candidate in velocity_writes {
                 if let Some(motion) = self.motions.get_mut(candidate.motion_id) {
-                    motion.linear_velocity = to_vec4(candidate.linear_velocity);
-                    motion.angular_velocity = to_vec4(candidate.angular_velocity);
+                    motion.linear_velocity = candidate.linear_velocity;
+                    motion.angular_velocity = candidate.angular_velocity;
                 }
             }
         } else {
@@ -2939,8 +2961,8 @@ impl World {
                 let solved = solver_bodies[index];
                 if solved.inverse_mass > 0.0 {
                     if let Some(motion) = self.motions.get_mut(body.motion_id) {
-                        motion.linear_velocity = to_vec4(solved.linear_velocity);
-                        motion.angular_velocity = to_vec4(solved.angular_velocity);
+                        motion.linear_velocity = solved.linear_velocity;
+                        motion.angular_velocity = solved.angular_velocity;
                     }
                 }
             }
@@ -3139,8 +3161,8 @@ impl World {
         // Non-convex shapes have no GJK witness. Their centres still give a
         // deterministic local point from which the shared resolver can choose
         // the nearest leaf for diagnostic trigger events.
-        let centre_a = body_a.transform.transform_point(Vector4::ZERO);
-        let centre_b = body_b.transform.transform_point(Vector4::ZERO);
+        let centre_a = body_a.transform.transform_point(to_vector4(Vec4::ZERO));
+        let centre_b = body_b.transform.transform_point(to_vector4(Vec4::ZERO));
         (
             leaf_key_at_local_point(
                 body_a.shape.as_ref(),
@@ -3345,16 +3367,18 @@ impl World {
                 let motion = self.motions.get(body.motion_id);
                 BodySnapshot {
                     body: body.id,
-                    position: body.transform.translation,
+                    position: to_vec4(body.transform.translation),
                     orientation: motion
-                        .map(|motion| crate::phys_shape::to_quaternion(motion.orientation))
-                        .unwrap_or_else(|| body.transform.rotation_quaternion()),
+                        .map(|motion| motion.orientation)
+                        .unwrap_or_else(|| {
+                            to_quat(body.transform.rotation_quaternion())
+                        }),
                     linear_velocity: motion
-                        .map(|motion| to_vector4(motion.linear_velocity))
-                        .unwrap_or(Vector4::ZERO),
+                        .map(|motion| motion.linear_velocity)
+                        .unwrap_or(Vec4::ZERO),
                     angular_velocity: motion
-                        .map(|motion| to_vector4(motion.angular_velocity))
-                        .unwrap_or(Vector4::ZERO),
+                        .map(|motion| motion.angular_velocity)
+                        .unwrap_or(Vec4::ZERO),
                 }
             })
             .collect();
@@ -3398,58 +3422,61 @@ pub(crate) struct IslandSolveBuffers<'a> {
 /// Both twist axes are projected onto the plane perpendicular to their hinge
 /// axis; the angle is measured from A to B in the sense of `axis_a`, wrapped
 /// to `(-pi, pi]`.
-fn hinge_angle(axis_a: Vector4, axis_b: Vector4, twist_a: Vector4, twist_b: Vector4) -> f32 {
-    let tangential = |twist: Vector4, axis: Vector4| {
+fn hinge_angle(axis_a: Vec4, axis_b: Vec4, twist_a: Vec4, twist_b: Vec4) -> f32 {
+    let tangential = |twist: Vec4, axis: Vec4| {
         let component = twist - axis * twist.dot3(axis);
         let length = component.length3();
         if length > 1e-10 {
             component * (1.0 / length)
         } else {
-            Vector4::ZERO
+            Vec4::ZERO
         }
     };
     let projected_a = tangential(twist_a, axis_a);
     let projected_b = tangential(twist_b, axis_b);
-    let sin = projected_a.cross(projected_b).dot3(axis_a);
+    let sin = projected_a.cross3(projected_b).dot3(axis_a);
     let cos = projected_a.dot3(projected_b);
     sin.atan2(cos)
 }
 
 /// World-space axis-angle rotation-error vector of a quaternion: rotating a
 /// body by this vector restores the bound orientation. Zero when aligned.
-fn orientation_error_vector(error: Quaternion) -> Vector4 {
+///
+/// 接收 legacy `Quaternion`（`rotation_quaternion()`/`mul_inverse` 链路），
+/// 返回 glam `Vec4`；内部保持 SDK 标量运算顺序。
+fn orientation_error_vector(error: crate::base_math::Quaternion) -> Vec4 {
     let imag = error.imag();
     let sin_half = imag.length3();
     if sin_half <= 1e-8 {
-        return Vector4::ZERO;
+        return Vec4::ZERO;
     }
-    let axis = Vector4::from_xyz(imag.x / sin_half, imag.y / sin_half, imag.z / sin_half);
+    let axis = Vec4::from_xyz(imag.x / sin_half, imag.y / sin_half, imag.z / sin_half);
     axis * error.angle()
 }
 
 /// Normalize a direction, falling back to `+X` for a degenerate input.
-fn unit_vector(direction: Vector4) -> Vector4 {
+fn unit_vector(direction: Vec4) -> Vec4 {
     let length = direction.length3();
     if length > 1e-10 {
         direction * (1.0 / length)
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     }
 }
 
 /// Project `reference` onto the plane perpendicular to `axis` and normalize;
 /// fall back to a deterministic perpendicular basis when degenerate.
-fn perpendicular_reference(axis: Vector4, reference: Vector4) -> Vector4 {
+fn perpendicular_reference(axis: Vec4, reference: Vec4) -> Vec4 {
     let component = reference - axis * reference.dot3(axis);
     if component.length3() > 1e-10 {
         return unit_vector(component);
     }
     let helper = if axis.x.abs() < 0.9 {
-        Vector4::UNIT_X
+        Vec4::X
     } else {
-        Vector4::UNIT_Y
+        Vec4::Y
     };
-    unit_vector(axis.cross(helper))
+    unit_vector(axis.cross3(helper))
 }
 
 pub(crate) fn collide_candidate(
@@ -3473,7 +3500,7 @@ pub(crate) fn collide_candidate(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
+    use crate::base_math::{Quaternion, Vector4};
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use crate::phys_types::{BodyQualityId, MaterialId, ShapeType};
     use crate::phys_world::constraint::{
@@ -3558,7 +3585,7 @@ mod tests {
 
     #[test]
     fn step_integrates_dynamic_bodies_only() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let static_id = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0)).with_position(Vec4::from_xyz(100.0, 0.0, 0.0)),
         );
@@ -3609,7 +3636,7 @@ mod tests {
 
     #[test]
     fn step_integrates_angular_velocity() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let id = world.create_body(
             &dynamic_cinfo(1.0).with_angular_velocity(Vec4::from_xyz(0.0, 0.0, FRAC_PI_2)),
         );
@@ -3657,12 +3684,12 @@ mod tests {
         let velocity = world.body_linear_velocity(sphere).unwrap();
         assert!(velocity.y.abs() < 0.2, "sphere vy {}", velocity.y);
         let ground_position = world.body_position(ground).unwrap();
-        assert!(ground_position.all_equal3(Vector4::from_xyz(0.0, -0.5, 0.0), 1e-6));
+        assert!(ground_position.all_equal3(Vec4::from_xyz(0.0, -0.5, 0.0), 1e-6));
     }
 
     #[test]
     fn collect_contacts_finds_overlapping_pair() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let a = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
@@ -3687,13 +3714,13 @@ mod tests {
         let static_id = world.create_body(&BodyCinfo::new(sphere_shape(1.0)));
         let dynamic_id = world.create_body(&dynamic_cinfo(1.0));
 
-        assert!(world.set_body_linear_velocity(dynamic_id, Vector4::UNIT_Y));
+        assert!(world.set_body_linear_velocity(dynamic_id, Vec4::Y));
         assert_eq!(
             world.body_linear_velocity(dynamic_id),
-            Some(Vector4::UNIT_Y)
+            Some(Vec4::Y)
         );
-        assert!(!world.set_body_linear_velocity(static_id, Vector4::UNIT_Y));
-        assert_eq!(world.body_linear_velocity(static_id), Some(Vector4::ZERO));
+        assert!(!world.set_body_linear_velocity(static_id, Vec4::Y));
+        assert_eq!(world.body_linear_velocity(static_id), Some(Vec4::ZERO));
 
         assert!(world.set_body_transform(
             dynamic_id,
@@ -3703,7 +3730,7 @@ mod tests {
             world
                 .body_position(dynamic_id)
                 .unwrap()
-                .all_equal3(Vector4::from_xyz(3.0, 0.0, 0.0), 1e-6)
+                .all_equal3(Vec4::from_xyz(3.0, 0.0, 0.0), 1e-6)
         );
     }
 
@@ -3746,9 +3773,9 @@ mod tests {
     #[test]
     fn gravity_can_be_changed() {
         let mut world = World::new(WorldCinfo::new());
-        assert_eq!(world.gravity(), Vector4::from_xyz(0.0, -9.81, 0.0));
-        world.set_gravity(Vector4::from_xyz(0.0, 1.0, 0.0));
-        assert_eq!(world.gravity(), Vector4::from_xyz(0.0, 1.0, 0.0));
+        assert_eq!(world.gravity(), Vec4::from_xyz(0.0, -9.81, 0.0));
+        world.set_gravity(Vec4::from_xyz(0.0, 1.0, 0.0));
+        assert_eq!(world.gravity(), Vec4::from_xyz(0.0, 1.0, 0.0));
     }
 
     #[test]
@@ -3814,14 +3841,14 @@ mod tests {
     #[test]
     fn ball_socket_pendulum_hangs_under_gravity() {
         let mut world = World::new(WorldCinfo::new().with_solver_settings(0.2, 0.0, 16));
-        let anchor = Vector4::from_xyz(0.0, 10.0, 0.0);
+        let anchor = Vec4::from_xyz(0.0, 10.0, 0.0);
         let anchor_body =
-            world.create_body(&BodyCinfo::new(sphere_shape(0.1)).with_position(to_vec4(anchor)));
+            world.create_body(&BodyCinfo::new(sphere_shape(0.1)).with_position(anchor));
         let bob = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
-                .with_position(to_vec4(anchor) + Vec4::from_xyz(2.0, 0.0, 0.0)),
+                .with_position(anchor + Vec4::from_xyz(2.0, 0.0, 0.0)),
         );
         // Spheres carry no inverse inertia by default (Phase 8 decision); give
         // the bob rotational response so the pendulum can swing.
@@ -3830,8 +3857,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             anchor_body,
             bob,
-            Vector4::UNIT_X,
-            -Vector4::UNIT_X,
+            Vec4::X,
+            -Vec4::X,
         ));
         assert!(id.is_valid());
         assert_eq!(world.constraint_count(), 1);
@@ -3839,7 +3866,7 @@ mod tests {
         // The joint is frictionless, so the pendulum keeps swinging; the test
         // verifies the constraint holds the world pivots coincident and that
         // the bob swings below the anchor.
-        let pivot_a_world = anchor + Vector4::UNIT_X;
+        let pivot_a_world = Vector4::from_xyz(anchor.x, anchor.y, anchor.z) + Vector4::UNIT_X;
         let mut max_pivot_error = 0.0f32;
         let mut min_height_below_anchor = 0.0f32;
         for _ in 0..240 {
@@ -3871,8 +3898,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             BodyId::invalid(),
             body,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         assert_eq!(id, ConstraintId::INVALID);
         assert_eq!(world.constraint_count(), 0);
@@ -3880,14 +3907,14 @@ mod tests {
 
     #[test]
     fn destroy_constraint_and_body_cleanup() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let a = world.create_body(&dynamic_cinfo(0.5));
         let b = world.create_body(&dynamic_cinfo(0.5));
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         assert!(id.is_valid());
         assert!(world.set_constraint_enabled(id, false));
@@ -3902,8 +3929,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         assert!(id.is_valid());
         assert!(world.destroy_body(b));
@@ -3929,7 +3956,7 @@ mod tests {
         world.create_fixed_constraint(&FixedCinfo::between_bodies(
             a,
             b,
-            Vector4::from_xyz(1.0, 5.0, 0.0),
+            Vec4::from_xyz(1.0, 5.0, 0.0),
             &world.body_transform(a).unwrap(),
             &world.body_transform(b).unwrap(),
         ));
@@ -3952,7 +3979,7 @@ mod tests {
 
     #[test]
     fn hinge_joint_spins_about_the_axis() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let hub =
             world.create_body(&BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::ZERO));
         let arm = world.create_body(
@@ -3967,12 +3994,12 @@ mod tests {
         world.create_hinge_constraint(&HingeCinfo::new(
             hub,
             arm,
-            Vector4::UNIT_X,
-            -Vector4::UNIT_X,
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
+            Vec4::X,
+            -Vec4::X,
+            Vec4::Z,
+            Vec4::Z,
         ));
-        world.set_body_angular_velocity(arm, Vector4::from_xyz(0.0, 5.0, 0.0));
+        world.set_body_angular_velocity(arm, Vec4::from_xyz(0.0, 5.0, 0.0));
 
         // The hinge removes rotation about Y, so after several steps the arm
         // stays near the hub instead of flying away as a free body would.
@@ -3980,7 +4007,7 @@ mod tests {
             world.step(1.0 / 60.0);
         }
         let arm_position = world.body_position(arm).unwrap();
-        let distance = (arm_position - Vector4::ZERO).length3();
+        let distance = (arm_position - Vec4::ZERO).length3();
         assert!(distance < 4.0, "arm distance {}", distance);
     }
 
@@ -3998,10 +4025,10 @@ mod tests {
         let id = world.create_hinge_constraint(&HingeCinfo::new(
             hub,
             arm,
-            Vector4::ZERO,
-            Vector4::from_xyz(-2.0, 0.0, 0.0),
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
+            Vec4::ZERO,
+            Vec4::from_xyz(-2.0, 0.0, 0.0),
+            Vec4::Z,
+            Vec4::Z,
         ));
         assert!(id.is_valid());
         (hub, arm, id)
@@ -4013,10 +4040,10 @@ mod tests {
         let transform_a = world.body_transform(hub).unwrap();
         let transform_b = world.body_transform(arm).unwrap();
         hinge_angle(
-            Vector4::UNIT_Z,
-            Vector4::UNIT_Z,
-            transform_a.rotation.rotate(Vector4::UNIT_X),
-            transform_b.rotation.rotate(Vector4::UNIT_X),
+            Vec4::Z,
+            Vec4::Z,
+            rotate_glam(&transform_a.rotation, Vec4::X),
+            rotate_glam(&transform_b.rotation, Vec4::X),
         )
     }
 
@@ -4024,7 +4051,7 @@ mod tests {
     fn hinge_limits_drive_the_angle_back_into_range() {
         let mut world = World::new(
             WorldCinfo::new()
-                .with_gravity(Vector4::ZERO)
+                .with_gravity(Vec4::ZERO)
                 .with_solver_settings(0.2, 0.0, 16),
         );
         let (_, arm, id) = hinged_arm(&mut world);
@@ -4067,7 +4094,7 @@ mod tests {
 
     #[test]
     fn hinge_motor_drives_constant_spin() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let (_, arm, id) = hinged_arm(&mut world);
         assert!(world.set_hinge_motor(
             id,
@@ -4086,7 +4113,7 @@ mod tests {
             angular.z
         );
         // The arm pivots about the hinge point, so it must stay near the hub.
-        let distance = (world.body_position(arm).unwrap() - Vector4::ZERO).length3();
+        let distance = (world.body_position(arm).unwrap() - Vec4::ZERO).length3();
         assert!(distance < 4.0, "arm distance {}", distance);
     }
 
@@ -4097,8 +4124,8 @@ mod tests {
         let ball_socket = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             hub,
             arm,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
 
         let limits = HingeLimitsCinfo::new(-0.2, 0.2);
@@ -4129,7 +4156,7 @@ mod tests {
 
     #[test]
     fn ragdoll_cone_limit_holds_the_swing_angle() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let child = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4144,12 +4171,12 @@ mod tests {
             &RagdollCinfo::new(
                 child,
                 parent,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::UNIT_X,
-                Vector4::UNIT_X,
-                Vector4::UNIT_Z,
-                Vector4::UNIT_Z,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::X,
+                Vec4::X,
+                Vec4::Z,
+                Vec4::Z,
             )
             .with_limits(0.2, -0.1, 0.1),
         );
@@ -4199,12 +4226,12 @@ mod tests {
                     &RagdollCinfo::new(
                         body,
                         previous,
-                        Vector4::ZERO,
-                        Vector4::ZERO,
-                        Vector4::UNIT_X,
-                        Vector4::UNIT_X,
-                        Vector4::UNIT_Z,
-                        Vector4::UNIT_Z,
+                        Vec4::ZERO,
+                        Vec4::ZERO,
+                        Vec4::X,
+                        Vec4::X,
+                        Vec4::Z,
+                        Vec4::Z,
                     )
                     .with_limits(0.6, -0.3, 0.3),
                 );
@@ -4223,7 +4250,7 @@ mod tests {
 
     #[test]
     fn prismatic_joint_allows_only_slider_travel() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let slider = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4236,10 +4263,10 @@ mod tests {
             &PrismaticCinfo::between_bodies(
                 slider,
                 parent,
-                Vector4::ZERO,
+                Vec4::ZERO,
                 &transform_a,
                 &transform_b,
-                Vector4::UNIT_X,
+                Vec4::X,
             )
             .with_limits(-5.0, 5.0),
         );
@@ -4247,7 +4274,7 @@ mod tests {
         // Keep the overlapping bodies out of the contact pipeline so the test
         // isolates the slider rows.
         assert!(world.set_constraint_collisions_enabled(id, false));
-        world.set_body_linear_velocity(slider, Vector4::from_xyz(2.0, 1.0, 0.0));
+        world.set_body_linear_velocity(slider, Vec4::from_xyz(2.0, 1.0, 0.0));
 
         for _ in 0..120 {
             world.step(1.0 / 60.0);
@@ -4266,7 +4293,7 @@ mod tests {
 
     #[test]
     fn prismatic_limits_stop_the_travel() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let slider = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4279,16 +4306,16 @@ mod tests {
             &PrismaticCinfo::between_bodies(
                 slider,
                 parent,
-                Vector4::ZERO,
+                Vec4::ZERO,
                 &transform_a,
                 &transform_b,
-                Vector4::UNIT_X,
+                Vec4::X,
             )
             .with_limits(-0.5, 0.5),
         );
         assert!(id.is_valid());
         assert!(world.set_constraint_collisions_enabled(id, false));
-        world.set_body_linear_velocity(slider, Vector4::UNIT_X * 5.0);
+        world.set_body_linear_velocity(slider, Vec4::X * 5.0);
         for _ in 0..180 {
             world.step(1.0 / 60.0);
         }
@@ -4303,7 +4330,7 @@ mod tests {
 
     #[test]
     fn spring_holds_the_pivot_distance() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let anchor = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5)).with_position(Vec4::from_xyz(0.0, 2.0, 0.0)),
         );
@@ -4315,8 +4342,8 @@ mod tests {
         let id = world.create_spring_constraint(&SpringCinfo::new(
             bob,
             anchor,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
             1.0,
         ));
         assert!(id.is_valid());
@@ -4324,7 +4351,7 @@ mod tests {
             world.step(1.0 / 60.0);
         }
         let distance =
-            (world.body_position(bob).unwrap() - Vector4::from_xyz(0.0, 2.0, 0.0)).length3();
+            (world.body_position(bob).unwrap() - Vec4::from_xyz(0.0, 2.0, 0.0)).length3();
         assert!(
             (distance - 1.0).abs() < 0.35,
             "spring distance {distance} must stay near 1.0"
@@ -4344,9 +4371,9 @@ mod tests {
         let id = world.create_point_to_plane_constraint(&PointToPlaneCinfo::new(
             body,
             plane_body,
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::ZERO,
-            Vector4::UNIT_Y,
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::ZERO,
+            Vec4::Y,
         ));
         assert!(id.is_valid());
         for _ in 0..120 {
@@ -4361,7 +4388,7 @@ mod tests {
 
     #[test]
     fn joint_collision_suppression_filters_contacts() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let a = world.create_body(
             &BodyCinfo::new(sphere_shape(1.0))
                 .with_motion_type(MotionType::Dynamic)
@@ -4376,8 +4403,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         assert!(
             !world.collect_contacts().is_empty(),
@@ -4400,7 +4427,7 @@ mod tests {
 
     #[test]
     fn constraints_of_body_lists_attached_joints() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let a = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let b = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4416,14 +4443,14 @@ mod tests {
         let first = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         let second = world.create_spring_constraint(&SpringCinfo::new(
             b,
             c,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
             1.0,
         ));
         let attached: Vec<_> = world.constraints_of_body(b).map(|(id, _)| id).collect();
@@ -4547,8 +4574,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         let slot = id.as_constraint_index().value() as usize;
 
@@ -4580,8 +4607,8 @@ mod tests {
         let id = world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         let slot = id.as_constraint_index().value() as usize;
         world.step(1.0 / 60.0);
@@ -4598,7 +4625,7 @@ mod tests {
 
     #[test]
     fn hinge_position_motor_drives_the_arm_to_the_target_angle() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let (_, arm, id) = hinged_arm(&mut world);
         assert!(world.set_hinge_motor(
             id,
@@ -4619,7 +4646,7 @@ mod tests {
 
     #[test]
     fn hinge_spring_motor_oscillates_and_settles() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let (_, arm, id) = hinged_arm(&mut world);
         assert!(world.set_hinge_motor(
             id,
@@ -4647,7 +4674,7 @@ mod tests {
 
     #[test]
     fn prismatic_position_motor_drives_the_slider_to_the_target() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let slider = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4658,10 +4685,10 @@ mod tests {
         let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
             slider,
             parent,
-            Vector4::ZERO,
+            Vec4::ZERO,
             &world.body_transform(slider).unwrap(),
             &world.body_transform(parent).unwrap(),
-            Vector4::UNIT_X,
+            Vec4::X,
         ));
         assert!(world.set_constraint_collisions_enabled(id, false));
         assert!(world.set_prismatic_motor(
@@ -4687,7 +4714,7 @@ mod tests {
 
     #[test]
     fn prismatic_spring_motor_pulls_the_slider_to_the_rest_length() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let parent = world.create_body(&BodyCinfo::new(sphere_shape(0.5)));
         let slider = world.create_body(
             &BodyCinfo::new(sphere_shape(0.5))
@@ -4698,10 +4725,10 @@ mod tests {
         let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
             slider,
             parent,
-            Vector4::ZERO,
+            Vec4::ZERO,
             &world.body_transform(slider).unwrap(),
             &world.body_transform(parent).unwrap(),
-            Vector4::UNIT_X,
+            Vec4::X,
         ));
         assert!(world.set_constraint_collisions_enabled(id, false));
         assert!(world.set_prismatic_motor(
@@ -4732,7 +4759,7 @@ mod tests {
     #[test]
     fn joint_motors_are_bitwise_deterministic() {
         let run = || {
-            let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+            let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
             let (_, arm, id) = hinged_arm(&mut world);
             world.set_hinge_motor(
                 id,
@@ -4758,7 +4785,7 @@ mod tests {
     #[test]
     fn joint_warm_starting_is_bitwise_deterministic() {
         let run = || {
-            let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+            let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
             let a = world.create_body(
                 &BodyCinfo::new(sphere_shape(0.5))
                     .with_motion_type(MotionType::Dynamic)
@@ -4775,7 +4802,7 @@ mod tests {
             world.create_fixed_constraint(&FixedCinfo::between_bodies(
                 a,
                 b,
-                Vector4::from_xyz(0.5, 4.0, 0.0),
+                Vec4::from_xyz(0.5, 4.0, 0.0),
                 &world.body_transform(a).unwrap(),
                 &world.body_transform(b).unwrap(),
             ));
@@ -4817,7 +4844,7 @@ mod tests {
         // Frozen state: zero velocity, no narrow phase against the ground.
         assert_eq!(
             world.body_linear_velocity(ball),
-            Some(Vector4::ZERO),
+            Some(Vec4::ZERO),
             "sleeping motions must be zeroed"
         );
         assert_eq!(world.last_contact_count(), 0);
@@ -4866,7 +4893,7 @@ mod tests {
     fn wake_body_covers_the_joint_graph() {
         let mut world = World::new(
             WorldCinfo::new()
-                .with_gravity(Vector4::ZERO)
+                .with_gravity(Vec4::ZERO)
                 .with_sleeping(true)
                 .with_sleeping_settings(0.1, 0.1, 0.1),
         );
@@ -4875,8 +4902,8 @@ mod tests {
         world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             a,
             b,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         for _ in 0..12 {
             world.step(1.0 / 60.0);
@@ -4908,7 +4935,7 @@ mod tests {
         }
         assert_eq!(world.body_is_sleeping(ball), Some(true));
 
-        assert!(world.set_body_linear_velocity(ball, Vector4::UNIT_X));
+        assert!(world.set_body_linear_velocity(ball, Vec4::X));
         assert_eq!(world.body_is_sleeping(ball), Some(false));
 
         // Sleep again, then teleport.
@@ -4916,7 +4943,7 @@ mod tests {
             world.step(1.0 / 60.0);
         }
         assert_eq!(world.body_is_sleeping(ball), Some(true));
-        assert!(world.set_body_position(ball, Vector4::from_xyz(0.0, 3.0, 0.0)));
+        assert!(world.set_body_position(ball, Vec4::from_xyz(0.0, 3.0, 0.0)));
         assert_eq!(world.body_is_sleeping(ball), Some(false));
     }
 
@@ -4924,7 +4951,7 @@ mod tests {
     fn keyframed_partner_keeps_an_island_awake() {
         let mut world = World::new(
             WorldCinfo::new()
-                .with_gravity(Vector4::ZERO)
+                .with_gravity(Vec4::ZERO)
                 .with_sleeping(true)
                 .with_sleeping_settings(0.1, 0.1, 0.1),
         );
@@ -4934,8 +4961,8 @@ mod tests {
         world.create_ball_socket_constraint(&BallAndSocketCinfo::new(
             pendulum,
             anchor,
-            Vector4::ZERO,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
         ));
         for _ in 0..60 {
             world.step(1.0 / 60.0);
@@ -4980,15 +5007,15 @@ mod tests {
             let mut info = WheelCinfo::new(
                 wheel,
                 chassis,
-                Vector4::ZERO,
-                Vector4::from_xyz(x, -0.25, 0.0),
-                Vector4::from_xyz(0.0, -1.0, 0.0),
-                Vector4::UNIT_X,
-                Vector4::UNIT_Z,
+                Vec4::ZERO,
+                Vec4::from_xyz(x, -0.25, 0.0),
+                Vec4::from_xyz(0.0, -1.0, 0.0),
+                Vec4::X,
+                Vec4::Z,
             )
             .with_suspension(WheelSuspensionCinfo::new(0.45, 120.0, 8.0, 50.0))
             .with_travel(0.25, 0.65);
-            info.axle_b = Vector4::UNIT_X;
+            info.axle_b = Vec4::X;
             ids[index] = world.create_wheel_constraint(&info);
             wheels[index] = wheel;
         }
@@ -5045,7 +5072,7 @@ mod tests {
 
     #[test]
     fn wheel_api_validates_ids_and_clears_suspension() {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let (chassis, _, ids) = wheeled_cart(&mut world);
         let id = ids[0];
         assert!(world.set_steering_angle(id, 0.2));
@@ -5063,7 +5090,7 @@ mod tests {
     fn trigger_bodies_emit_enter_and_exit_from_aabb_overlaps() {
         use crate::phys_world::events::TriggerStatus;
 
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let trigger = world.create_body(
             &BodyCinfo::new(box_shape(Vec4::splat(1.0))).with_position(Vec4::ZERO),
         );
@@ -5083,14 +5110,14 @@ mod tests {
 
         world.step(0.0);
         assert_eq!(*log.lock().unwrap(), vec![TriggerStatus::Entered]);
-        world.set_body_position(other, Vector4::from_xyz(8.0, 0.0, 0.0));
+        world.set_body_position(other, Vec4::from_xyz(8.0, 0.0, 0.0));
         world.step(0.0);
         assert_eq!(
             *log.lock().unwrap(),
             vec![TriggerStatus::Entered, TriggerStatus::Exited]
         );
         assert!(world.unsubscribe_trigger_event(connection));
-        world.set_body_position(other, Vector4::from_xyz(0.5, 0.0, 0.0));
+        world.set_body_position(other, Vec4::from_xyz(0.5, 0.0, 0.0));
         world.step(0.0);
         assert_eq!(log.lock().unwrap().len(), 2);
     }

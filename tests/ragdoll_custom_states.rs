@@ -174,7 +174,7 @@ fn c4_clone_keeps_distinct_state_schedules() {
 fn c5_custom_state_scenario_is_bit_deterministic() {
     fn run() -> String {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let (ragdoll, _) = chain(&mut world);
         let mut state = CountingState::new();
         state.next = None;

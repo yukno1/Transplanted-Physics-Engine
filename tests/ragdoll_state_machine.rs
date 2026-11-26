@@ -77,20 +77,20 @@ fn s1_keyframed_state_holds_exact_pose_under_gravity() {
         world
             .body_position(ids[0])
             .unwrap()
-            .all_equal3(Vector4::from_xyz(2.0, 0.0, 0.0), 1e-5)
+            .all_equal3(Vec4::from_xyz(2.0, 0.0, 0.0), 1e-5)
     );
     assert!(
         world
             .body_position(ids[1])
             .unwrap()
-            .all_equal3(Vector4::from_xyz(2.0, 1.0, 0.0), 1e-5)
+            .all_equal3(Vec4::from_xyz(2.0, 1.0, 0.0), 1e-5)
     );
 }
 
 #[test]
 fn s2_powered_state_drives_with_blended_motor_parameters() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (ragdoll, ids) = chain(&mut world);
     let target = [
         Transform::IDENTITY,
@@ -128,7 +128,7 @@ fn s2_powered_state_drives_with_blended_motor_parameters() {
 #[test]
 fn s3_timed_transition_fades_powered_into_dynamic() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (ragdoll, _) = chain(&mut world);
     let target = target_pose();
     let dt = 1.0 / 60.0;
@@ -163,7 +163,7 @@ fn s3_timed_transition_fades_powered_into_dynamic() {
 fn s4_state_machine_scenario_is_bit_deterministic() {
     let run = |snapshot_steps: usize| {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::from_xyz(0.0, -9.81, 0.0));
+        world.set_gravity(Vec4::from_xyz(0.0, -9.81, 0.0));
         let (ragdoll, _) = chain(&mut world);
         let target = target_pose();
         let dt = 1.0 / 60.0;

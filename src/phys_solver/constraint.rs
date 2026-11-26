@@ -65,7 +65,7 @@
 //! Joints are processed in slice order and constraint rows in the fixed order
 //! documented above, matching the contact solver's insertion-order sweep.
 
-use crate::base_math::Vector4;
+use crate::base_math::{Vec4, Vec4Ext};
 
 use crate::phys_solver::solver::{
     SolverBody, angular_impulse_vector, angular_mass, inertia_scalar,
@@ -82,9 +82,9 @@ pub struct BallAndSocketJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space (center-of-mass relative).
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
 }
 
 /// Solver-level hinge joint (`hknpHingeConstraintData` linear + axis alignment).
@@ -102,13 +102,13 @@ pub struct HingeJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Hinge axis on body A in world space (unit).
-    pub axis_a: Vector4,
+    pub axis_a: Vec4,
     /// Hinge axis on body B in world space (unit).
-    pub axis_b: Vector4,
+    pub axis_b: Vec4,
     /// Current signed hinge angle in radians (B relative to A about the hinge
     /// axis, `(-pi, pi]`); consumed by [`HingeJoint::limits`] and
     /// [`HingeJoint::motor`].
@@ -201,11 +201,11 @@ pub struct FixedJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// World-space orientation error (axis * angle), zero when aligned.
-    pub orientation_error: Vector4,
+    pub orientation_error: Vec4,
 }
 
 /// Solver-level ragdoll joint (`hknpRagdollConstraintData` cone/twist subset).
@@ -221,15 +221,15 @@ pub struct RagdollJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Twist axis of body A in world space (unit).
-    pub twist_axis_a: Vector4,
+    pub twist_axis_a: Vec4,
     /// Twist axis of body B in world space (unit).
-    pub twist_axis_b: Vector4,
+    pub twist_axis_b: Vec4,
     /// Plane axis of body B in world space (unit), used by the plane rows.
-    pub plane_axis_b: Vector4,
+    pub plane_axis_b: Vec4,
     /// Current swing angle between the twist axes, in radians.
     pub swing_angle: f32,
     /// Maximum swing angle (cone half-angle), in radians.
@@ -268,13 +268,13 @@ pub struct SixDofJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Twist axis of body A in world space (unit).
-    pub twist_axis_a: Vector4,
+    pub twist_axis_a: Vec4,
     /// Twist axis of body B in world space (unit).
-    pub twist_axis_b: Vector4,
+    pub twist_axis_b: Vec4,
     /// Current signed twist angle in radians.
     pub twist_angle: f32,
     /// Lower twist bound.
@@ -303,7 +303,7 @@ pub struct SixDofJoint {
     pub linear_axis_max: [f32; 3],
     /// World-space constraint-frame axes `[twist, plane, twist × plane]` used
     /// by swing and per-axis translation rows.
-    pub linear_axes: [Vector4; 3],
+    pub linear_axes: [Vec4; 3],
 }
 
 /// Solver-level prismatic joint (`hknpPrismaticConstraintData` subset).
@@ -322,15 +322,15 @@ pub struct PrismaticJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Slider axis of body A in world space (unit).
-    pub axis_a: Vector4,
+    pub axis_a: Vec4,
     /// Slider axis of body B in world space (unit).
-    pub axis_b: Vector4,
+    pub axis_b: Vec4,
     /// World-space orientation error (axis * angle), zero when aligned.
-    pub orientation_error: Vector4,
+    pub orientation_error: Vec4,
     /// Current translation of A's pivot along the slider axis relative to B.
     pub translation: f32,
     /// Lower translation bound.
@@ -394,9 +394,9 @@ pub struct SpringJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Target distance between the pivots.
     pub rest_length: f32,
 }
@@ -412,11 +412,11 @@ pub struct PointToPlaneJoint {
     /// Solver index of body B.
     pub body_b: usize,
     /// Pivot on body A in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Pivot on body B in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Plane normal in world space (unit).
-    pub plane_normal: Vector4,
+    pub plane_normal: Vec4,
     /// Minimum signed distance along the plane normal.
     pub min_distance: f32,
     /// Maximum signed distance along the plane normal.
@@ -472,12 +472,12 @@ pub struct WheelJoint {
     /// Solver index of body B (the chassis).
     pub body_b: usize,
     /// Wheel center in world space.
-    pub pivot_a: Vector4,
+    pub pivot_a: Vec4,
     /// Suspension hardpoint on the chassis in world space.
-    pub pivot_b: Vector4,
+    pub pivot_b: Vec4,
     /// Suspension axis in world space (unit; points from the hardpoint toward
     /// the ground).
-    pub suspension_axis: Vector4,
+    pub suspension_axis: Vec4,
     /// Current suspension length: signed distance of the wheel center
     /// relative to the hardpoint along the suspension axis.
     pub suspension_length: f32,
@@ -491,9 +491,9 @@ pub struct WheelJoint {
     /// suspension as a plain limited slider).
     pub suspension: Option<WheelSuspension>,
     /// Wheel spin axle in world space (unit).
-    pub axle_a: Vector4,
+    pub axle_a: Vec4,
     /// Chassis-commanded axle in world space (unit; steering already applied).
-    pub axle_b: Vector4,
+    pub axle_b: Vec4,
     /// Optional spin motor about the axle (`None` is frictionless).
     pub drive: Option<WheelDrive>,
 }
@@ -798,7 +798,7 @@ impl crate::phys_solver::solver::Solver {
 
 /// The world-axis basis used by bilateral linear rows (stable across steps,
 /// which is what makes their cached impulses reusable).
-const LINEAR_AXES: [Vector4; 3] = [Vector4::UNIT_X, Vector4::UNIT_Y, Vector4::UNIT_Z];
+const LINEAR_AXES: [Vec4; 3] = [Vec4::X, Vec4::Y, Vec4::Z];
 
 /// Pull the two world pivots together along each of `axes`, accumulating the
 /// impulses into `rows` (one row per axis, applied as `+impulse` on A).
@@ -807,9 +807,9 @@ fn solve_linear_rows(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    pivot_a: Vector4,
-    pivot_b: Vector4,
-    axes: &[Vector4],
+    pivot_a: Vec4,
+    pivot_b: Vec4,
+    axes: &[Vec4],
     rows: &mut [f32],
     bias_scale: f32,
     max_bias: f32,
@@ -850,9 +850,9 @@ fn warm_start_linear_rows(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    pivot_a: Vector4,
-    pivot_b: Vector4,
-    axes: &[Vector4],
+    pivot_a: Vec4,
+    pivot_b: Vec4,
+    axes: &[Vec4],
     rows: &[f32],
 ) {
     let (Ok(a), Ok(b)) = (
@@ -888,9 +888,9 @@ fn solve_unilateral_linear_row(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    pivot_a: Vector4,
-    pivot_b: Vector4,
-    axis: Vector4,
+    pivot_a: Vec4,
+    pivot_b: Vec4,
+    axis: Vec4,
     translation: f32,
     min_translation: f32,
     max_translation: f32,
@@ -946,9 +946,9 @@ fn warm_start_unilateral_linear_row(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    pivot_a: Vector4,
-    pivot_b: Vector4,
-    axis: Vector4,
+    pivot_a: Vec4,
+    pivot_b: Vec4,
+    axis: Vec4,
     impulse: f32,
 ) {
     if impulse == 0.0 {
@@ -1117,7 +1117,7 @@ fn solve_spring_rows(
         if length > 1e-8 {
             centers / length
         } else {
-            Vector4::UNIT_X
+            Vec4::X
         }
     };
     let mass = linear_effective_mass(bodies, a, b, direction, joint.pivot_a, joint.pivot_b);
@@ -1236,7 +1236,7 @@ fn solve_wheel_rows(
     let axle_b = normalized(joint.axle_b);
     // Misalignment error: rotating A about this vector brings axle_a onto
     // axle_b (this is what steers the wheel when the chassis axle rotates).
-    let error = axle_a.cross(axle_b);
+    let error = axle_a.cross3(axle_b);
     let [au, av] = perpendicular_axes(axle_a);
     solve_angular_rows(
         bodies,
@@ -1341,7 +1341,7 @@ fn solve_hinge_rows(
     let axis_b = normalized(joint.axis_b);
     // Misalignment error: rotating A about this vector (axis * sin(angle))
     // brings axis_a onto axis_b.
-    let error = axis_a.cross(axis_b);
+    let error = axis_a.cross3(axis_b);
     let [u, v] = perpendicular_axes(axis_a);
     solve_angular_rows(
         bodies,
@@ -1445,8 +1445,8 @@ fn solve_angular_rows(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    error: Vector4,
-    axes: &[Vector4],
+    error: Vec4,
+    axes: &[Vec4],
     rows: &mut [f32],
     bias_scale: f32,
     max_bias: f32,
@@ -1482,7 +1482,7 @@ fn warm_start_angular_rows(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    axes: &[Vector4],
+    axes: &[Vec4],
     rows: &[f32],
 ) {
     let (Ok(a), Ok(b)) = (
@@ -1516,7 +1516,7 @@ fn solve_unilateral_angular_row(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    axis: Vector4,
+    axis: Vec4,
     angle: f32,
     min_angle: f32,
     max_angle: f32,
@@ -1575,7 +1575,7 @@ fn warm_start_unilateral_angular_row(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    axis: Vector4,
+    axis: Vec4,
     impulse: f32,
 ) {
     if impulse == 0.0 {
@@ -1628,7 +1628,7 @@ fn solve_ragdoll_rows(
     if joint.plane_enabled {
         // `plane_angle = φ - π/2` grows with B's angular velocity along
         // `twist_a × plane_b`, matching solve_unilateral_angular_row.
-        let axis = normalized(normalized(joint.twist_axis_a).cross(normalized(joint.plane_axis_b)));
+        let axis = normalized(normalized(joint.twist_axis_a).cross3(normalized(joint.plane_axis_b)));
         solve_unilateral_angular_row(
             bodies,
             joint.body_a,
@@ -1688,7 +1688,7 @@ fn solve_cone_row(
     }
     let twist_a = normalized(joint.twist_axis_a);
     let twist_b = normalized(joint.twist_axis_b);
-    let axis = normalized(twist_a.cross(twist_b));
+    let axis = normalized(twist_a.cross3(twist_b));
     let mass = angular_effective_mass(bodies, a, b, axis);
     if mass <= 1e-12 {
         *row = 0.0;
@@ -1900,7 +1900,7 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
             );
             if joint.swing_angle > joint.cone_angle {
                 let axis = normalized(
-                    normalized(joint.twist_axis_a).cross(normalized(joint.twist_axis_b)),
+                    normalized(joint.twist_axis_a).cross3(normalized(joint.twist_axis_b)),
                 );
                 warm_start_unilateral_angular_row(
                     bodies,
@@ -1921,7 +1921,7 @@ fn apply_joint_warm_start(bodies: &mut [SolverBody], joint: &JointConstraint, ro
             }
             if joint.plane_enabled {
                 let axis = normalized(
-                    normalized(joint.twist_axis_a).cross(normalized(joint.plane_axis_b)),
+                    normalized(joint.twist_axis_a).cross3(normalized(joint.plane_axis_b)),
                 );
                 if joint.plane_angle > joint.plane_max {
                     warm_start_unilateral_angular_row(
@@ -2109,28 +2109,28 @@ fn body_index(length: usize, index: usize) -> Result<usize, ()> {
     if index < length { Ok(index) } else { Err(()) }
 }
 
-fn normalized(direction: Vector4) -> Vector4 {
+fn normalized(direction: Vec4) -> Vec4 {
     let length = direction.length3();
     if length > 1e-10 {
-        Vector4::from_xyz(
+        Vec4::from_xyz(
             direction.x / length,
             direction.y / length,
             direction.z / length,
         )
     } else {
-        Vector4::UNIT_X
+        Vec4::X
     }
 }
 
 /// Two deterministic unit axes perpendicular to `axis`.
-fn perpendicular_axes(axis: Vector4) -> [Vector4; 2] {
+fn perpendicular_axes(axis: Vec4) -> [Vec4; 2] {
     let helper = if axis.x.abs() < 0.9 {
-        Vector4::UNIT_X
+        Vec4::X
     } else {
-        Vector4::UNIT_Y
+        Vec4::Y
     };
-    let u = normalized(axis.cross(helper));
-    let v = axis.cross(u);
+    let u = normalized(axis.cross3(helper));
+    let v = axis.cross3(u);
     [u, v]
 }
 
@@ -2141,9 +2141,9 @@ fn linear_effective_mass(
     bodies: &[SolverBody],
     body_a: usize,
     body_b: usize,
-    axis: Vector4,
-    pivot_a: Vector4,
-    pivot_b: Vector4,
+    axis: Vec4,
+    pivot_a: Vec4,
+    pivot_b: Vec4,
 ) -> f32 {
     bodies[body_a].inverse_mass
         + bodies[body_b].inverse_mass
@@ -2156,12 +2156,12 @@ fn angular_effective_mass(
     bodies: &[SolverBody],
     body_a: usize,
     body_b: usize,
-    axis: Vector4,
+    axis: Vec4,
 ) -> f32 {
     inertia_term(&bodies[body_a], axis) + inertia_term(&bodies[body_b], axis)
 }
 
-fn inertia_term(body: &SolverBody, axis: Vector4) -> f32 {
+fn inertia_term(body: &SolverBody, axis: Vec4) -> f32 {
     inertia_scalar(body, axis)
 }
 
@@ -2170,7 +2170,7 @@ fn apply_angular_impulse(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    axis: Vector4,
+    axis: Vec4,
     lambda: f32,
 ) {
     bodies[body_a].apply_angular_impulse_scaled(axis, lambda);
@@ -2179,7 +2179,7 @@ fn apply_angular_impulse(
 
 impl SolverBody {
     /// Apply a pure angular impulse `direction * scale`.
-    pub(crate) fn apply_angular_impulse_scaled(&mut self, direction: Vector4, scale: f32) {
+    pub(crate) fn apply_angular_impulse_scaled(&mut self, direction: Vec4, scale: f32) {
         self.angular_velocity += angular_impulse_vector(self, direction) * scale;
     }
 }
@@ -2187,28 +2187,28 @@ impl SolverBody {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Quaternion;
+    use crate::base_math::{Quat, QuatExt, quat_mul};
     use crate::phys_solver::solver::{Solver, SolverSettings};
 
-    fn dynamic_body(position: Vector4, velocity: Vector4) -> SolverBody {
-        SolverBody::new(1.0, Vector4::splat(0.5), position, velocity, Vector4::ZERO)
+    fn dynamic_body(position: Vec4, velocity: Vec4) -> SolverBody {
+        SolverBody::new(1.0, Vec4::splat(0.5), position, velocity, Vec4::ZERO)
     }
 
-    fn static_body(position: Vector4) -> SolverBody {
+    fn static_body(position: Vec4) -> SolverBody {
         SolverBody::static_body(position)
     }
 
     #[test]
     fn ball_socket_pulls_pivots_together() {
         let mut bodies = vec![
-            dynamic_body(Vector4::ZERO, Vector4::ZERO),
-            static_body(Vector4::from_xyz(0.0, 2.0, 0.0)),
+            dynamic_body(Vec4::ZERO, Vec4::ZERO),
+            static_body(Vec4::from_xyz(0.0, 2.0, 0.0)),
         ];
         let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::from_xyz(0.0, 1.0, 0.0),
-            pivot_b: Vector4::from_xyz(0.0, 3.0, 0.0),
+            pivot_a: Vec4::from_xyz(0.0, 1.0, 0.0),
+            pivot_b: Vec4::from_xyz(0.0, 3.0, 0.0),
         });
         let stats = Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
         assert_eq!(stats.joints, 1);
@@ -2220,19 +2220,19 @@ mod tests {
             "vy {}",
             bodies[0].linear_velocity.y
         );
-        assert_eq!(bodies[1].linear_velocity, Vector4::ZERO);
+        assert_eq!(bodies[1].linear_velocity, Vec4::ZERO);
     }
 
     #[test]
     fn ball_socket_equalizes_pivot_velocities() {
         let mut bodies = vec![
-            dynamic_body(Vector4::ZERO, Vector4::from_xyz(0.0, 0.0, 0.0)),
+            dynamic_body(Vec4::ZERO, Vec4::from_xyz(0.0, 0.0, 0.0)),
             dynamic_body(
-                Vector4::from_xyz(4.0, 0.0, 0.0),
-                Vector4::from_xyz(2.0, 0.0, 0.0),
+                Vec4::from_xyz(4.0, 0.0, 0.0),
+                Vec4::from_xyz(2.0, 0.0, 0.0),
             ),
         ];
-        let pivot = Vector4::from_xyz(2.0, 0.0, 0.0);
+        let pivot = Vec4::from_xyz(2.0, 0.0, 0.0);
         let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
             body_a: 0,
             body_b: 1,
@@ -2253,20 +2253,20 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 0.0, 1.0),
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 0.0, 1.0),
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = JointConstraint::Hinge(HingeJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
             angle: 0.0,
             limits: None,
             motor: None,
@@ -2286,22 +2286,22 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         // axis_a = +X, axis_b points towards -Y: rotating A about -Z aligns
         // the axes, so the drift bias must produce negative wz.
         let joint = JointConstraint::Hinge(HingeJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::from_xyz(
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::from_xyz(
                 core::f32::consts::FRAC_1_SQRT_2,
                 -core::f32::consts::FRAC_1_SQRT_2,
                 0.0,
@@ -2323,25 +2323,25 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::from_xyz(1.0, 2.0, 3.0),
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(1.0, 2.0, 3.0),
             ),
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::from_xyz(-1.0, 1.0, 0.0),
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(-1.0, 1.0, 0.0),
             ),
         ];
         let joint = JointConstraint::Fixed(FixedJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            orientation_error: Vec4::ZERO,
         });
         Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
         let relative = bodies[0].angular_velocity - bodies[1].angular_velocity;
@@ -2357,19 +2357,19 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = JointConstraint::Fixed(FixedJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            orientation_error: Vector4::from_xyz(0.0, 0.1, 0.0),
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            orientation_error: Vec4::from_xyz(0.0, 0.1, 0.0),
         });
         Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
         assert!(
@@ -2381,15 +2381,15 @@ mod tests {
 
     #[test]
     fn invalid_body_indices_are_skipped() {
-        let mut bodies = vec![dynamic_body(Vector4::ZERO, Vector4::UNIT_X)];
+        let mut bodies = vec![dynamic_body(Vec4::ZERO, Vec4::X)];
         let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
             body_a: 0,
             body_b: 99,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
         });
         Solver::default().solve_joints(&mut bodies, &[joint], 1.0 / 60.0);
-        assert_eq!(bodies[0].linear_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[0].linear_velocity, Vec4::X);
     }
 
     #[test]
@@ -2397,42 +2397,42 @@ mod tests {
         // Two identical joints on the same bodies must give the same result
         // regardless of how many times they repeat (idempotent converged state).
         let mut bodies = vec![
-            dynamic_body(Vector4::ZERO, Vector4::from_xyz(0.0, 0.0, 0.0)),
-            dynamic_body(Vector4::from_xyz(0.0, 1.0, 0.0), Vector4::ZERO),
+            dynamic_body(Vec4::ZERO, Vec4::from_xyz(0.0, 0.0, 0.0)),
+            dynamic_body(Vec4::from_xyz(0.0, 1.0, 0.0), Vec4::ZERO),
         ];
         let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
         });
         Solver::default().solve_joints(&mut bodies, &[joint, joint], 1.0 / 60.0);
-        let relative = bodies[0].velocity_at(Vector4::ZERO) - bodies[1].velocity_at(Vector4::ZERO);
+        let relative = bodies[0].velocity_at(Vec4::ZERO) - bodies[1].velocity_at(Vec4::ZERO);
         assert!(relative.length3() < 1e-2);
     }
 
     #[test]
     fn joint_subset_only_solves_listed_joints() {
         let mut bodies = vec![
-            dynamic_body(Vector4::ZERO, Vector4::UNIT_X),
-            dynamic_body(Vector4::ZERO, Vector4::ZERO),
-            dynamic_body(Vector4::from_xyz(5.0, 0.0, 0.0), Vector4::UNIT_X),
-            dynamic_body(Vector4::from_xyz(5.0, 0.0, 0.0), Vector4::ZERO),
+            dynamic_body(Vec4::ZERO, Vec4::X),
+            dynamic_body(Vec4::ZERO, Vec4::ZERO),
+            dynamic_body(Vec4::from_xyz(5.0, 0.0, 0.0), Vec4::X),
+            dynamic_body(Vec4::from_xyz(5.0, 0.0, 0.0), Vec4::ZERO),
         ];
         let joint = |body_a, body_b| {
             JointConstraint::BallAndSocket(BallAndSocketJoint {
                 body_a,
                 body_b,
-                pivot_a: Vector4::ZERO,
-                pivot_b: Vector4::ZERO,
+                pivot_a: Vec4::ZERO,
+                pivot_b: Vec4::ZERO,
             })
         };
         let joints = [joint(0, 1), joint(2, 3)];
         Solver::default().solve_joints_subset(&mut bodies, &joints, &[1], 1.0 / 60.0);
 
         // Island 0 is not in the subset and stays untouched.
-        assert_eq!(bodies[0].linear_velocity, Vector4::UNIT_X);
-        assert_eq!(bodies[1].linear_velocity, Vector4::ZERO);
+        assert_eq!(bodies[0].linear_velocity, Vec4::X);
+        assert_eq!(bodies[1].linear_velocity, Vec4::ZERO);
         // Island 1 had its relative velocity removed.
         let relative = (bodies[2].linear_velocity - bodies[3].linear_velocity).length3();
         assert!(relative < 1e-2, "relative velocity {relative}");
@@ -2441,32 +2441,38 @@ mod tests {
     #[test]
     fn quaternion_composes_for_error_mapping() {
         // Sanity check used by the world: rotating A by q_e restores R0.
-        let q_a = Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.2);
-        let r0 = Quaternion::from_axis_angle(Vector4::UNIT_X, 0.1);
-        let q_b = q_a.mul(r0);
-        let r_rel = q_a.inverse_mul(q_b);
-        let q_e = r_rel.mul_inverse(r0);
-        assert!(q_e.all_equal(Quaternion::IDENTITY, 1e-5));
+        let q_a = Quat::from_axis_angle(glam::Vec3::Z, 0.2);
+        let r0 = Quat::from_axis_angle(glam::Vec3::X, 0.1);
+        let q_b = quat_mul(q_a, r0);
+        let r_rel = quat_mul(q_a.inverse(), q_b);
+        let q_e = quat_mul(r_rel, r0.inverse());
+        assert!(
+            q_e.x.abs() <= 1e-5
+                && q_e.y.abs() <= 1e-5
+                && q_e.z.abs() <= 1e-5
+                && (q_e.w - 1.0).abs() <= 1e-5,
+            "q_e {q_e:?}"
+        );
     }
 
     fn hinge_joint() -> HingeJoint {
         HingeJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
             angle: 0.0,
             limits: None,
             motor: None,
         }
     }
 
-    fn hinge_pair(spun: Vector4) -> Vec<SolverBody> {
+    fn hinge_pair(spun: Vec4) -> Vec<SolverBody> {
         vec![
-            SolverBody::new(1.0, Vector4::splat(0.5), Vector4::ZERO, Vector4::ZERO, spun),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::new(1.0, Vec4::splat(0.5), Vec4::ZERO, Vec4::ZERO, spun),
+            SolverBody::static_body(Vec4::ZERO),
         ]
     }
 
@@ -2475,7 +2481,7 @@ mod tests {
         // Angle 0.5 rad is past max 0.2. B is static, so the restoring
         // relative velocity of B w.r.t. A (negative) requires body A to spin
         // positively about the axis.
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.limits = Some(HingeLimits {
@@ -2492,7 +2498,7 @@ mod tests {
 
     #[test]
     fn hinge_limit_lower_bound_pushes_velocity_forward() {
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = -0.5;
         joint.limits = Some(HingeLimits {
@@ -2509,7 +2515,7 @@ mod tests {
 
     #[test]
     fn hinge_limit_inside_range_applies_nothing() {
-        let mut bodies = hinge_pair(Vector4::UNIT_X);
+        let mut bodies = hinge_pair(Vec4::X);
         let mut joint = hinge_joint();
         joint.angle = 0.1;
         joint.limits = Some(HingeLimits {
@@ -2517,7 +2523,7 @@ mod tests {
             max_angle: 0.2,
         });
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
-        assert_eq!(bodies[0].angular_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[0].angular_velocity, Vec4::X);
     }
 
     #[test]
@@ -2525,7 +2531,7 @@ mod tests {
         // Already returning fast (relative velocity of B w.r.t. A well below
         // the bias target): the unilateral limit must not slow it down or
         // accelerate it outward.
-        let mut bodies = hinge_pair(Vector4::from_xyz(6.0, 0.0, 0.0));
+        let mut bodies = hinge_pair(Vec4::from_xyz(6.0, 0.0, 0.0));
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.limits = Some(HingeLimits {
@@ -2543,7 +2549,7 @@ mod tests {
     #[test]
     fn hinge_motor_drives_toward_target_velocity() {
         // B is static, so driving B relative to A toward +2 spins A at -2.
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.motor = Some(HingeMotor::Velocity {
             target_velocity: 2.0,
@@ -2561,7 +2567,7 @@ mod tests {
     fn hinge_motor_impulse_is_clamped() {
         // Huge target but a tiny max impulse: the applied velocity change is
         // bounded by max_impulse * inverse_inertia (x component: 0.5).
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.motor = Some(HingeMotor::Velocity {
             target_velocity: 1000.0,
@@ -2580,7 +2586,7 @@ mod tests {
     fn hinge_motor_zero_when_at_target() {
         // A spinning at -2 makes the relative velocity of B w.r.t. A equal
         // the target, so the motor must not apply anything.
-        let mut bodies = hinge_pair(Vector4::from_xyz(-2.0, 0.0, 0.0));
+        let mut bodies = hinge_pair(Vec4::from_xyz(-2.0, 0.0, 0.0));
         let mut joint = hinge_joint();
         joint.motor = Some(HingeMotor::Velocity {
             target_velocity: 2.0,
@@ -2589,14 +2595,14 @@ mod tests {
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
         assert_eq!(
             bodies[0].angular_velocity,
-            Vector4::from_xyz(-2.0, 0.0, 0.0)
+            Vec4::from_xyz(-2.0, 0.0, 0.0)
         );
     }
 
     #[test]
     fn hinge_limit_and_motor_cooperate_deterministically() {
         let build = || {
-            let bodies = hinge_pair(Vector4::ZERO);
+            let bodies = hinge_pair(Vec4::ZERO);
             let mut joint = hinge_joint();
             joint.angle = 0.5;
             joint.limits = Some(HingeLimits {
@@ -2620,11 +2626,11 @@ mod tests {
         RagdollJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            twist_axis_a: Vector4::UNIT_X,
-            twist_axis_b: Vector4::UNIT_X,
-            plane_axis_b: Vector4::UNIT_Y,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            twist_axis_a: Vec4::X,
+            twist_axis_b: Vec4::X,
+            plane_axis_b: Vec4::Y,
             swing_angle: 0.0,
             cone_angle: core::f32::consts::FRAC_PI_4,
             twist_angle: 0.0,
@@ -2644,17 +2650,17 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let mut joint = ragdoll_joint();
         joint.swing_angle = 0.6;
         joint.cone_angle = 0.3;
-        joint.twist_axis_b = Vector4::from_xyz(0.6f32.cos(), 0.6f32.sin(), 0.0);
+        joint.twist_axis_b = Vec4::from_xyz(0.6f32.cos(), 0.6f32.sin(), 0.0);
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Ragdoll(joint)], 1.0 / 60.0);
         assert!(
             bodies[0].angular_velocity.z > 0.0,
@@ -2668,12 +2674,12 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::UNIT_Z,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::Z,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let mut joint = ragdoll_joint();
         joint.swing_angle = 0.1;
@@ -2691,12 +2697,12 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let mut joint = ragdoll_joint();
         joint.twist_angle = 0.5;
@@ -2714,21 +2720,21 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::from_xyz(2.0, 2.0, 3.0),
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::from_xyz(2.0, 2.0, 3.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PrismaticJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
+            orientation_error: Vec4::ZERO,
             translation: 0.0,
             min_translation: -1.0,
             max_translation: 1.0,
@@ -2755,21 +2761,21 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::UNIT_X * 3.0,
-                Vector4::ZERO,
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::X * 3.0,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PrismaticJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
+            orientation_error: Vec4::ZERO,
             translation: 0.5,
             min_translation: -0.2,
             max_translation: 0.2,
@@ -2792,27 +2798,27 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::from_xyz(1.0, 2.0, 3.0),
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(1.0, 2.0, 3.0),
             ),
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::from_xyz(-1.0, 1.0, 0.0),
+                Vec4::splat(0.5),
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(-1.0, 1.0, 0.0),
             ),
         ];
         let joint = PrismaticJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
+            orientation_error: Vec4::ZERO,
             translation: 0.0,
             min_translation: -1.0,
             max_translation: 1.0,
@@ -2836,18 +2842,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::from_xyz(0.0, 2.0, 0.0)),
+            SolverBody::static_body(Vec4::from_xyz(0.0, 2.0, 0.0)),
         ];
         let joint = SpringJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::from_xyz(0.0, 2.0, 0.0),
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::from_xyz(0.0, 2.0, 0.0),
             rest_length: 1.0,
         };
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Spring(joint)], 1.0 / 60.0);
@@ -2863,18 +2869,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::from_xyz(0.0, 0.5, 0.0)),
+            SolverBody::static_body(Vec4::from_xyz(0.0, 0.5, 0.0)),
         ];
         let joint = SpringJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::from_xyz(0.0, 0.5, 0.0),
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::from_xyz(0.0, 0.5, 0.0),
             rest_length: 1.0,
         };
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Spring(joint)], 1.0 / 60.0);
@@ -2890,19 +2896,19 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PointToPlaneJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::from_xyz(0.0, 1.0, 0.0),
-            pivot_b: Vector4::ZERO,
-            plane_normal: Vector4::UNIT_Y,
+            pivot_a: Vec4::from_xyz(0.0, 1.0, 0.0),
+            pivot_b: Vec4::ZERO,
+            plane_normal: Vec4::Y,
             min_distance: 0.0,
             max_distance: 0.0,
         };
@@ -2923,19 +2929,19 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::UNIT_X,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::X,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PointToPlaneJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::from_xyz(0.0, 0.1, 0.0),
-            pivot_b: Vector4::ZERO,
-            plane_normal: Vector4::UNIT_Y,
+            pivot_a: Vec4::from_xyz(0.0, 0.1, 0.0),
+            pivot_b: Vec4::ZERO,
+            plane_normal: Vec4::Y,
             min_distance: 0.0,
             max_distance: 0.3,
         };
@@ -2944,7 +2950,7 @@ mod tests {
             &[JointConstraint::PointToPlane(joint)],
             1.0 / 60.0,
         );
-        assert_eq!(bodies[0].linear_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[0].linear_velocity, Vec4::X);
     }
 
     #[test]
@@ -2952,19 +2958,19 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PointToPlaneJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::from_xyz(0.0, -0.5, 0.0),
-            pivot_b: Vector4::ZERO,
-            plane_normal: Vector4::UNIT_Y,
+            pivot_a: Vec4::from_xyz(0.0, -0.5, 0.0),
+            pivot_b: Vec4::ZERO,
+            plane_normal: Vec4::Y,
             min_distance: 0.0,
             max_distance: 0.3,
         };
@@ -2986,17 +2992,17 @@ mod tests {
             vec![
                 SolverBody::new(
                     1.0,
-                    Vector4::splat(0.5),
-                    Vector4::ZERO,
-                    Vector4::UNIT_X,
-                    Vector4::UNIT_Z,
+                    Vec4::splat(0.5),
+                    Vec4::ZERO,
+                    Vec4::X,
+                    Vec4::Z,
                 ),
                 SolverBody::new(
                     1.0,
-                    Vector4::splat(0.5),
-                    Vector4::from_xyz(1.0, 0.0, 0.0),
-                    -Vector4::UNIT_X,
-                    Vector4::ZERO,
+                    Vec4::splat(0.5),
+                    Vec4::from_xyz(1.0, 0.0, 0.0),
+                    -Vec4::X,
+                    Vec4::ZERO,
                 ),
             ]
         }
@@ -3006,11 +3012,11 @@ mod tests {
                 JointConstraint::Prismatic(PrismaticJoint {
                     body_a: 0,
                     body_b: 1,
-                    pivot_a: Vector4::ZERO,
-                    pivot_b: Vector4::ZERO,
-                    axis_a: Vector4::UNIT_X,
-                    axis_b: Vector4::UNIT_X,
-                    orientation_error: Vector4::ZERO,
+                    pivot_a: Vec4::ZERO,
+                    pivot_b: Vec4::ZERO,
+                    axis_a: Vec4::X,
+                    axis_b: Vec4::X,
+                    orientation_error: Vec4::ZERO,
                     translation: 0.1,
                     min_translation: -0.2,
                     max_translation: 0.2,
@@ -3019,16 +3025,16 @@ mod tests {
                 JointConstraint::Spring(SpringJoint {
                     body_a: 0,
                     body_b: 1,
-                    pivot_a: Vector4::ZERO,
-                    pivot_b: Vector4::from_xyz(1.0, 0.0, 0.0),
+                    pivot_a: Vec4::ZERO,
+                    pivot_b: Vec4::from_xyz(1.0, 0.0, 0.0),
                     rest_length: 0.5,
                 }),
                 JointConstraint::PointToPlane(PointToPlaneJoint {
                     body_a: 0,
                     body_b: 1,
-                    pivot_a: Vector4::ZERO,
-                    pivot_b: Vector4::ZERO,
-                    plane_normal: Vector4::UNIT_Y,
+                    pivot_a: Vec4::ZERO,
+                    pivot_b: Vec4::ZERO,
+                    plane_normal: Vec4::Y,
                     min_distance: 0.0,
                     max_distance: 0.0,
                 }),
@@ -3043,20 +3049,20 @@ mod tests {
         // Out-of-range body indices are skipped, leaving the input untouched.
         let mut single = vec![SolverBody::new(
             1.0,
-            Vector4::ZERO,
-            Vector4::ZERO,
-            Vector4::UNIT_X,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Vec4::X,
+            Vec4::ZERO,
         )];
         let joint = JointConstraint::Spring(SpringJoint {
             body_a: 0,
             body_b: 99,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
             rest_length: 1.0,
         });
         Solver::default().solve_joints(&mut single, &[joint], 1.0 / 60.0);
-        assert_eq!(single[0].linear_velocity, Vector4::UNIT_X);
+        assert_eq!(single[0].linear_velocity, Vec4::X);
     }
 
     // Position / spring motors and joint warm starting.
@@ -3065,7 +3071,7 @@ mod tests {
     fn hinge_position_motor_drives_the_angle_toward_the_target() {
         // Angle 0.5 with target 0 and tau 0.1: the desired relative velocity is
         // -5 rad/s; B is static, so A must spin positively about the axis.
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.motor = Some(HingeMotor::Position {
@@ -3083,7 +3089,7 @@ mod tests {
 
     #[test]
     fn hinge_position_motor_with_zero_tau_is_inert() {
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.motor = Some(HingeMotor::Position {
@@ -3092,12 +3098,12 @@ mod tests {
             max_impulse: 10.0,
         });
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Hinge(joint)], 1.0 / 60.0);
-        assert_eq!(bodies[0].angular_velocity, Vector4::ZERO);
+        assert_eq!(bodies[0].angular_velocity, Vec4::ZERO);
     }
 
     #[test]
     fn hinge_spring_motor_pulls_the_angle_back() {
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.motor = Some(HingeMotor::Spring {
@@ -3118,7 +3124,7 @@ mod tests {
     fn hinge_spring_motor_impulse_is_clamped() {
         // Huge stiffness but a tiny impulse clamp: the velocity change is
         // bounded by max_impulse * inverse_inertia (0.01 * 0.5).
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = 0.5;
         joint.motor = Some(HingeMotor::Spring {
@@ -3137,21 +3143,21 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PrismaticJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
+            orientation_error: Vec4::ZERO,
             translation: 0.0,
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
@@ -3180,21 +3186,21 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let joint = PrismaticJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::ZERO,
-            pivot_b: Vector4::ZERO,
-            axis_a: Vector4::UNIT_X,
-            axis_b: Vector4::UNIT_X,
-            orientation_error: Vector4::ZERO,
+            pivot_a: Vec4::ZERO,
+            pivot_b: Vec4::ZERO,
+            axis_a: Vec4::X,
+            axis_b: Vec4::X,
+            orientation_error: Vec4::ZERO,
             translation: -0.5,
             min_translation: f32::NEG_INFINITY,
             max_translation: f32::INFINITY,
@@ -3219,14 +3225,14 @@ mod tests {
 
     fn separated_ball_socket() -> (Vec<SolverBody>, JointConstraint) {
         let bodies = vec![
-            dynamic_body(Vector4::ZERO, Vector4::ZERO),
-            static_body(Vector4::from_xyz(0.0, 2.0, 0.0)),
+            dynamic_body(Vec4::ZERO, Vec4::ZERO),
+            static_body(Vec4::from_xyz(0.0, 2.0, 0.0)),
         ];
         let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
             body_a: 0,
             body_b: 1,
-            pivot_a: Vector4::from_xyz(0.0, 1.0, 0.0),
-            pivot_b: Vector4::from_xyz(0.0, 3.0, 0.0),
+            pivot_a: Vec4::from_xyz(0.0, 1.0, 0.0),
+            pivot_b: Vec4::from_xyz(0.0, 3.0, 0.0),
         });
         (bodies, joint)
     }
@@ -3278,24 +3284,24 @@ mod tests {
             let bodies = vec![
                 SolverBody::new(
                     1.0,
-                    Vector4::splat(0.5),
-                    Vector4::ZERO,
-                    Vector4::from_xyz(0.0, 1.0, 0.0),
-                    Vector4::ZERO,
+                    Vec4::splat(0.5),
+                    Vec4::ZERO,
+                    Vec4::from_xyz(0.0, 1.0, 0.0),
+                    Vec4::ZERO,
                 ),
                 SolverBody::new(
                     1.0,
-                    Vector4::splat(0.5),
-                    Vector4::from_xyz(1.0, 2.0, 0.0),
-                    Vector4::from_xyz(1.0, 3.0, 0.0),
-                    Vector4::UNIT_X,
+                    Vec4::splat(0.5),
+                    Vec4::from_xyz(1.0, 2.0, 0.0),
+                    Vec4::from_xyz(1.0, 3.0, 0.0),
+                    Vec4::X,
                 ),
             ];
             let joint = JointConstraint::BallAndSocket(BallAndSocketJoint {
                 body_a: 0,
                 body_b: 1,
-                pivot_a: Vector4::from_xyz(0.0, 2.0, 0.0),
-                pivot_b: Vector4::from_xyz(1.0, 3.0, 0.0),
+                pivot_a: Vec4::from_xyz(0.0, 2.0, 0.0),
+                pivot_b: Vec4::from_xyz(1.0, 3.0, 0.0),
             });
             (bodies, joint)
         };
@@ -3329,7 +3335,7 @@ mod tests {
         // Hinge inside its limits with a bogus cached limit impulse: the row
         // must neither be replayed nor keep its stale value.
         let (mut bodies, joint) = {
-            let bodies = hinge_pair(Vector4::UNIT_X);
+            let bodies = hinge_pair(Vec4::X);
             let mut joint = hinge_joint();
             joint.angle = 0.1;
             joint.limits = Some(HingeLimits {
@@ -3347,14 +3353,14 @@ mod tests {
             1.0 / 60.0,
         );
         assert_eq!(impulses[0].rows[5], 0.0);
-        assert_eq!(bodies[0].angular_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[0].angular_velocity, Vec4::X);
     }
 
     #[test]
     fn wrapped_angle_targets_are_reached_by_the_position_motor() {
         // angle near +pi, target just past -pi: the wrapped error is small and
         // positive, so the motor drives B relative to A positively.
-        let mut bodies = hinge_pair(Vector4::ZERO);
+        let mut bodies = hinge_pair(Vec4::ZERO);
         let mut joint = hinge_joint();
         joint.angle = core::f32::consts::PI - 0.1;
         joint.motor = Some(HingeMotor::Position {
@@ -3371,35 +3377,35 @@ mod tests {
         );
     }
 
-    fn wheel_pair(wheel_position: Vector4, wheel_velocity: Vector4) -> Vec<SolverBody> {
+    fn wheel_pair(wheel_position: Vec4, wheel_velocity: Vec4) -> Vec<SolverBody> {
         vec![
             SolverBody::new(
                 1.0,
-                Vector4::splat(0.5),
+                Vec4::splat(0.5),
                 wheel_position,
                 wheel_velocity,
-                Vector4::ZERO,
+                Vec4::ZERO,
             ),
-            static_body(Vector4::ZERO),
+            static_body(Vec4::ZERO),
         ]
     }
 
-    fn wheel_joint(wheel_position: Vector4) -> WheelJoint {
+    fn wheel_joint(wheel_position: Vec4) -> WheelJoint {
         // Chassis hardpoint at the origin, suspension axis pointing down
         // (-Y), wheel center below it.
         WheelJoint {
             body_a: 0,
             body_b: 1,
             pivot_a: wheel_position,
-            pivot_b: Vector4::ZERO,
-            suspension_axis: Vector4::from_xyz(0.0, -1.0, 0.0),
+            pivot_b: Vec4::ZERO,
+            suspension_axis: Vec4::from_xyz(0.0, -1.0, 0.0),
             suspension_length: wheel_position.y.abs(),
             rest_length: 1.0,
             min_length: f32::NEG_INFINITY,
             max_length: f32::INFINITY,
             suspension: None,
-            axle_a: Vector4::UNIT_X,
-            axle_b: Vector4::UNIT_X,
+            axle_a: Vec4::X,
+            axle_b: Vec4::X,
             drive: None,
         }
     }
@@ -3407,12 +3413,12 @@ mod tests {
     #[test]
     fn wheel_locks_lateral_translation() {
         let mut bodies = wheel_pair(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(3.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(3.0, 0.0, 0.0),
         );
         Solver::default().solve_joints(
             &mut bodies,
-            &[JointConstraint::Wheel(wheel_joint(Vector4::from_xyz(
+            &[JointConstraint::Wheel(wheel_joint(Vec4::from_xyz(
                 0.0, -1.0, 0.0,
             )))],
             1.0 / 60.0,
@@ -3426,8 +3432,8 @@ mod tests {
     fn wheel_suspension_pushes_a_compressed_wheel_to_rest_length() {
         // Wheel center at length 0.6 < rest 1.0: the spring pushes it outward
         // (down along the suspension axis).
-        let position = Vector4::from_xyz(0.0, -0.6, 0.0);
-        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let position = Vec4::from_xyz(0.0, -0.6, 0.0);
+        let mut bodies = wheel_pair(position, Vec4::ZERO);
         let mut joint = wheel_joint(position);
         joint.suspension = Some(WheelSuspension {
             stiffness: 10.0,
@@ -3448,8 +3454,8 @@ mod tests {
     fn wheel_travel_limit_stops_extension() {
         // Wheel beyond max_length moving outward: the unilateral limit row
         // removes the outward velocity.
-        let position = Vector4::from_xyz(0.0, -0.8, 0.0);
-        let mut bodies = wheel_pair(position, Vector4::from_xyz(0.0, -0.5, 0.0));
+        let position = Vec4::from_xyz(0.0, -0.8, 0.0);
+        let mut bodies = wheel_pair(position, Vec4::from_xyz(0.0, -0.5, 0.0));
         let mut joint = wheel_joint(position);
         joint.max_length = 0.5;
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
@@ -3459,8 +3465,8 @@ mod tests {
 
     #[test]
     fn wheel_drive_spins_the_wheel_about_the_axle() {
-        let position = Vector4::from_xyz(0.0, -1.0, 0.0);
-        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let position = Vec4::from_xyz(0.0, -1.0, 0.0);
+        let mut bodies = wheel_pair(position, Vec4::ZERO);
         let mut joint = wheel_joint(position);
         joint.drive = Some(WheelDrive {
             target_spin_velocity: 10.0,
@@ -3469,23 +3475,23 @@ mod tests {
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
         // Angular mass = inverse inertia along X (0.5); the impulse reaches
         // the target exactly.
-        let spin = bodies[0].angular_velocity.dot3(Vector4::UNIT_X);
+        let spin = bodies[0].angular_velocity.dot3(Vec4::X);
         assert!((spin - 10.0).abs() < 1e-5, "spin {}", spin);
     }
 
     #[test]
     fn wheel_alignment_rows_steer_the_wheel_toward_the_commanded_axle() {
-        let position = Vector4::from_xyz(0.0, -1.0, 0.0);
-        let mut bodies = wheel_pair(position, Vector4::ZERO);
+        let position = Vec4::from_xyz(0.0, -1.0, 0.0);
+        let mut bodies = wheel_pair(position, Vec4::ZERO);
         let mut joint = wheel_joint(position);
         // The chassis commands an axle rotated about Z; the wheel must start
         // rotating toward it.
-        joint.axle_b = Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.1).rotate(Vector4::UNIT_X);
+        joint.axle_b = Quat::from_axis_angle(glam::Vec3::Z, 0.1).rotate_sdk(Vec4::X);
         Solver::default().solve_joints(&mut bodies, &[JointConstraint::Wheel(joint)], 1.0 / 60.0);
         assert!(
-            bodies[0].angular_velocity.dot3(Vector4::UNIT_Z).abs() > 1e-4,
+            bodies[0].angular_velocity.dot3(Vec4::Z).abs() > 1e-4,
             "wz {}",
-            bodies[0].angular_velocity.dot3(Vector4::UNIT_Z)
+            bodies[0].angular_velocity.dot3(Vec4::Z)
         );
     }
 }

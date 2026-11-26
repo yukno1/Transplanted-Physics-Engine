@@ -585,8 +585,20 @@ impl VehicleInstance {
             let hardpoint_ws = chassis_transform.transform_point(wheel.hardpoint);
             let dir_ws = chassis_transform.transform_vector(wheel.suspension_direction);
             let ray_length = wheel.suspension_rest_length + wheel.wheel_radius;
-            let hit = world.raycast_filtered(hardpoint_ws, dir_ws, ray_length, &filter);
-            contacts.push(hit.map(|hit| (hit.body, hit.position, hit.normal, hit.hit_fraction)));
+            let hit = world.raycast_filtered(
+                crate::phys_shape::to_vec4(hardpoint_ws),
+                crate::phys_shape::to_vec4(dir_ws),
+                ray_length,
+                &filter,
+            );
+            contacts.push(hit.map(|hit| {
+                (
+                    hit.body,
+                    crate::phys_shape::to_vector4(hit.position),
+                    crate::phys_shape::to_vector4(hit.normal),
+                    hit.hit_fraction,
+                )
+            }));
         }
 
         // -- updateWheels: contact outputs, steering, closing speed, spin ---
@@ -949,8 +961,8 @@ fn apply_impulse_to_body(world: &mut World, body: BodyId, point: Vector4, impuls
     let delta_omega = motion.orientation.rotate_sdk(delta_omega_motion);
     let new_linear = motion.linear_velocity + impulse * motion.inverse_mass();
     let new_angular = motion.angular_velocity + delta_omega;
-    world.set_body_linear_velocity(body_id, to_vector4(new_linear));
-    world.set_body_angular_velocity(body_id, to_vector4(new_angular));
+    world.set_body_linear_velocity(body_id, new_linear);
+    world.set_body_angular_velocity(body_id, new_angular);
 }
 
 /// Circular friction clamp (`hkVehicleFrictionSolverClipImpulse` subset):

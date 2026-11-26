@@ -16,7 +16,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::base_math::{Transform, Vector4};
+use crate::base_math::{Transform, Vec4, Vec4Ext};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::base_thread::{Priority, TaskExecutor, TaskGraph};
 use crate::phys_solver::{ContactConstraint, ContactImpulse, Solver, SolverBody, contact_tangents};
 use crate::phys_types::{BodyId, MotionId};
@@ -96,8 +97,8 @@ fn chunk_ranges(len: usize, threads: usize) -> Vec<(usize, usize)> {
 /// normalization and solver-row construction.
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedContactPoint {
-    pub(crate) position: Vector4,
-    pub(crate) normal: Vector4,
+    pub(crate) position: Vec4,
+    pub(crate) normal: Vec4,
     pub(crate) penetration: f32,
     pub(crate) friction: f32,
     pub(crate) normal_impulse: f32,
@@ -149,7 +150,7 @@ fn finalize_contact_rows_chunk(
         for point in &group.points {
             let mut normal = point.normal;
             if normal.length3() > 1e-10 {
-                normal = normal.normalized3();
+                normal = normal.normalize_or_zero3();
             }
             let (tangent_1, tangent_2) = contact_tangents(normal);
             let normal_impulse = point.normal_impulse.max(0.0);
@@ -170,7 +171,9 @@ fn finalize_contact_rows_chunk(
             chunk.contact_keys.push(ContactKey {
                 body_a: group.body_a,
                 body_b: group.body_b,
-                local_point_b: group.transform_b.inverse_transform_point(point.position),
+                local_point_b: to_vec4(
+                    group.transform_b.inverse_transform_point(to_vector4(point.position)),
+                ),
                 normal,
             });
             chunk.contact_impulses.push(ContactImpulse {
@@ -421,8 +424,8 @@ where
 #[derive(Clone, Copy)]
 pub(crate) struct VelocityWritebackCandidate {
     pub(crate) motion_id: MotionId,
-    pub(crate) linear_velocity: Vector4,
-    pub(crate) angular_velocity: Vector4,
+    pub(crate) linear_velocity: Vec4,
+    pub(crate) angular_velocity: Vec4,
 }
 
 #[derive(Clone, Copy)]

@@ -37,7 +37,7 @@ fn world_trigger_events_report_enter_exit_and_updated() {
     });
 
     world.step(0.0);
-    world.set_body_position(other, V4::from_xyz(8.0, 0.0, 0.0));
+    world.set_body_position(other, G4::new(8.0, 0.0, 0.0, 0.0));
     world.step(0.0);
     assert_eq!(
         *log.lock().unwrap(),
@@ -45,7 +45,7 @@ fn world_trigger_events_report_enter_exit_and_updated() {
     );
 
     // Same-step enter + exit is merged into Updated only when enabled.
-    world.set_body_position(other, V4::from_xyz(7.0, 0.0, 0.0));
+    world.set_body_position(other, G4::new(7.0, 0.0, 0.0, 0.0));
     assert!(world.record_trigger_transition(trigger, other, true));
     assert!(world.record_trigger_transition(other, trigger, false));
     world.step(0.0);

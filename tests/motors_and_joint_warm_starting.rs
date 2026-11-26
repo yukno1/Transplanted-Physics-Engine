@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
+use proton::math::{Quaternion, Transform, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
@@ -36,10 +36,10 @@ fn hinged_arm(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
     let id = world.create_hinge_constraint(&HingeCinfo::new(
         hub,
         arm,
-        Vector4::ZERO,
-        Vector4::from_xyz(-2.0, 0.0, 0.0),
-        Vector4::UNIT_Z,
-        Vector4::UNIT_Z,
+        Vec4::ZERO,
+        Vec4::from_xyz(-2.0, 0.0, 0.0),
+        Vec4::Z,
+        Vec4::Z,
     ));
     assert!(id.is_valid());
     (hub, arm, id)
@@ -50,16 +50,16 @@ fn hinged_arm(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
 fn current_hinge_angle(world: &World, hub: BodyId, arm: BodyId) -> f32 {
     let transform_a = world.body_transform(hub).unwrap();
     let transform_b = world.body_transform(arm).unwrap();
-    let reference_a = transform_a.rotation.rotate(Vector4::UNIT_X);
-    let reference_b = transform_b.rotation.rotate(Vector4::UNIT_X);
-    let sin = reference_a.cross(reference_b).dot3(Vector4::UNIT_Z);
+    let reference_a = transform_a.rotation.rotate(proton::math::Vector4::UNIT_X);
+    let reference_b = transform_b.rotation.rotate(proton::math::Vector4::UNIT_X);
+    let sin = reference_a.cross(reference_b).dot3(proton::math::Vector4::UNIT_Z);
     let cos = reference_a.dot3(reference_b);
     sin.atan2(cos)
 }
 
 #[test]
 fn hinge_position_motor_tracks_the_target_angle() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let (hub, arm, id) = hinged_arm(&mut world);
     world.set_hinge_motor(
         id,
@@ -85,14 +85,14 @@ fn hinge_position_motor_tracks_the_target_angle() {
 
 #[test]
 fn hinge_spring_motor_pulls_the_arm_to_the_rest_angle() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let (hub, arm, id) = hinged_arm(&mut world);
     // Start the arm half a radian away from the rest angle.
     world.set_body_transform(
         arm,
         Transform::from_quaternion(
-            Quaternion::from_axis_angle(Vector4::UNIT_Z, 1.0),
-            Vector4::from_xyz(2.0, 0.0, 0.0),
+            Quaternion::from_axis_angle(proton::math::Vector4::UNIT_Z, 1.0),
+            proton::math::Vector4::from_xyz(2.0, 0.0, 0.0),
         ),
     );
     world.set_hinge_motor(
@@ -114,7 +114,7 @@ fn hinge_spring_motor_pulls_the_arm_to_the_rest_angle() {
 
 #[test]
 fn hinge_velocity_motor_still_spins_with_the_enum_api() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let (_, arm, id) = hinged_arm(&mut world);
     world.set_hinge_motor(
         id,
@@ -135,17 +135,17 @@ fn hinge_velocity_motor_still_spins_with_the_enum_api() {
 
 #[test]
 fn prismatic_position_motor_and_spring_motor_drive_the_slider() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let parent = world.create_body(&BodyCinfo::new(sphere(0.5)));
     let slider = world.create_body(&dynamic_sphere(0.5, Vec4::ZERO));
 
     let id = world.create_prismatic_constraint(&PrismaticCinfo::between_bodies(
         slider,
         parent,
-        Vector4::ZERO,
+        Vec4::ZERO,
         &world.body_transform(slider).unwrap(),
         &world.body_transform(parent).unwrap(),
-        Vector4::UNIT_X,
+        Vec4::X,
     ));
     assert!(id.is_valid());
     world.set_constraint_collisions_enabled(id, false);
@@ -176,7 +176,10 @@ fn prismatic_position_motor_and_spring_motor_drive_the_slider() {
     );
     world.set_body_transform(
         slider,
-        Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.5, 0.0, 0.0)),
+        Transform::from_quaternion(
+            Quaternion::IDENTITY,
+            proton::math::Vector4::from_xyz(0.5, 0.0, 0.0),
+        ),
     );
     for _ in 0..240 {
         world.step(1.0 / 60.0);
@@ -191,7 +194,7 @@ fn prismatic_position_motor_and_spring_motor_drive_the_slider() {
 #[test]
 fn motorized_scenes_are_bitwise_deterministic() {
     let run = || {
-        let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+        let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
         let (_, arm, hinge) = hinged_arm(&mut world);
         world.set_hinge_motor(
             hinge,
@@ -202,8 +205,8 @@ fn motorized_scenes_are_bitwise_deterministic() {
         world.set_body_transform(
             arm,
             Transform::from_quaternion(
-                Quaternion::from_axis_angle(Vector4::UNIT_Z, 0.3),
-                Vector4::from_xyz(2.0, 0.0, 0.0),
+                Quaternion::from_axis_angle(proton::math::Vector4::UNIT_Z, 0.3),
+                proton::math::Vector4::from_xyz(2.0, 0.0, 0.0),
             ),
         );
         for _ in 0..120 {

@@ -63,7 +63,7 @@ fn target_pose() -> [Transform; 3] {
 #[test]
 fn r1_creates_joint_chain_with_adjacent_collisions_disabled() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (ragdoll, ids) = three_bone_chain(&mut world);
 
     assert_eq!(ragdoll.constraints().len(), 3);
@@ -80,7 +80,7 @@ fn r1_creates_joint_chain_with_adjacent_collisions_disabled() {
 #[test]
 fn r2_drive_to_pose_moves_the_chain() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (ragdoll, ids) = three_bone_chain(&mut world);
     let target = target_pose();
     let dt = 1.0 / 60.0;
@@ -106,7 +106,7 @@ fn r2_drive_to_pose_moves_the_chain() {
 #[test]
 fn r3_hard_keyframe_teleports_and_sets_required_velocity() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (ragdoll, ids) = three_bone_chain(&mut world);
     let target = target_pose();
     let dt = 1.0 / 60.0;
@@ -116,7 +116,7 @@ fn r3_hard_keyframe_teleports_and_sets_required_velocity() {
         .expect("keyframe");
     assert_eq!(
         world.body_position(ids[2]).unwrap(),
-        Vector4::from_xyz(2.0, 2.0, 0.0)
+        Vec4::from_xyz(2.0, 2.0, 0.0)
     );
     let velocity = world.body_linear_velocity(ids[2]).unwrap();
     assert!((velocity.x - 120.0).abs() < 1e-3, "{velocity:?}");
@@ -127,7 +127,7 @@ fn r4_driving_is_deterministic_and_validates_inputs() {
     let mut worlds = Vec::new();
     for _ in 0..2 {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let (ragdoll, _) = three_bone_chain(&mut world);
         let target = target_pose();
         for _ in 0..30 {

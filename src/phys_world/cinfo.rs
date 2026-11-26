@@ -1,15 +1,15 @@
 //! `hknpWorldCinfo` — world construction info.
 
-use crate::base_math::Vector4;
+use crate::base_math::{Vec4, Vec4Ext};
 
 /// Construction info for a [`crate::phys_world::World`] (`hknpWorldCinfo`).
 ///
 /// ```
-/// use proton::math::Vector4;
+/// use proton::math::{Vec4, Vec4Ext};
 /// use proton::world::WorldCinfo;
 ///
 /// let cinfo = WorldCinfo::new()
-///     .with_gravity(Vector4::from_xyz(0.0, -9.81, 0.0))
+///     .with_gravity(Vec4::from_xyz(0.0, -9.81, 0.0))
 ///     .with_body_capacity(1024);
 /// assert_eq!(cinfo.body_buffer_capacity, 1024);
 /// ```
@@ -18,7 +18,7 @@ pub struct WorldCinfo {
     /// Optional world name.
     pub name: Option<String>,
     /// Gravity acceleration in world space (`m_gravity`).
-    pub gravity: Vector4,
+    pub gravity: Vec4,
     /// Initial body slot capacity (`m_bodyBufferCapacity`, default 4096).
     pub body_buffer_capacity: usize,
     /// Initial motion slot capacity (`m_motionBufferCapacity`, default 4096).
@@ -131,7 +131,7 @@ impl Default for WorldCinfo {
     fn default() -> Self {
         Self {
             name: None,
-            gravity: Vector4::from_xyz(0.0, -9.81, 0.0),
+            gravity: Vec4::from_xyz(0.0, -9.81, 0.0),
             body_buffer_capacity: 4096,
             motion_buffer_capacity: 4096,
             collision_tolerance: 0.05,
@@ -158,7 +158,7 @@ impl WorldCinfo {
 
     /// Set the world gravity.
     #[must_use]
-    pub fn with_gravity(mut self, gravity: Vector4) -> Self {
+    pub fn with_gravity(mut self, gravity: Vec4) -> Self {
         self.gravity = gravity;
         self
     }
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn defaults_match_sdk() {
         let cinfo = WorldCinfo::default();
-        assert_eq!(cinfo.gravity, Vector4::from_xyz(0.0, -9.81, 0.0));
+        assert_eq!(cinfo.gravity, Vec4::from_xyz(0.0, -9.81, 0.0));
         assert_eq!(cinfo.body_buffer_capacity, 4096);
         assert_eq!(cinfo.motion_buffer_capacity, 4096);
         assert_eq!(cinfo.collision_tolerance, 0.05);
@@ -277,7 +277,7 @@ mod tests {
     #[test]
     fn builder_overrides() {
         let cinfo = WorldCinfo::new()
-            .with_gravity(Vector4::from_xyz(0.0, -1.0, 0.0))
+            .with_gravity(Vec4::from_xyz(0.0, -1.0, 0.0))
             .with_name("test")
             .with_body_capacity(10)
             .with_motion_capacity(5)

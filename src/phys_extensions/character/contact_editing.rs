@@ -10,7 +10,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use crate::base_math::Vector4;
+use crate::base_math::{Vec4Ext, Vector4};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::BodyId;
 use crate::phys_world::{
     ContactEditAction, ContactModifier, EditableContact, PostCollideEvent, SolverDataHook,
@@ -87,11 +88,11 @@ impl CharacterContactBridge {
             } else {
                 contact.body_a
             },
-            position: contact.position,
+            position: to_vector4(contact.position),
             normal: if character_is_a {
-                contact.normal
+                to_vector4(contact.normal)
             } else {
-                -contact.normal
+                -to_vector4(contact.normal)
             },
             distance: -contact.penetration,
         }
@@ -119,11 +120,11 @@ impl CharacterContactBridge {
                     } else {
                         event.body_a
                     },
-                    position: point.position,
+                    position: to_vector4(point.position),
                     normal: if character_is_a {
-                        point.normal
+                        to_vector4(point.normal)
                     } else {
-                        -point.normal
+                        -to_vector4(point.normal)
                     },
                     distance: -point.penetration,
                 })
@@ -161,12 +162,12 @@ impl ContactModifier for CharacterContactBridge {
             }
             contact.penetration = (-point.distance).max(0.0);
             let mapped = if character_is_a {
-                point.normal
+                to_vec4(point.normal)
             } else {
-                -point.normal
+                -to_vec4(point.normal)
             };
             if mapped.length3() > 1e-10 {
-                contact.normal = mapped.normalized3();
+                contact.normal = mapped.normalize_or_zero3();
             }
             // Only the first managed character edits the row, keeping the
             // result independent of registration order.

@@ -26,12 +26,12 @@ fn limited_hinge(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
     let info = HingeCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::from_xyz(-1.0, 0.0, 0.0),
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
+        Vec4::ZERO,
+        Vec4::from_xyz(-1.0, 0.0, 0.0),
+        Vec4::Y,
+        Vec4::Y,
     )
-    .with_reference_axes(Vector4::UNIT_X, Vector4::UNIT_X)
+    .with_reference_axes(Vec4::X, Vec4::X)
     .with_limits(HingeLimitsCinfo::new(-0.1, 0.1));
     let id = world.create_limited_hinge_constraint(&info);
     (a, b, id)
@@ -43,12 +43,12 @@ fn six_dof(world: &mut World) -> (BodyId, BodyId, ConstraintId) {
     let info = SixDofCinfo::new(
         a,
         b,
-        Vector4::ZERO,
-        Vector4::from_xyz(0.0, -1.0, 0.0),
-        Vector4::UNIT_Y,
-        Vector4::UNIT_Y,
-        Vector4::UNIT_X,
-        Vector4::UNIT_X,
+        Vec4::ZERO,
+        Vec4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::Y,
+        Vec4::Y,
+        Vec4::X,
+        Vec4::X,
         SixDofLimitsCinfo::new(-0.2, 0.2, 0.2, 0.2, 0.1),
     );
     let id = world.create_6dof_constraint(&info);
@@ -83,7 +83,7 @@ fn j1_limited_hinge_stores_and_updates_angular_limits() {
 #[test]
 fn j2_six_dof_limits_distance_and_angles() {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::ZERO);
+    world.set_gravity(Vec4::ZERO);
     let (_, child, id) = six_dof(&mut world);
     assert_eq!(
         world.constraint(id).unwrap().joint_type(),
@@ -113,7 +113,7 @@ fn j2_six_dof_limits_distance_and_angles() {
 fn j3_new_joint_families_are_bit_deterministic() {
     fn run() -> String {
         let mut world = World::new(WorldCinfo::new());
-        world.set_gravity(Vector4::ZERO);
+        world.set_gravity(Vec4::ZERO);
         let (_, hinge_child, hinge_id) = limited_hinge(&mut world);
         let (_, dof_child, dof_id) = six_dof(&mut world);
         world.set_body_transform(

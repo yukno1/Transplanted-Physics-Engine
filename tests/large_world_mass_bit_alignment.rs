@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::hash_world;
-use proton::math::{DVec4, Mat3Ext, Vec4, Vec4Ext, Vector4};
+use proton::math::{DVec4, Mat3Ext, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, CompressedMassProperties, MassConfig, MassPropertiesTree, Shape};
 use proton::world::{World, WorldCinfo};
 
 fn simple_world() -> (World, proton::np_types::BodyId) {
     let mut world = World::new(WorldCinfo::new());
-    world.set_gravity(Vector4::from_xyz(0.0, -9.81, 0.0));
+    world.set_gravity(Vec4::from_xyz(0.0, -9.81, 0.0));
     let shape = BoxShape::with_convex_radius(Vec4::from_xyz(0.5, 0.5, 0.5), 0.0);
     let body = world.create_body(
         &BodyCinfo::new(Arc::new(shape) as Arc<dyn Shape>)

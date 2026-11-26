@@ -258,7 +258,9 @@ pub(crate) fn to_mat3(value: &Matrix3) -> Mat3 {
 }
 
 /// glam `Mat3` → legacy `Matrix3`。
+// 过渡期保留：phys_extensions（步骤 6）迁移后整删。
 #[inline]
+#[allow(dead_code)]
 pub(crate) fn to_matrix3(value: Mat3) -> Matrix3 {
     Matrix3::from_cols(
         Vector4::from_xyz(value.x_axis.x, value.x_axis.y, value.x_axis.z),
@@ -271,6 +273,12 @@ pub(crate) fn to_matrix3(value: Mat3) -> Matrix3 {
 #[inline]
 pub(crate) fn to_quaternion(value: Quat) -> Quaternion {
     Quaternion::new(value.x, value.y, value.z, value.w)
+}
+
+/// legacy `Quaternion` → glam `Quat`。
+#[inline]
+pub(crate) fn to_quat(value: Quaternion) -> Quat {
+    Quat::from_xyzw(value.x, value.y, value.z, value.w)
 }
 
 /// 外积矩阵（legacy `mass.rs::matrix_outer(a, b)`：列 `i` = `a * b[i]`，
@@ -287,6 +295,38 @@ pub(crate) fn outer_product(a: Vec4, b: Vec4) -> Mat3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// glam↔legacy 四元数转换辅助的位级往返（glam_parity 门模式）。
+    #[test]
+    fn quat_conversion_helpers_are_bit_exact() {
+        let glam_value = Quat::from_xyzw(0.5, -0.5, 1.0e-8, 2.0);
+        let legacy_value = Quaternion::new(0.5, -0.5, 1.0e-8, 2.0);
+        let converted = to_quat(legacy_value);
+        assert_eq!(converted.x.to_bits(), glam_value.x.to_bits());
+        assert_eq!(converted.y.to_bits(), glam_value.y.to_bits());
+        assert_eq!(converted.z.to_bits(), glam_value.z.to_bits());
+        assert_eq!(converted.w.to_bits(), glam_value.w.to_bits());
+        let round = to_quaternion(glam_value);
+        for (a, b) in [
+            (round.x, legacy_value.x),
+            (round.y, legacy_value.y),
+            (round.z, legacy_value.z),
+            (round.w, legacy_value.w),
+        ] {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+
+        let neg_zero = Quat::from_xyzw(-0.0, f32::NAN, f32::INFINITY, f32::from_bits(1));
+        let round_trip = to_quat(to_quaternion(neg_zero));
+        for (a, b) in [
+            (round_trip.x, neg_zero.x),
+            (round_trip.y, neg_zero.y),
+            (round_trip.z, neg_zero.z),
+            (round_trip.w, neg_zero.w),
+        ] {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
 
     #[test]
     fn dispatch_and_flags_defaults() {

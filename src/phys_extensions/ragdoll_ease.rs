@@ -15,7 +15,8 @@
 //! uses an explicit conservative widening of the saved scalar limits, which
 //! is documented as a Rust-side subset rather than a direct translation.
 
-use crate::base_math::{Quaternion, Vector4};
+use crate::base_math::{Quaternion, Vec4Ext, Vector4};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::{BodyId, ConstraintId};
 use crate::phys_world::{
     HingeCinfo, HingeLimitsCinfo, RagdollCinfo, SixDofAxisMode, SixDofCinfo, SixDofLimitsCinfo,
@@ -426,12 +427,16 @@ fn hinge_angle(world: &World, info: &HingeCinfo) -> f32 {
     };
     let transform_a = body_a.transform;
     let transform_b = body_b.transform;
-    let axis_a = unit(transform_a.rotation.rotate(info.axis_a));
-    let axis_b = unit(transform_b.rotation.rotate(info.axis_b));
-    let reference_a =
-        perpendicular_reference(axis_a, transform_a.rotation.rotate(info.reference_axis_a));
-    let reference_b =
-        perpendicular_reference(axis_b, transform_b.rotation.rotate(info.reference_axis_b));
+    let axis_a = unit(transform_a.rotation.rotate(to_vector4(info.axis_a)));
+    let axis_b = unit(transform_b.rotation.rotate(to_vector4(info.axis_b)));
+    let reference_a = perpendicular_reference(
+        axis_a,
+        transform_a.rotation.rotate(to_vector4(info.reference_axis_a)),
+    );
+    let reference_b = perpendicular_reference(
+        axis_b,
+        transform_b.rotation.rotate(to_vector4(info.reference_axis_b)),
+    );
     let tangential = |reference: Vector4, axis: Vector4| {
         let component = reference - axis * reference.dot3(axis);
         if component.length3() > 1e-10 {
@@ -454,20 +459,25 @@ fn six_dof_state(world: &World, info: &SixDofCinfo) -> (f32, f32, f32, f32) {
     };
     let transform_a = body_a.transform;
     let transform_b = body_b.transform;
-    let twist_a = unit(transform_a.rotation.rotate(info.twist_axis_a));
-    let twist_b = unit(transform_b.rotation.rotate(info.twist_axis_b));
-    let frame_axes =
-        six_dof_constraint_frame_axes(twist_a, transform_a.rotation.rotate(info.plane_axis_a));
+    let twist_a = to_vec4(unit(transform_a.rotation.rotate(to_vector4(info.twist_axis_a))));
+    let twist_b = to_vec4(unit(transform_b.rotation.rotate(to_vector4(info.twist_axis_b))));
+    let frame_axes = six_dof_constraint_frame_axes(
+        twist_a,
+        to_vec4(transform_a.rotation.rotate(to_vector4(info.plane_axis_a))),
+    );
     let u = frame_axes[1];
     let v = frame_axes[2];
-    let error = twist_a.cross(twist_b);
+    let error = twist_a.cross3(twist_b);
     let plane_a = frame_axes[1];
-    let plane_b = perpendicular_reference(twist_a, transform_b.rotation.rotate(info.plane_axis_b));
+    let plane_b = to_vec4(perpendicular_reference(
+        to_vector4(twist_a),
+        transform_b.rotation.rotate(to_vector4(info.plane_axis_b)),
+    ));
     let twist = twist_a
-        .dot3(plane_a.cross(plane_b))
+        .dot3(plane_a.cross3(plane_b))
         .atan2(plane_a.dot3(plane_b));
-    let pivot_a = transform_a.transform_point(info.pivot_a);
-    let pivot_b = transform_b.transform_point(info.pivot_b);
+    let pivot_a = transform_a.transform_point(to_vector4(info.pivot_a));
+    let pivot_b = transform_b.transform_point(to_vector4(info.pivot_b));
     (
         twist,
         error.dot3(u),
@@ -484,11 +494,15 @@ fn six_dof_axis_state(world: &World, info: &SixDofCinfo) -> [f32; 3] {
     };
     let transform_a = body_a.transform;
     let transform_b = body_b.transform;
-    let twist = unit(transform_a.rotation.rotate(info.twist_axis_a));
-    let frame_axes =
-        six_dof_constraint_frame_axes(twist, transform_a.rotation.rotate(info.plane_axis_a));
-    let delta =
-        transform_a.transform_point(info.pivot_a) - transform_b.transform_point(info.pivot_b);
+    let twist = to_vec4(unit(transform_a.rotation.rotate(to_vector4(info.twist_axis_a))));
+    let frame_axes = six_dof_constraint_frame_axes(
+        twist,
+        to_vec4(transform_a.rotation.rotate(to_vector4(info.plane_axis_a))),
+    );
+    let delta = to_vec4(
+        transform_a.transform_point(to_vector4(info.pivot_a))
+            - transform_b.transform_point(to_vector4(info.pivot_b)),
+    );
     [
         delta.dot3(frame_axes[0]),
         delta.dot3(frame_axes[1]),
@@ -502,8 +516,8 @@ fn ragdoll_plane_angle(world: &World, info: &RagdollCinfo) -> f32 {
     let (Some(body_a), Some(body_b)) = (world.body(info.body_a), world.body(info.body_b)) else {
         return 0.0;
     };
-    let twist_a = unit(body_a.transform.rotation.rotate(info.twist_axis_a));
-    let plane_b = unit(body_b.transform.rotation.rotate(info.plane_axis_b));
+    let twist_a = unit(body_a.transform.rotation.rotate(to_vector4(info.twist_axis_a)));
+    let plane_b = unit(body_b.transform.rotation.rotate(to_vector4(info.plane_axis_b)));
     core::f32::consts::FRAC_PI_2 - twist_a.dot3(plane_b).clamp(-1.0, 1.0).acos()
 }
 
@@ -519,12 +533,12 @@ fn rotation(world: &World, body: BodyId) -> Quaternion {
 fn current_angles(world: &World, info: &RagdollCinfo) -> (f32, f32) {
     let rotation_a = rotation(world, info.body_a);
     let rotation_b = rotation(world, info.body_b);
-    let twist_a = rotation_a.rotate(info.twist_axis_a).normalized3();
-    let twist_b = rotation_b.rotate(info.twist_axis_b).normalized3();
+    let twist_a = rotation_a.rotate(to_vector4(info.twist_axis_a)).normalized3();
+    let twist_b = rotation_b.rotate(to_vector4(info.twist_axis_b)).normalized3();
     let cone = twist_a.dot3(twist_b).clamp(-1.0, 1.0).acos();
 
-    let plane_a = rotation_a.rotate(info.plane_axis_a).normalized3();
-    let plane_b = rotation_b.rotate(info.plane_axis_b).normalized3();
+    let plane_a = rotation_a.rotate(to_vector4(info.plane_axis_a)).normalized3();
+    let plane_b = rotation_b.rotate(to_vector4(info.plane_axis_b)).normalized3();
     let axis_sum = twist_a + twist_b;
     let axis = if axis_sum.length3() > 1e-16 {
         axis_sum.normalized3()

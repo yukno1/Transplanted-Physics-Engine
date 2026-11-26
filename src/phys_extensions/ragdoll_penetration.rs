@@ -14,6 +14,7 @@
 //! `applyBodyImpulseAt`).
 
 use crate::base_math::{Transform, Vec4Ext, Vector4};
+use crate::phys_shape::{to_vec4, to_vector4};
 use crate::phys_types::{BodyId, CollisionFlags};
 use crate::phys_world::{QueryFilter, World};
 
@@ -360,8 +361,8 @@ fn detect_root(
                 output.root_penetration = Some(Penetration {
                     penetrating_node: ROOT as usize,
                     penetrated_body: hit.body,
-                    point: hit.point_on_query,
-                    normal: hit.normal,
+                    point: to_vector4(hit.point_on_query),
+                    normal: to_vector4(hit.normal),
                 });
             }
         }
@@ -386,13 +387,13 @@ fn detect_root(
     if length <= 1e-6 {
         return;
     }
-    if let Some(hit) = world.raycast_filtered(start, direction, length, &filter) {
+    if let Some(hit) = world.raycast_filtered(to_vec4(start), to_vec4(direction), length, &filter) {
         output.has_root_penetration = true;
         output.root_penetration = Some(Penetration {
             penetrating_node: ROOT as usize,
             penetrated_body: hit.body,
-            point: hit.position,
-            normal: hit.normal,
+            point: to_vector4(hit.position),
+            normal: to_vector4(hit.normal),
         });
     }
 }
@@ -419,14 +420,17 @@ fn detect_hierarchy(
         if let Some(body) = node.body {
             filter = filter.with_ignore_body(body);
         }
-        if let Some(hit) =
-            world.raycast_filtered(parent.position, direction, direction.length3(), &filter)
-        {
+        if let Some(hit) = world.raycast_filtered(
+            to_vec4(parent.position),
+            to_vec4(direction),
+            direction.length3(),
+            &filter,
+        ) {
             output.penetrations.push(Penetration {
                 penetrating_node: parent_index,
                 penetrated_body: hit.body,
-                point: hit.position,
-                normal: hit.normal,
+                point: to_vector4(hit.position),
+                normal: to_vector4(hit.normal),
             });
             output.body_status[parent_index].insert(PenetrationStatus::RAY);
         }
@@ -576,7 +580,8 @@ pub fn detect_and_resolve_penetration(
                 } else {
                     hierarchy.total_mass(world)
                 };
-                let gravity_cancellation = world.gravity() * (-total_mass * delta_time);
+                let gravity_cancellation =
+                    crate::phys_shape::to_vector4(world.gravity() * (-total_mass * delta_time));
                 apply_corrective_impulse(
                     world,
                     input,

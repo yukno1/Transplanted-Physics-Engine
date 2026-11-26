@@ -45,42 +45,27 @@
 //! driven friction/restitution and multi-point manifolds arrive with the
 //! material library and the extended manifold work.
 
-use crate::base_math::{Matrix3, Vector4};
+use crate::base_math::{Mat3, Mat3Ext, Vec4, Vec4Ext};
+use crate::phys_body::inverse_inertia_is_diagonal;
 
 #[inline]
-pub(crate) fn diagonal_inverse_inertia(value: Vector4) -> Matrix3 {
-    Matrix3::from_cols(
-        Vector4::from_xyz(value.x, 0.0, 0.0),
-        Vector4::from_xyz(0.0, value.y, 0.0),
-        Vector4::from_xyz(0.0, 0.0, value.z),
-    )
-}
-
-#[inline]
-pub(crate) fn inverse_inertia_is_diagonal(matrix: Matrix3, epsilon: f32) -> bool {
-    matrix.element(0, 1).abs() <= epsilon
-        && matrix.element(0, 2).abs() <= epsilon
-        && matrix.element(1, 0).abs() <= epsilon
-        && matrix.element(1, 2).abs() <= epsilon
-        && matrix.element(2, 0).abs() <= epsilon
-        && matrix.element(2, 1).abs() <= epsilon
-}
-
-#[inline]
-pub(crate) fn angular_impulse_vector(body: &SolverBody, torque: Vector4) -> Vector4 {
+pub(crate) fn angular_impulse_vector(body: &SolverBody, torque: Vec4) -> Vec4 {
     if inverse_inertia_is_diagonal(body.inverse_inertia_world, 1e-8) {
-        Vector4::from_xyz(
+        Vec4::from_xyz(
             torque.x * body.inverse_inertia.x,
             torque.y * body.inverse_inertia.y,
             torque.z * body.inverse_inertia.z,
         )
     } else {
-        body.inverse_inertia_world.mul_vec(torque)
+        let delta = body
+            .inverse_inertia_world
+            .mul_vec_sdk(glam::Vec3::new(torque.x, torque.y, torque.z));
+        Vec4::from_xyz(delta.x, delta.y, delta.z)
     }
 }
 
 #[inline]
-pub(crate) fn inertia_scalar(body: &SolverBody, axis: Vector4) -> f32 {
+pub(crate) fn inertia_scalar(body: &SolverBody, axis: Vec4) -> f32 {
     angular_impulse_vector(body, axis).dot3(axis)
 }
 
@@ -90,30 +75,34 @@ pub struct SolverBody {
     /// Inverse mass (`0` for static/keyframed/infinite mass).
     pub inverse_mass: f32,
     /// Diagonal inverse inertia (world-space compatibility view).
-    pub inverse_inertia: Vector4,
+    pub inverse_inertia: Vec4,
     /// Full world-space inverse inertia matrix.
-    pub inverse_inertia_world: Matrix3,
+    pub inverse_inertia_world: Mat3,
     /// Center-of-mass position in world space.
-    pub position: Vector4,
+    pub position: Vec4,
     /// Linear velocity in world space.
-    pub linear_velocity: Vector4,
+    pub linear_velocity: Vec4,
     /// Angular velocity in world space.
-    pub angular_velocity: Vector4,
+    pub angular_velocity: Vec4,
 }
 
 impl SolverBody {
     /// Construct a solver body.
     pub fn new(
         inverse_mass: f32,
-        inverse_inertia: Vector4,
-        position: Vector4,
-        linear_velocity: Vector4,
-        angular_velocity: Vector4,
+        inverse_inertia: Vec4,
+        position: Vec4,
+        linear_velocity: Vec4,
+        angular_velocity: Vec4,
     ) -> Self {
         Self {
             inverse_mass,
             inverse_inertia,
-            inverse_inertia_world: diagonal_inverse_inertia(inverse_inertia),
+            inverse_inertia_world: Mat3::from_diagonal(glam::Vec3::new(
+                inverse_inertia.x,
+                inverse_inertia.y,
+                inverse_inertia.z,
+            )),
             position,
             linear_velocity,
             angular_velocity,
@@ -123,17 +112,17 @@ impl SolverBody {
     /// Construct a solver body with a full world inverse inertia matrix.
     pub fn new_with_inertia_matrix(
         inverse_mass: f32,
-        inverse_inertia_world: Matrix3,
-        position: Vector4,
-        linear_velocity: Vector4,
-        angular_velocity: Vector4,
+        inverse_inertia_world: Mat3,
+        position: Vec4,
+        linear_velocity: Vec4,
+        angular_velocity: Vec4,
     ) -> Self {
         Self {
             inverse_mass,
-            inverse_inertia: Vector4::from_xyz(
-                inverse_inertia_world.element(0, 0),
-                inverse_inertia_world.element(1, 1),
-                inverse_inertia_world.element(2, 2),
+            inverse_inertia: Vec4::from_xyz(
+                inverse_inertia_world.element_sdk(0, 0),
+                inverse_inertia_world.element_sdk(1, 1),
+                inverse_inertia_world.element_sdk(2, 2),
             ),
             inverse_inertia_world,
             position,
@@ -143,8 +132,8 @@ impl SolverBody {
     }
 
     /// A non-responsive body (static or keyframed).
-    pub fn static_body(position: Vector4) -> Self {
-        Self::new(0.0, Vector4::ZERO, position, Vector4::ZERO, Vector4::ZERO)
+    pub fn static_body(position: Vec4) -> Self {
+        Self::new(0.0, Vec4::ZERO, position, Vec4::ZERO, Vec4::ZERO)
     }
 
     /// Whether this body can respond to impulses.
@@ -153,17 +142,17 @@ impl SolverBody {
     }
 
     /// Velocity at a world point: `v + ω × r`.
-    pub fn velocity_at(&self, point: Vector4) -> Vector4 {
-        self.linear_velocity + self.angular_velocity.cross(point - self.position)
+    pub fn velocity_at(&self, point: Vec4) -> Vec4 {
+        self.linear_velocity + self.angular_velocity.cross3(point - self.position)
     }
 
     /// Apply a world-space impulse at a world point.
-    pub fn apply_impulse_at(&mut self, point: Vector4, impulse: Vector4) {
+    pub fn apply_impulse_at(&mut self, point: Vec4, impulse: Vec4) {
         if self.inverse_mass > 0.0 {
             self.linear_velocity += impulse * self.inverse_mass;
         }
         let r = point - self.position;
-        let torque = r.cross(impulse);
+        let torque = r.cross3(impulse);
         self.angular_velocity += angular_impulse_vector(self, torque);
     }
 }
@@ -176,9 +165,9 @@ pub struct ContactConstraint {
     /// Solver index of shape B's body.
     pub body_b: usize,
     /// Unit normal from B to A.
-    pub normal: Vector4,
+    pub normal: Vec4,
     /// Contact point in world space (midway between the surfaces).
-    pub point: Vector4,
+    pub point: Vec4,
     /// Penetration depth (positive).
     pub penetration: f32,
     /// Coulomb friction coefficient.
@@ -190,16 +179,16 @@ impl ContactConstraint {
     pub fn new(
         body_a: usize,
         body_b: usize,
-        normal: Vector4,
-        point: Vector4,
+        normal: Vec4,
+        point: Vec4,
         penetration: f32,
         friction: f32,
     ) -> Self {
         let length = normal.length3();
         let normal = if length > 0.0 {
-            Vector4::from_xyz(normal.x / length, normal.y / length, normal.z / length)
+            Vec4::from_xyz(normal.x / length, normal.y / length, normal.z / length)
         } else {
-            Vector4::UNIT_Y
+            Vec4::Y
         };
         Self {
             body_a,
@@ -235,7 +224,7 @@ impl ContactImpulse {
     }
 
     /// Total accumulated impulse vector given the contact normal.
-    pub fn to_vector(&self, normal: Vector4) -> Vector4 {
+    pub fn to_vector(&self, normal: Vec4) -> Vec4 {
         let (tangent_1, tangent_2) = contact_tangents(normal);
         normal * self.normal + tangent_1 * self.tangent_1 + tangent_2 * self.tangent_2
     }
@@ -246,14 +235,14 @@ impl ContactImpulse {
 /// The reference axis is `+X` unless the normal is nearly parallel to it, in
 /// which case `+Y` is used, so the basis only depends on the normal and is
 /// therefore stable across steps (required for warm starting).
-pub fn contact_tangents(normal: Vector4) -> (Vector4, Vector4) {
+pub fn contact_tangents(normal: Vec4) -> (Vec4, Vec4) {
     let reference = if normal.x.abs() < 0.9 {
-        Vector4::UNIT_X
+        Vec4::X
     } else {
-        Vector4::UNIT_Y
+        Vec4::Y
     };
-    let tangent_1 = normal.cross(reference).normalized3();
-    let tangent_2 = normal.cross(tangent_1);
+    let tangent_1 = normal.cross3(reference).normalize_or_zero3();
+    let tangent_2 = normal.cross3(tangent_1);
     (tangent_1, tangent_2)
 }
 
@@ -464,7 +453,7 @@ fn body_index(length: usize, index: usize) -> Result<usize, ()> {
     if index < length { Ok(index) } else { Err(()) }
 }
 
-fn velocity_at(bodies: &[SolverBody], index: usize, point: Vector4) -> Vector4 {
+fn velocity_at(bodies: &[SolverBody], index: usize, point: Vec4) -> Vec4 {
     bodies[index].velocity_at(point)
 }
 
@@ -472,8 +461,8 @@ fn apply_impulses(
     bodies: &mut [SolverBody],
     body_a: usize,
     body_b: usize,
-    point: Vector4,
-    impulse: Vector4,
+    point: Vec4,
+    impulse: Vec4,
 ) {
     bodies[body_a].apply_impulse_at(point, impulse);
     bodies[body_b].apply_impulse_at(point, -impulse);
@@ -485,8 +474,8 @@ fn effective_mass(
     bodies: &[SolverBody],
     body_a: usize,
     body_b: usize,
-    direction: Vector4,
-    point: Vector4,
+    direction: Vec4,
+    point: Vec4,
 ) -> f32 {
     let body_a = &bodies[body_a];
     let body_b = &bodies[body_b];
@@ -496,14 +485,14 @@ fn effective_mass(
         + angular_mass(body_b, direction, point)
 }
 
-pub(crate) fn angular_mass(body: &SolverBody, direction: Vector4, point: Vector4) -> f32 {
-    if body.inverse_inertia == Vector4::ZERO && body.inverse_inertia_world == Matrix3::ZERO {
+pub(crate) fn angular_mass(body: &SolverBody, direction: Vec4, point: Vec4) -> f32 {
+    if body.inverse_inertia == Vec4::ZERO && body.inverse_inertia_world == Mat3::ZERO {
         return 0.0;
     }
     let r = point - body.position;
-    let torque = r.cross(direction);
+    let torque = r.cross3(direction);
     let angular = angular_impulse_vector(body, torque);
-    angular.cross(r).dot3(direction)
+    angular.cross3(r).dot3(direction)
 }
 
 #[cfg(test)]
@@ -514,18 +503,18 @@ mod tests {
         let bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, -1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, -1.0, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.1,
             0.5,
         );
@@ -535,9 +524,9 @@ mod tests {
     #[test]
     fn contact_tangents_are_orthonormal() {
         for normal in [
-            Vector4::UNIT_Y,
-            Vector4::UNIT_X,
-            Vector4::from_xyz(0.3, -0.8, 0.5).normalized3(),
+            Vec4::Y,
+            Vec4::X,
+            Vec4::from_xyz(0.3, -0.8, 0.5).normalize_or_zero3(),
         ] {
             let (tangent_1, tangent_2) = contact_tangents(normal);
             assert!((tangent_1.length3() - 1.0).abs() < 1e-5);
@@ -557,18 +546,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, -0.1, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, -0.1, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.0,
             0.0,
         );
@@ -579,7 +568,7 @@ mod tests {
 
         // Next step: gravity adds the same velocity again. Warm starting must
         // reuse the cached impulse and need no extra correction.
-        bodies[0].linear_velocity = Vector4::from_xyz(0.0, -0.1, 0.0);
+        bodies[0].linear_velocity = Vec4::from_xyz(0.0, -0.1, 0.0);
         solver.solve_with_impulses(&mut bodies, &[contact], &mut impulses, 1.0 / 60.0);
         assert!((impulses[0].normal - 0.1).abs() < 1e-4);
         assert!(
@@ -594,18 +583,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, -0.1, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, -0.1, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.0,
             0.0,
         );
@@ -631,35 +620,35 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, -1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, -1.0, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(5.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, -1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(5.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, -1.0, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::from_xyz(5.0, 0.0, 0.0)),
+            SolverBody::static_body(Vec4::from_xyz(5.0, 0.0, 0.0)),
         ];
         let contacts = [
             ContactConstraint::new(
                 0,
                 1,
-                Vector4::UNIT_Y,
-                Vector4::from_xyz(0.0, 0.5, 0.0),
+                Vec4::Y,
+                Vec4::from_xyz(0.0, 0.5, 0.0),
                 0.1,
                 0.5,
             ),
             ContactConstraint::new(
                 2,
                 3,
-                Vector4::UNIT_Y,
-                Vector4::from_xyz(5.0, 0.5, 0.0),
+                Vec4::Y,
+                Vec4::from_xyz(5.0, 0.5, 0.0),
                 0.1,
                 0.5,
             ),
@@ -684,18 +673,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(10.0, -5.0, 3.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(10.0, -5.0, 3.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.1,
             0.5,
         );
@@ -718,7 +707,7 @@ mod tests {
             "vy {}",
             bodies[0].linear_velocity.y
         );
-        assert_eq!(bodies[1].linear_velocity, Vector4::ZERO);
+        assert_eq!(bodies[1].linear_velocity, Vec4::ZERO);
     }
 
     #[test]
@@ -726,30 +715,30 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 0.0, 0.0),
-                Vector4::from_xyz(0.0, -1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 0.0, 0.0),
+                Vec4::from_xyz(0.0, -1.0, 0.0),
+                Vec4::ZERO,
             ),
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::ZERO,
             ),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.02,
             0.0,
         );
         Solver::default().solve(&mut bodies, &[contact], 1.0 / 60.0);
         let relative =
-            (bodies[0].linear_velocity - bodies[1].linear_velocity).dot3(Vector4::UNIT_Y);
+            (bodies[0].linear_velocity - bodies[1].linear_velocity).dot3(Vec4::Y);
         assert!(relative >= -1e-3, "relative normal velocity {relative}");
     }
 
@@ -758,18 +747,18 @@ mod tests {
         let mut bodies = vec![
             SolverBody::new(
                 1.0,
-                Vector4::ZERO,
-                Vector4::from_xyz(0.0, 1.0, 0.0),
-                Vector4::from_xyz(3.0, -1.0, 0.0),
-                Vector4::ZERO,
+                Vec4::ZERO,
+                Vec4::from_xyz(0.0, 1.0, 0.0),
+                Vec4::from_xyz(3.0, -1.0, 0.0),
+                Vec4::ZERO,
             ),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.1,
             0.5,
         );
@@ -781,33 +770,33 @@ mod tests {
     #[test]
     fn non_dynamic_pair_is_unchanged() {
         let mut bodies = vec![
-            SolverBody::static_body(Vector4::from_xyz(0.0, 1.0, 0.0)),
-            SolverBody::static_body(Vector4::ZERO),
+            SolverBody::static_body(Vec4::from_xyz(0.0, 1.0, 0.0)),
+            SolverBody::static_body(Vec4::ZERO),
         ];
         let contact = ContactConstraint::new(
             0,
             1,
-            Vector4::UNIT_Y,
-            Vector4::from_xyz(0.0, 0.5, 0.0),
+            Vec4::Y,
+            Vec4::from_xyz(0.0, 0.5, 0.0),
             0.1,
             0.5,
         );
         Solver::default().solve(&mut bodies, &[contact], 1.0 / 60.0);
-        assert_eq!(bodies[0].linear_velocity, Vector4::ZERO);
-        assert_eq!(bodies[1].linear_velocity, Vector4::ZERO);
+        assert_eq!(bodies[0].linear_velocity, Vec4::ZERO);
+        assert_eq!(bodies[1].linear_velocity, Vec4::ZERO);
     }
 
     #[test]
     fn invalid_indices_are_ignored() {
         let mut bodies = vec![SolverBody::new(
             1.0,
-            Vector4::ZERO,
-            Vector4::ZERO,
-            Vector4::UNIT_X,
-            Vector4::ZERO,
+            Vec4::ZERO,
+            Vec4::ZERO,
+            Vec4::X,
+            Vec4::ZERO,
         )];
-        let contact = ContactConstraint::new(0, 99, Vector4::UNIT_Y, Vector4::ZERO, 0.1, 0.5);
+        let contact = ContactConstraint::new(0, 99, Vec4::Y, Vec4::ZERO, 0.1, 0.5);
         Solver::default().solve(&mut bodies, &[contact], 1.0 / 60.0);
-        assert_eq!(bodies[0].linear_velocity, Vector4::UNIT_X);
+        assert_eq!(bodies[0].linear_velocity, Vec4::X);
     }
 }

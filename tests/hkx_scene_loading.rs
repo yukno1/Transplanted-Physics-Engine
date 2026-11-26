@@ -3,7 +3,7 @@
 //! facade `convert` module, and then simulated by `phys-world`.
 
 use proton::convert::{ConvertError, body_cinfo_from_item, scene_from_bundle, shape_from_item};
-use proton::math::{Vector4, Vec4, Vec4Ext};
+use proton::math::{Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::serialize::vle;
 use proton::serialize::{Bundle, Value, four_cc, pack_scope};
@@ -292,7 +292,7 @@ fn loads_bundle_into_world_and_simulates_fall() {
     assert_eq!(world.body_count(), 2);
     assert_eq!(
         world.body_position(ids[1]),
-        Some(Vector4::from_xyz(0.0, 10.0, 0.0))
+        Some(Vec4::from_xyz(0.0, 10.0, 0.0))
     );
 
     for _ in 0..240 {
@@ -306,7 +306,7 @@ fn loads_bundle_into_world_and_simulates_fall() {
     );
     assert_eq!(
         world.body_position(ids[0]),
-        Some(Vector4::from_xyz(0.0, -0.5, 0.0))
+        Some(Vec4::from_xyz(0.0, -0.5, 0.0))
     );
 }
 

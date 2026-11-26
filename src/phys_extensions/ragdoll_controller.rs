@@ -14,6 +14,7 @@
 use std::fmt;
 
 use crate::base_math::{Transform, Vector4};
+use crate::phys_shape::to_vector4;
 use crate::phys_types::MotionType;
 use crate::phys_world::World;
 
@@ -659,8 +660,14 @@ impl RagdollController {
             if self.bone_strengths.get(index).copied().unwrap_or(1.0) <= 0.0 {
                 continue;
             }
-            let linear = world.body_linear_velocity(body).unwrap_or(Vector4::ZERO);
-            let angular = world.body_angular_velocity(body).unwrap_or(Vector4::ZERO);
+            let linear = world
+                .body_linear_velocity(body)
+                .map(to_vector4)
+                .unwrap_or(Vector4::ZERO);
+            let angular = world
+                .body_angular_velocity(body)
+                .map(to_vector4)
+                .unwrap_or(Vector4::ZERO);
             if !linear.all_equal3(Vector4::ZERO, linear_tolerance)
                 || !angular.all_equal3(Vector4::ZERO, angular_tolerance)
             {
@@ -910,7 +917,7 @@ mod tests {
             world
                 .body_position(root)
                 .unwrap()
-                .all_equal3(Vector4::from_xyz(0.0, 2.0, 0.0), 1e-6)
+                .all_equal3(crate::base_math::Vec4::from_xyz(0.0, 2.0, 0.0), 1e-6)
         );
 
         controller.set_state(&mut world, RagdollState::Powered);

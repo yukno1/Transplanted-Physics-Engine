@@ -75,16 +75,16 @@ fn mix(state: &mut u64, word: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::{Quaternion, Vector4};
+    use crate::base_math::{Quat, Vec4, Vec4Ext};
     use crate::phys_world::BodySnapshot;
 
-    fn body(id: u64, position: Vector4) -> BodySnapshot {
+    fn body(id: u64, position: Vec4) -> BodySnapshot {
         BodySnapshot {
             body: crate::phys_types::BodyId::new(id),
             position,
-            orientation: Quaternion::IDENTITY,
-            linear_velocity: Vector4::ZERO,
-            angular_velocity: Vector4::ZERO,
+            orientation: Quat::IDENTITY,
+            linear_velocity: Vec4::ZERO,
+            angular_velocity: Vec4::ZERO,
         }
     }
 
@@ -92,8 +92,8 @@ mod tests {
         WorldSnapshot {
             step_count: 7,
             bodies: vec![
-                body(1, Vector4::ZERO),
-                body(2, Vector4::from_xyz(1.0, 2.0, 3.0)),
+                body(1, Vec4::ZERO),
+                body(2, Vec4::from_xyz(1.0, 2.0, 3.0)),
             ],
         }
     }

@@ -199,7 +199,7 @@ fn walking_character_pushes_dynamic_box() {
         step_frame(&mut world, &mut proxy, &mut context, 1.0, false);
     }
 
-    let box_velocity = world.body_linear_velocity(box_id).unwrap_or(V4::ZERO);
+    let box_velocity = world.body_linear_velocity(box_id).unwrap_or(G4::ZERO);
     assert!(
         box_velocity.x > 0.0,
         "dynamic box should be pushed in +x, got {:?}",

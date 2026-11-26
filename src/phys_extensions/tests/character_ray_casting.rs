@@ -120,9 +120,9 @@ fn world_raycast_reports_hull_face_normal_and_leaf_key() {
     )) as Arc<dyn Shape>;
     world.create_body(&BodyCinfo::new(hull));
     let hit = world
-        .raycast(V4::from_xyz(0.0, 5.0, 0.0), -V4::UNIT_Y, 10.0)
+        .raycast(G4::new(0.0, 5.0, 0.0, 0.0), -G4::Y, 10.0)
         .expect("hull must be hit");
-    assert!(hit.normal.dot3(V4::UNIT_Y) > 0.999);
+    assert!(hit.normal.dot3(G4::Y) > 0.999);
     assert_eq!(hit.shape_key, leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0));
 }
 

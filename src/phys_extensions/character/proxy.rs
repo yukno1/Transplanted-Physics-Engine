@@ -45,10 +45,10 @@
 
 use std::sync::Arc;
 
-use crate::base_math::{Quaternion, Transform, Vec4Ext, Vector4};
+use crate::base_math::{Quaternion, Transform, Vec4, Vec4Ext, Vector4};
 use crate::phys_body::{Body, BodyCinfo};
 use crate::phys_collide::{closest_points as gjk_closest_points, collide as collide_manifold};
-use crate::phys_shape::{Shape, to_vector4};
+use crate::phys_shape::{Shape, to_vec4, to_vector4};
 use crate::phys_types::{BodyId, CollisionFlags, MotionType, ShapeKey};
 use crate::phys_world::{QueryFilter, ShapeCastHitInfo, World};
 
@@ -155,10 +155,10 @@ impl Contact {
         };
         // Distance travelled normal to the contact plane until the hit
         // (the cast path is assumed to include the cast length).
-        let distance = -fraction * cast_path.dot3(hit.normal);
+        let distance = -fraction * cast_path.dot3(to_vector4(hit.normal));
         Self {
-            position: hit.position,
-            normal: hit.normal,
+            position: to_vector4(hit.position),
+            normal: to_vector4(hit.normal),
             body: hit.body,
             fraction,
             distance,
@@ -436,9 +436,12 @@ impl CharacterProxy {
         for interaction in &self.deferred_interactions {
             let current = world
                 .body_linear_velocity(interaction.body)
-                .unwrap_or(Vector4::ZERO);
+                .unwrap_or(Vec4::ZERO);
             let _ = world
-                .set_body_linear_velocity(interaction.body, current + xyz(interaction.impulse));
+                .set_body_linear_velocity(
+                    interaction.body,
+                    current + to_vec4(xyz(interaction.impulse)),
+                );
             let _ = world.wake_body(interaction.body);
         }
         self.deferred_interactions.clear();
@@ -1133,7 +1136,7 @@ impl CharacterProxy {
                     .cast_shape(
                         self.shape.as_ref(),
                         &self.transform,
-                        cast_path * (1.0 / cast_length),
+                        to_vec4(cast_path * (1.0 / cast_length)),
                         cast_length,
                         &filter,
                     )
@@ -1194,7 +1197,7 @@ impl CharacterProxy {
                 let recast_hit = world.cast_shape(
                     self.shape.as_ref(),
                     &self.transform,
-                    new_displacement * (1.0 / recast_length),
+                    to_vec4(new_displacement * (1.0 / recast_length)),
                     recast_length,
                     &filter,
                 );
@@ -1285,7 +1288,7 @@ impl CharacterProxy {
             // (`m_characterMass` term).
             if self.character_mass > 0.0 {
                 let char_vel_down = world.gravity() * delta_time;
-                let mut rel_vel_n = char_vel_down.dot3(contact.normal);
+                let mut rel_vel_n = char_vel_down.dot3(to_vec4(contact.normal));
                 if projected_velocity < 0.0 {
                     rel_vel_n -= projected_velocity;
                 }
@@ -1323,9 +1326,12 @@ impl CharacterProxy {
                 } else {
                     let current = world
                         .body_linear_velocity(contact.body)
-                        .unwrap_or(Vector4::ZERO);
+                        .unwrap_or(Vec4::ZERO);
                     let _ = world
-                        .set_body_linear_velocity(contact.body, current + xyz(deferred.impulse));
+                        .set_body_linear_velocity(
+                            contact.body,
+                            current + to_vec4(xyz(deferred.impulse)),
+                        );
                     let _ = world.wake_body(contact.body);
                 }
             }
@@ -1490,7 +1496,7 @@ mod tests {
         let dt = 1.0 / 60.0;
         let info = proxy.check_support(&world, V4::from_xyz(0.0, -1.0, 0.0), dt);
         proxy.integrate(&mut world, dt, &info);
-        let velocity = world.body_linear_velocity(box_id).unwrap_or(V4::ZERO);
+        let velocity = world.body_linear_velocity(box_id).unwrap_or(G4::ZERO);
         assert!(
             velocity.x > 0.0,
             "dynamic box should be pushed in +x, got {:?}",

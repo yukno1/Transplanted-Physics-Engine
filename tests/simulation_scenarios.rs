@@ -99,7 +99,7 @@ fn s2_sphere_rests_on_static_ground() {
         world
             .body_position(ground_id)
             .unwrap()
-            .all_equal3(Vector4::from_xyz(0.0, -0.5, 0.0), 1e-6)
+            .all_equal3(Vec4::from_xyz(0.0, -0.5, 0.0), 1e-6)
     );
 }
 
@@ -201,7 +201,7 @@ fn s6_cylinder_rests_on_ground() {
 
 #[test]
 fn s7_manifold_convention_is_consistent() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(&dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vec4::ZERO));
     let b = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0))).with_position(Vec4::from_xyz(1.5, 0.0, 0.0)),
@@ -245,7 +245,7 @@ fn s8_broadphase_is_deterministic_and_canonical() {
 
 #[test]
 fn s9_transform_and_orientation_survive_step() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let body = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0)))
             .with_position(Vec4::from_xyz(1.0, 2.0, 3.0))
@@ -256,20 +256,23 @@ fn s9_transform_and_orientation_survive_step() {
     );
     world.step(1.0 / 60.0);
     let position = world.body_position(body).unwrap();
-    assert!(position.all_equal3(Vector4::from_xyz(1.0, 2.0, 3.0), 1e-6));
+    assert!(position.all_equal3(Vec4::from_xyz(1.0, 2.0, 3.0), 1e-6));
     let body_ref = world.body(body).unwrap();
-    let mapped = body_ref.transform.transform_point(Vector4::UNIT_X);
+    let mapped = body_ref
+        .transform
+        .transform_point(proton::math::Vector4::UNIT_X);
     // 90° about Z maps the local +X axis to +Y, then the body translation
     // (1, 2, 3) is applied: (1, 3, 3).
     assert!(
-        mapped.all_equal3(Vector4::from_xyz(1.0, 3.0, 3.0), 1e-4),
+        mapped
+            .all_equal3(proton::math::Vector4::from_xyz(1.0, 3.0, 3.0), 1e-4),
         "mapped {mapped:?}"
     );
 }
 
 #[test]
 fn s10_dont_collide_is_filtered() {
-    let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
+    let mut world = World::new(WorldCinfo::new().with_gravity(Vec4::ZERO));
     let a = world.create_body(
         &dynamic(BodyCinfo::new(sphere(1.0)))
             .with_flags(proton::np_types::CollisionFlags::DONT_COLLIDE),
