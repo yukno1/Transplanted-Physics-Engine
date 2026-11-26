@@ -1,7 +1,8 @@
 //! `hknpMotion` — rigid motion state.
 
 use crate::base_math::{
-    Mat3, Mat3Ext, Quat, QuatExt, Transform, Vec4, Vec4Ext, ext_quat::{quat_mul, quat_normalize},
+    Mat3, Mat3Ext, Quat, QuatExt, Transform, Vec4, Vec4Ext,
+    quat::{quat_mul, quat_normalize},
 };
 use crate::phys_shape::{MassProperties, to_mat3, to_quaternion, to_vec4, to_vector4};
 use crate::phys_types::MotionType;

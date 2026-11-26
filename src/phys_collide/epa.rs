@@ -158,14 +158,7 @@ fn build_tetrahedron(
         push_unique(&mut candidates, *vertex);
     }
 
-    let axes = [
-        Vec4::X,
-        -Vec4::X,
-        Vec4::Y,
-        -Vec4::Y,
-        Vec4::Z,
-        -Vec4::Z,
-    ];
+    let axes = [Vec4::X, -Vec4::X, Vec4::Y, -Vec4::Y, Vec4::Z, -Vec4::Z];
     for direction in axes {
         if let Some(vertex) = support_vertex(shape_a, transform_a, shape_b, transform_b, direction)
         {
@@ -262,14 +255,7 @@ fn sampled_penetration(
     shape_b: &dyn Shape,
     transform_b: &Transform,
 ) -> Option<Penetration> {
-    let mut directions = vec![
-        Vec4::X,
-        -Vec4::X,
-        Vec4::Y,
-        -Vec4::Y,
-        Vec4::Z,
-        -Vec4::Z,
-    ];
+    let mut directions = vec![Vec4::X, -Vec4::X, Vec4::Y, -Vec4::Y, Vec4::Z, -Vec4::Z];
     let center_direction = to_vec4(transform_a.translation) - to_vec4(transform_b.translation);
     if center_direction.length3() > 1e-8 {
         let normalized = center_direction.normalize_or_zero3();
@@ -389,12 +375,12 @@ pub(crate) fn penetration_or_zero(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::{Quaternion, Vector4};
+    use crate::base_math::{Quaternion, Vec4};
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use std::sync::Arc;
 
     fn translation(x: f32, y: f32, z: f32) -> Transform {
-        Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(x, y, z))
+        Transform::from_quaternion(Quaternion::IDENTITY, Vec4::from_xyz(x, y, z))
     }
 
     #[test]
@@ -411,8 +397,7 @@ mod tests {
 
     #[test]
     fn overlapping_boxes_have_expected_depth() {
-        let shape =
-            Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
         let depth = penetration_or_zero(
             shape.as_ref(),
             &Transform::IDENTITY,

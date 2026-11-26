@@ -9,43 +9,41 @@
 //! `hkTransformUtil::_mulTransformTransform`.
 //!
 //! ```
-//! use proton::math::{Transform, Quaternion, Vector4};
+//! use proton::math::{Quat, Transform, Vec4};
 //! use core::f32::consts::FRAC_PI_2;
 //!
-//! let rotate_x_to_y = Transform::from_quaternion(
-//!     Quaternion::from_axis_angle(Vector4::UNIT_Z, FRAC_PI_2),
-//!     Vector4::from_xyz(1.0, 0.0, 0.0),
+//! let rotate_x_to_y = Transform::from_quat(
+//!     Quat::from_axis_angle(glam::Vec3::Z, FRAC_PI_2),
+//!     Vec4::new(1.0, 0.0, 0.0, 0.0),
 //! );
-//! let p = rotate_x_to_y.transform_point(Vector4::UNIT_X);
-//! assert!(p.all_equal3(Vector4::new(1.0, 1.0, 0.0, 0.0), 1e-5));
+//! let p = rotate_x_to_y.transform_point(Vec4::X);
+//! assert!(p.abs_diff_eq(Vec4::new(1.0, 1.0, 0.0, 0.0), 1e-5));
 //! ```
 
 use core::ops::Mul;
 
-use crate::base_math::matrix3::Matrix3;
-use crate::base_math::quaternion::Quaternion;
-use crate::base_math::vector::Vector4;
+use glam::{Mat3, Quat, Vec4};
 
 /// Rigid transform (`hkTransformf`).
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Transform {
     /// Rotation (`hkRotationf`).
-    pub rotation: Matrix3,
+    pub rotation: Mat3,
     /// Translation (`m_translation`).
-    pub translation: Vector4,
+    pub translation: Vec4,
 }
 
 impl Transform {
     /// Identity transform (`hkTransformf::setIdentity`).
     pub const IDENTITY: Self = Self {
-        rotation: Matrix3::IDENTITY,
-        translation: Vector4::ZERO,
+        rotation: Mat3::IDENTITY,
+        translation: Vec4::ZERO,
     };
 
     /// Build from a rotation matrix and a translation.
     #[inline]
-    pub const fn new(rotation: Matrix3, translation: Vector4) -> Self {
+    pub const fn new(rotation: Mat3, translation: Vec4) -> Self {
         Self {
             rotation,
             translation,
@@ -54,51 +52,54 @@ impl Transform {
 
     /// Build from a quaternion and a translation (`hkTransformf(q, t)`).
     #[inline]
-    pub fn from_quaternion(rotation: Quaternion, translation: Vector4) -> Self {
-        Self::new(Matrix3::from_quaternion(rotation), translation)
+    pub fn from_quat(rotation: Quat, translation: Vec4) -> Self {
+        Self::new(Mat3::from_quat(rotation), translation)
     }
 
     /// `hkTransformf::set(q, t)`.
     #[inline]
-    pub fn set_quaternion(&mut self, rotation: Quaternion, translation: Vector4) {
-        self.rotation = Matrix3::from_quaternion(rotation);
+    pub fn set_quaternion(&mut self, rotation: Quat, translation: Vec4) {
+        self.rotation = Mat3::from_quat(rotation);
         self.translation = translation;
     }
 
     /// `hkTransformf::setRotation(quaternion)`.
     #[inline]
-    pub fn set_rotation_quaternion(&mut self, rotation: Quaternion) {
-        self.rotation = Matrix3::from_quaternion(rotation);
+    pub fn set_rotation_quaternion(&mut self, rotation: Quat) {
+        self.rotation = Mat3::from_quat(rotation);
     }
 
     /// `hkTransformf::getRotation`.
     #[inline]
-    pub fn rotation(&self) -> &Matrix3 {
+    pub fn rotation(&self) -> &Mat3 {
         &self.rotation
     }
 
     /// `hkTransformf::getTranslation`.
     #[inline]
-    pub const fn translation(&self) -> Vector4 {
+    pub const fn translation(&self) -> Vec4 {
         self.translation
     }
 
-    /// `hkVector4f::setTransformedPos(transform, p)` — `R * p + t`.
+    /// `hkVec4f::setTransformedPos(transform, p)` — `R * p + t`.
     #[inline]
-    pub fn transform_point(&self, point: Vector4) -> Vector4 {
-        self.rotation.mul_vec(point) + self.translation
+    pub fn transform_point(&self, point: Vec4) -> Vec4 {
+        (self.rotation.mul_vec3(point.truncate()).extend(0.0)) + self.translation
     }
 
     /// Rotate a direction (`R * v`, no translation).
     #[inline]
-    pub fn transform_vector(&self, vector: Vector4) -> Vector4 {
-        self.rotation.mul_vec(vector)
+    pub fn transform_vector(&self, vector: Vec4) -> Vec4 {
+        self.rotation.mul_vec3(vector.truncate()).extend(0.0)
     }
 
-    /// `hkVector4f::setTransformedInversePos` — `R^T * (p - t)`.
+    /// `hkVec4f::setTransformedInversePos` — `R^T * (p - t)`.
     #[inline]
-    pub fn inverse_transform_point(&self, point: Vector4) -> Vector4 {
-        self.rotation.rotate_inverse(point - self.translation)
+    pub fn inverse_transform_point(&self, point: Vec4) -> Vec4 {
+        self.rotation
+            .transpose()
+            .mul_vec3((point - self.translation).truncate())
+            .extend(0.0)
     }
 
     /// Inverse transform (`hkTransformf::setInverse`):
@@ -107,15 +108,17 @@ impl Transform {
         let inverse_rotation = self.rotation.transpose();
         Self::new(
             inverse_rotation,
-            inverse_rotation.mul_vec(-self.translation),
+            inverse_rotation
+                .mul_vec3((-self.translation).truncate())
+                .extend(0.0),
         )
     }
 
     /// Rotation part converted back to a quaternion
     /// (`hkQuaternionf::set(hkRotationf)`).
     #[inline]
-    pub fn rotation_quaternion(&self) -> Quaternion {
-        Quaternion::from_matrix(&self.rotation)
+    pub fn rotation_quaternion(&self) -> Quat {
+        Quat::from_mat3(&self.rotation)
     }
 }
 
@@ -127,8 +130,11 @@ impl Mul for Transform {
     #[inline]
     fn mul(self, other: Self) -> Self {
         Self::new(
-            self.rotation.mul_mat(&other.rotation),
-            self.rotation.mul_vec(other.translation) + self.translation,
+            self.rotation * other.rotation,
+            self.rotation
+                .mul_vec3(other.translation.truncate())
+                .extend(0.0)
+                + self.translation,
         )
     }
 }
@@ -143,94 +149,93 @@ impl Default for Transform {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
     use core::f32::consts::FRAC_PI_2;
 
     const TOL: f32 = 1e-5;
 
-    fn translation_rotation(angle_z: f32, t: Vector4) -> Transform {
-        Transform::from_quaternion(Quaternion::from_axis_angle(Vector4::UNIT_Z, angle_z), t)
+    fn translation_rotation(angle_z: f32, t: Vec4) -> Transform {
+        Transform::from_quat(Quat::from_axis_angle(Vec3::Z, angle_z), t)
     }
 
     #[test]
     fn identity() {
         let t = Transform::IDENTITY;
         assert_eq!(t, Transform::default());
-        assert!(
-            t.transform_point(Vector4::UNIT_X)
-                .all_equal3(Vector4::UNIT_X, 0.0)
-        );
-        assert!(
-            t.transform_vector(Vector4::UNIT_Y)
-                .all_equal3(Vector4::UNIT_Y, 0.0)
-        );
+        assert!(t.transform_point(Vec4::X).abs_diff_eq(Vec4::X, 0.0));
+        assert!(t.transform_vector(Vec4::Y).abs_diff_eq(Vec4::Y, 0.0));
     }
 
     #[test]
     fn point_and_vector_transforms() {
-        let t = translation_rotation(FRAC_PI_2, Vector4::from_xyz(1.0, 0.0, 0.0));
-        let p = t.transform_point(Vector4::UNIT_X);
-        assert!(p.all_equal3(Vector4::new(1.0, 1.0, 0.0, 0.0), TOL));
+        let t = translation_rotation(FRAC_PI_2, Vec4::new(1.0, 0.0, 0.0, 0.0));
+        let p = t.transform_point(Vec4::X);
+        assert!(p.abs_diff_eq(Vec4::new(1.0, 1.0, 0.0, 0.0), TOL));
         assert_eq!(p.w, 0.0, "w component follows the C++ rotate+add");
 
-        let v = t.transform_vector(Vector4::UNIT_X);
-        assert!(v.all_equal3(Vector4::UNIT_Y, TOL));
+        let v = t.transform_vector(Vec4::X);
+        assert!(v.abs_diff_eq(Vec4::Y, TOL));
     }
 
     #[test]
     fn composition_order() {
-        let a = translation_rotation(FRAC_PI_2, Vector4::from_xyz(0.0, 2.0, 0.0));
-        let b = translation_rotation(0.0, Vector4::from_xyz(1.0, 0.0, 0.0));
+        let a = translation_rotation(FRAC_PI_2, Vec4::new(0.0, 2.0, 0.0, 0.0));
+        let b = translation_rotation(0.0, Vec4::new(1.0, 0.0, 0.0, 0.0));
 
         let composed = a * b;
-        let p = Vector4::from_xyz(0.0, 0.0, 0.0);
+        let p = Vec4::from((0.0, 0.0, 0.0, 0.0));
         let direct = a.transform_point(b.transform_point(p));
-        assert!(composed.transform_point(p).all_equal3(direct, TOL));
+        assert!(composed.transform_point(p).abs_diff_eq(direct, TOL));
 
         // Rotation parts compose as matrices.
-        let expected_rotation = a.rotation.mul_mat(&b.rotation);
+        let expected_rotation = a.rotation * b.rotation;
         assert!(
             composed
                 .rotation
-                .col0
-                .all_equal(expected_rotation.col0, TOL)
+                .x_axis
+                .abs_diff_eq(expected_rotation.x_axis, TOL)
         );
     }
 
     #[test]
     fn inverse_round_trip() {
-        let t = translation_rotation(0.7, Vector4::from_xyz(3.0, -2.0, 1.0));
+        let t = translation_rotation(0.7, Vec4::new(3.0, -2.0, 1.0, 0.0));
         let inv = t.inverse();
-        let p = Vector4::from_xyz(1.0, 2.0, 3.0);
+        let p = Vec4::new(1.0, 2.0, 3.0, 0.0);
         assert!(
             inv.transform_point(t.transform_point(p))
-                .all_equal3(p, 1e-4)
+                .abs_diff_eq(p, 1e-4)
         );
         assert!(
             t.transform_point(inv.transform_point(p))
-                .all_equal3(p, 1e-4)
+                .abs_diff_eq(p, 1e-4)
         );
         assert!(
             t.inverse_transform_point(t.transform_point(p))
-                .all_equal3(p, 1e-4)
+                .abs_diff_eq(p, 1e-4)
         );
 
         // Composition with the inverse is the identity transform.
         let identity = t * inv;
-        assert!(identity.rotation.col0.all_equal3(Vector4::UNIT_X, 1e-4));
-        assert!(identity.rotation.col1.all_equal3(Vector4::UNIT_Y, 1e-4));
-        assert!(identity.rotation.col2.all_equal3(Vector4::UNIT_Z, 1e-4));
-        assert!(identity.translation.all_equal(Vector4::ZERO, 1e-4));
+        assert!(identity.rotation.x_axis.abs_diff_eq(Vec3::X, 1e-4));
+        assert!(identity.rotation.y_axis.abs_diff_eq(Vec3::Y, 1e-4));
+        assert!(identity.rotation.z_axis.abs_diff_eq(Vec3::Z, 1e-4));
+        assert!(identity.translation.abs_diff_eq(Vec4::ZERO, 1e-4));
     }
 
     #[test]
     fn quaternion_conversion() {
-        let q = Quaternion::from_axis_angle(Vector4::UNIT_X, 0.3);
-        let t = Transform::from_quaternion(q, Vector4::ZERO);
-        let back = t.rotation_quaternion().closest_to(q);
-        assert!(back.all_equal(q, 1e-4));
+        let q = Quat::from_axis_angle(Vec3::X, 0.3);
+        let t = Transform::from_quat(q, Vec4::ZERO);
+        let back = t.rotation_quaternion();
+        // `q` and `-q` represent the same rotation; compare their action.
+        assert!(
+            back.mul_vec3(Vec3::Y)
+                .abs_diff_eq(q.mul_vec3(Vec3::Y), 1e-4)
+        );
 
-        let mask = t.transform_vector(Vector4::UNIT_Y).equal(Vector4::UNIT_Y);
+        let mask = t.transform_vector(Vec4::Y).cmpeq(Vec4::Y);
         // Rotation about X leaves x and w untouched (bits 0 and 3), and moves y/z.
-        assert_eq!(mask.bits(), 0b1001);
+        assert_eq!(mask.bitmask(), 0b1001);
     }
 }

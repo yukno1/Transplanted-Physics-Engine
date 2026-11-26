@@ -183,13 +183,10 @@ fn add_pair(pairs: &mut Vec<BodyPair>, bodies: &[BodyAabb], first: u32, second: 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Vector4;
+    use crate::base_math::Vec4;
 
     fn aabb(min: f32, max: f32) -> Aabb {
-        Aabb::new(
-            Vector4::from_xyz(min, min, min),
-            Vector4::from_xyz(max, max, max),
-        )
+        Aabb::new(Vec4::from_xyz(min, min, min), Vec4::from_xyz(max, max, max))
     }
 
     #[test]

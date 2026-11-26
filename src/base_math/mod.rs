@@ -57,28 +57,28 @@
 //! * [`aabb`] — [`Aabb`] (glam-backed storage).
 
 pub mod aabb;
-pub mod ext_mat3;
-pub mod ext_quat;
-pub mod ext_vec4;
-pub mod matrix3;
+pub mod mat3;
+// pub mod matrix3;
 pub mod precise_transform;
-pub mod quaternion;
+pub mod quat;
+// pub mod quaternion;
 pub mod transform;
-pub mod vector;
+pub mod vec4;
+// pub mod vector;
 
 // glam re-exports: the canonical math types going forward
 // (`docs/refactor-glam-plan.md`, Phase 2 transition layer).
 pub use glam::{Affine3A, BVec4, DVec4, Mat3, Quat, Vec3A, Vec4};
 
 pub use aabb::Aabb;
-pub use ext_mat3::Mat3Ext;
-pub use ext_quat::{QuatExt, quat_mul, quat_normalize};
-pub use ext_vec4::Vec4Ext;
-pub use matrix3::Matrix3;
+pub use mat3::Mat3Ext;
+// pub use matrix3::Matrix3;
 pub use precise_transform::PreciseTransform;
-pub use quaternion::Quaternion;
+pub use quat::{QuatExt, quat_mul, quat_normalize};
+// pub use quaternion::Quaternion;
 pub use transform::Transform;
-pub use vector::{Vector4, Vector4Mask, Vector4d, Vector4dMask};
+pub use vec4::Vec4Ext;
+// pub use vector::{Vector4, Vector4Mask, Vector4d, Vector4dMask};
 
 #[cfg(test)]
 #[path = "tests/simd_parity.rs"]
