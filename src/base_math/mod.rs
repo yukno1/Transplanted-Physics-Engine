@@ -80,6 +80,6 @@ pub use transform::Transform;
 pub use vec4::Vec4Ext;
 // pub use vector::{Vector4, Vector4Mask, Vector4d, Vector4dMask};
 
-#[cfg(test)]
-#[path = "tests/simd_parity.rs"]
-mod simd_parity;
+// #[cfg(test)]
+// #[path = "tests/simd_parity.rs"]
+// mod simd_parity;

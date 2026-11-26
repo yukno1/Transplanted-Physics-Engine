@@ -10,22 +10,20 @@
 //! observable result. The empty box is `min = +MAX, max = -MAX`, the full box
 //! is `min = -MAX, max = +MAX`.
 //!
-//! Legacy-boundary constructors still take the legacy `Vector4` (their `w` is
-//! ignored) so call sites keep compiling during the Phase 3 migration; new
-//! code can pass glam vectors through [`Aabb::from_corners`].
+//! Boundary-taking methods accept glam `Vec4` (their `w` component is
+//! ignored); new code can pass `Vec3A` directly through
+//! [`Aabb::from_corners`] and the `*3` variants.
 //!
 //! ```
-//! use proton::math::{Aabb, Vector4};
+//! use proton::math::{Aabb, Vec4};
 //! let mut aabb = Aabb::empty();
-//! aabb.include_point(Vector4::UNIT_X);
-//! aabb.include_point(Vector4::UNIT_Y);
-//! assert!(aabb.contains_point(Vector4::new(0.5, 0.5, 0.0, 0.0)));
-//! assert!(!aabb.contains_point(Vector4::new(0.5, 1.5, 0.0, 0.0)));
+//! aabb.include_point(Vec4::X);
+//! aabb.include_point(Vec4::Y);
+//! assert!(aabb.contains_point(Vec4::new(0.5, 0.5, 0.0, 0.0)));
+//! assert!(!aabb.contains_point(Vec4::new(0.5, 1.5, 0.0, 0.0)));
 //! ```
 
-use glam::Vec3A;
-
-use crate::base_math::vector::Vector4;
+use glam::{Vec3A, Vec4};
 
 /// Axis-aligned bounding box (`hkAabb`).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -57,9 +55,9 @@ impl Aabb {
         max: Vec3A::splat(f32::MAX),
     };
 
-    /// Build from min/max corners (legacy boundary; `w` components ignored).
+    /// Build from min/max corners (`w` components ignored).
     #[inline]
-    pub fn new(min: Vector4, max: Vector4) -> Self {
+    pub fn new(min: Vec4, max: Vec4) -> Self {
         Self::from_corners(
             Vec3A::new(min.x, min.y, min.z),
             Vec3A::new(max.x, max.y, max.z),
@@ -96,16 +94,16 @@ impl Aabb {
         *self = Self::FULL;
     }
 
-    /// `hkAabb::setFromPoint` (legacy boundary; `w` ignored).
+    /// `hkAabb::setFromPoint` (`w` ignored).
     #[inline]
-    pub fn from_point(point: Vector4) -> Self {
+    pub fn from_point(point: Vec4) -> Self {
         let p = Vec3A::new(point.x, point.y, point.z);
         Self::from_corners(p, p)
     }
 
-    /// `hkAabb::setFromCenterRadius(center, halfExtents)` (legacy boundary).
+    /// `hkAabb::setFromCenterRadius(center, halfExtents)`.
     #[inline]
-    pub fn from_center_half_extents(center: Vector4, half_extents: Vector4) -> Self {
+    pub fn from_center_half_extents(center: Vec4, half_extents: Vec4) -> Self {
         let c = Vec3A::new(center.x, center.y, center.z);
         let h = Vec3A::new(half_extents.x, half_extents.y, half_extents.z);
         Self::from_corners(c - h, c + h)
@@ -113,18 +111,18 @@ impl Aabb {
 
     /// `hkAabb::setFromCenterRadius(center, radius)` (uniform radius).
     #[inline]
-    pub fn from_center_radius(center: Vector4, radius: f32) -> Self {
+    pub fn from_center_radius(center: Vec4, radius: f32) -> Self {
         let c = Vec3A::new(center.x, center.y, center.z);
         let r = Vec3A::splat(radius);
         Self::from_corners(c - r, c + r)
     }
 
-    /// `hkAabb::includePoint` (legacy boundary; `w` ignored).
+    /// `hkAabb::includePoint` (`w` ignored).
     ///
     /// `glam`'s `min`/`max` follow `f32::min`/`f32::max` NaN semantics, matching
     /// the legacy scalar implementation.
     #[inline]
-    pub fn include_point(&mut self, point: Vector4) {
+    pub fn include_point(&mut self, point: Vec4) {
         self.include_point3(Vec3A::new(point.x, point.y, point.z));
     }
 
@@ -242,9 +240,9 @@ impl Aabb {
             || other.max.z > self.max.z
     }
 
-    /// `hkAabb::containsPoint` (legacy boundary; `w` ignored).
+    /// `hkAabb::containsPoint` (`w` ignored).
     #[inline]
-    pub fn contains_point(&self, point: Vector4) -> bool {
+    pub fn contains_point(&self, point: Vec4) -> bool {
         self.contains_point3(Vec3A::new(point.x, point.y, point.z))
     }
 
@@ -302,12 +300,12 @@ impl Aabb {
     }
 
     /// `hkAabb::signedDistanceToPoint` (gradient and value), xyz only
-    /// (legacy boundary; `w` ignored).
+    /// (`w` ignored).
     ///
     /// Returns `(gradient, distance)` where the gradient points from the box
     /// toward the point; inside the box the distance is the (negative) distance
     /// to the nearest face.
-    pub fn signed_distance_to_point(&self, point: Vector4) -> (Vec3A, f32) {
+    pub fn signed_distance_to_point(&self, point: Vec4) -> (Vec3A, f32) {
         self.signed_distance_to_point3(Vec3A::new(point.x, point.y, point.z))
     }
 
@@ -335,7 +333,11 @@ impl Aabb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::Vector4;
+
+    /// glam `Vec4` with `w = 0` (matches the legacy padding semantics).
+    fn v3(x: f32, y: f32, z: f32) -> Vec4 {
+        Vec4::new(x, y, z, 0.0)
+    }
 
     #[test]
     fn empty_and_full() {
@@ -347,34 +349,34 @@ mod tests {
         let full = Aabb::FULL;
         assert!(full.is_valid());
         assert!(!full.is_empty());
-        assert!(full.contains_point(Vector4::from_xyz(100.0, -50.0, 7.0)));
-        assert!(full.contains(&Aabb::from_point(Vector4::from_xyz(1.0, 2.0, 3.0))));
+        assert!(full.contains_point(v3(100.0, -50.0, 7.0)));
+        assert!(full.contains(&Aabb::from_point(v3(1.0, 2.0, 3.0))));
     }
 
     #[test]
     fn inclusion_and_overlap() {
-        let mut a = Aabb::from_point(Vector4::from_xyz(1.0, 2.0, 3.0));
-        a.include_point(Vector4::from_xyz(-1.0, 5.0, 0.0));
+        let mut a = Aabb::from_point(v3(1.0, 2.0, 3.0));
+        a.include_point(v3(-1.0, 5.0, 0.0));
         assert_eq!(a.min, Vec3A::new(-1.0, 2.0, 0.0));
         assert_eq!(a.max, Vec3A::new(1.0, 5.0, 3.0));
 
         let b = Aabb::new(
-            Vector4::from_xyz(0.0, 3.0, 0.0),
-            Vector4::from_xyz(2.0, 4.0, 2.0),
+            v3(0.0, 3.0, 0.0),
+            v3(2.0, 4.0, 2.0),
         );
         assert!(a.overlaps(&b));
         assert!(!a.disjoint(&b));
 
         let c = Aabb::new(
-            Vector4::from_xyz(5.0, 0.0, 0.0),
-            Vector4::from_xyz(6.0, 1.0, 1.0),
+            v3(5.0, 0.0, 0.0),
+            v3(6.0, 1.0, 1.0),
         );
         assert!(!a.overlaps(&c));
         assert!(a.disjoint(&c));
 
         let inner = Aabb::new(
-            Vector4::from_xyz(0.0, 3.0, 1.0),
-            Vector4::from_xyz(0.5, 4.0, 2.0),
+            v3(0.0, 3.0, 1.0),
+            v3(0.5, 4.0, 2.0),
         );
         assert!(a.contains(&inner));
         assert!(!inner.contains(&a));
@@ -384,20 +386,20 @@ mod tests {
     #[test]
     fn point_containment_boundaries_are_inclusive() {
         let box_ = Aabb::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
+            v3(0.0, 0.0, 0.0),
+            v3(1.0, 1.0, 1.0),
         );
-        assert!(box_.contains_point(Vector4::from_xyz(0.0, 0.0, 0.0)));
-        assert!(box_.contains_point(Vector4::from_xyz(1.0, 1.0, 1.0)));
-        assert!(box_.contains_point(Vector4::from_xyz(0.5, 0.5, 0.5)));
-        assert!(!box_.contains_point(Vector4::from_xyz(1.5, 0.5, 0.5)));
+        assert!(box_.contains_point(v3(0.0, 0.0, 0.0)));
+        assert!(box_.contains_point(v3(1.0, 1.0, 1.0)));
+        assert!(box_.contains_point(v3(0.5, 0.5, 0.5)));
+        assert!(!box_.contains_point(v3(1.5, 0.5, 0.5)));
     }
 
     #[test]
     fn center_extents_volume_and_expand() {
         let mut a = Aabb::new(
-            Vector4::from_xyz(-1.0, -2.0, -3.0),
-            Vector4::from_xyz(1.0, 2.0, 3.0),
+            v3(-1.0, -2.0, -3.0),
+            v3(1.0, 2.0, 3.0),
         );
         assert_eq!(a.center(), Vec3A::ZERO);
         assert_eq!(a.half_extents(), Vec3A::new(1.0, 2.0, 3.0));
@@ -415,8 +417,8 @@ mod tests {
     #[test]
     fn vertices() {
         let a = Aabb::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
+            v3(0.0, 0.0, 0.0),
+            v3(1.0, 1.0, 1.0),
         );
         assert_eq!(a.vertex(0), Vec3A::new(0.0, 0.0, 0.0));
         assert_eq!(a.vertex(7), Vec3A::new(1.0, 1.0, 1.0));
@@ -426,16 +428,16 @@ mod tests {
     #[test]
     fn signed_distance() {
         let a = Aabb::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
+            v3(0.0, 0.0, 0.0),
+            v3(1.0, 1.0, 1.0),
         );
         // Outside along +x by 1: distance 1, gradient (1,0,0).
-        let (gradient, distance) = a.signed_distance_to_point(Vector4::from_xyz(2.0, 0.5, 0.5));
+        let (gradient, distance) = a.signed_distance_to_point(v3(2.0, 0.5, 0.5));
         assert_eq!(distance, 1.0);
         assert_eq!(gradient, Vec3A::new(1.0, 0.0, 0.0));
 
         // Center: negative distance to nearest face.
-        let (_, distance) = a.signed_distance_to_point(Vector4::from_xyz(0.5, 0.5, 0.5));
+        let (_, distance) = a.signed_distance_to_point(v3(0.5, 0.5, 0.5));
         assert_eq!(distance, -0.5);
     }
 
