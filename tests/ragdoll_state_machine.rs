@@ -10,14 +10,14 @@ use proton::extensions::{
     Ragdoll, RagdollController, RagdollControllerCinfo, RagdollData, RagdollMotorParams,
     RagdollState,
 };
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape};
 use proton::world::{World, WorldCinfo};
 
 fn body(world: &mut World, position: Vector4) -> BodyId {
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(0.2, 0.2, 0.2),
+        Vec4::from_xyz(0.2, 0.2, 0.2),
         0.0,
     )) as Arc<dyn Shape>;
     let id = world.create_body(

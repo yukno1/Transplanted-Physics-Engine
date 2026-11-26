@@ -21,6 +21,19 @@ pub trait Mat3Ext: Sized {
     /// a singular matrix yields a zero matrix and its determinant
     /// (legacy `Matrix3::inverse`, `matrix3.rs:178-216`).
     fn inverse_sdk(self) -> (Self, f32);
+
+    /// `hkMatrix3f::setMul` — `self * a` with each product column computed
+    /// through the SDK `multiplyVector` order
+    /// (legacy `Matrix3::mul_mat`, `matrix3.rs:145-151`).
+    fn mul_mat_sdk(self, other: Self) -> Self;
+
+    /// `hkMatrix3f::element(row, column)` accessor
+    /// (legacy `Matrix3::element`, `matrix3.rs:93-96`).
+    fn element_sdk(self, row: usize, column: usize) -> f32;
+
+    /// Mutable `hkMatrix3f::element(row, column)` accessor
+    /// (legacy `Matrix3::set_element`, `matrix3.rs:98-101`).
+    fn set_element_sdk(&mut self, row: usize, column: usize, value: f32);
 }
 
 impl Mat3Ext for Mat3 {
@@ -70,6 +83,43 @@ impl Mat3Ext for Mat3 {
             ),
             determinant,
         )
+    }
+
+    #[inline]
+    fn mul_mat_sdk(self, other: Self) -> Self {
+        Mat3::from_cols(
+            self.mul_vec_sdk(other.x_axis),
+            self.mul_vec_sdk(other.y_axis),
+            self.mul_vec_sdk(other.z_axis),
+        )
+    }
+
+    #[inline]
+    fn element_sdk(self, row: usize, column: usize) -> f32 {
+        let axis = match column {
+            0 => self.x_axis,
+            1 => self.y_axis,
+            _ => self.z_axis,
+        };
+        match row {
+            0 => axis.x,
+            1 => axis.y,
+            _ => axis.z,
+        }
+    }
+
+    #[inline]
+    fn set_element_sdk(&mut self, row: usize, column: usize, value: f32) {
+        let axis = match column {
+            0 => &mut self.x_axis,
+            1 => &mut self.y_axis,
+            _ => &mut self.z_axis,
+        };
+        match row {
+            0 => axis.x = value,
+            1 => axis.y = value,
+            _ => axis.z = value,
+        }
     }
 }
 

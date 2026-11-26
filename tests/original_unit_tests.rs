@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use glam::Vec3A;
 use proton::body::BodyCinfo;
-use proton::math::Vector4;
+use proton::math::{Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{
     BoxShape, CapsuleShape, ConvexHullShape, HeightFieldShape, MeshShape, Shape, SphereShape,
@@ -16,7 +16,7 @@ use proton::shape::{
 use proton::world::{World, WorldCinfo};
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn np_box_shape_unit_test() {
     // Port of the AABB/support/volume part of NpBoxShapeUnitTest.
     // shrinkByRadius and makeFromVertices are not ported; the test documents
     // the current convex-radius semantics instead.
-    let half = Vector4::from_xyz(1.0, 2.0, 3.0);
+    let half = Vec4::from_xyz(1.0, 2.0, 3.0);
     let box_shape = BoxShape::with_convex_radius(half, 0.0);
     let aabb = box_shape.aabb();
     assert!(aabb.min.abs_diff_eq(Vec3A::new(-1.0, -2.0, -3.0), 0.0));
@@ -59,9 +59,9 @@ fn np_box_shape_unit_test() {
     assert!((box_shape.volume().unwrap() - 48.0).abs() < 1e-5);
     assert_eq!(
         box_shape
-            .support(Vector4::from_xyz(1.0, -1.0, 1.0))
+            .support(Vec4::new(1.0, -1.0, 1.0, 0.0))
             .unwrap(),
-        Vector4::from_xyz(1.0, -2.0, 3.0)
+        Vec4::from_xyz(1.0, -2.0, 3.0)
     );
 
     let inflated = BoxShape::with_convex_radius(half, 0.5);
@@ -100,26 +100,26 @@ fn np_bounding_sphere_test() {
     // Port of NpBoundingSphereTest for the convex shapes currently implemented.
     // Scaled convex and compound bounding spheres are blocked by missing
     // shape variants; see the matrix.
-    assert_bounding_radius_contains_aabb(&SphereShape::new(Vector4::from_xyz(1.0, 2.0, 3.0), 2.0));
+    assert_bounding_radius_contains_aabb(&SphereShape::new(Vec4::from_xyz(1.0, 2.0, 3.0), 2.0));
     assert_bounding_radius_contains_aabb(&BoxShape::with_convex_radius(
-        Vector4::from_xyz(1.0, 2.0, 3.0),
+        Vec4::from_xyz(1.0, 2.0, 3.0),
         0.1,
     ));
     assert_bounding_radius_contains_aabb(&CapsuleShape::new(
-        Vector4::from_xyz(0.0, -1.0, 0.0),
-        Vector4::from_xyz(0.0, 1.0, 0.0),
+        Vec4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::from_xyz(0.0, 1.0, 0.0),
         0.5,
     ));
     let hull = ConvexHullShape::new(
         vec![
-            Vector4::from_xyz(-1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, 1.0, -1.0),
-            Vector4::from_xyz(-1.0, 1.0, -1.0),
-            Vector4::from_xyz(-1.0, -1.0, 1.0),
-            Vector4::from_xyz(1.0, -1.0, 1.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
-            Vector4::from_xyz(-1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, 1.0, -1.0),
+            Vec4::from_xyz(-1.0, 1.0, -1.0),
+            Vec4::from_xyz(-1.0, -1.0, 1.0),
+            Vec4::from_xyz(1.0, -1.0, 1.0),
+            Vec4::from_xyz(1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, 1.0, 1.0),
         ],
         Vec::new(),
         0.0,

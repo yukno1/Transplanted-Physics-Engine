@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::base_math::{Transform, Vector4 as V4};
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{TriggerEvent, TriggerObservation, TriggerStatus, TriggerTracker};
 use crate::phys_shape::{BoxShape, CompoundShape, Shape, ShapeInstance};
@@ -67,7 +68,7 @@ fn trigger_tracker_distinguishes_shape_keys_on_one_body() {
 fn compound_ray_hits_carry_distinct_shape_keys() {
     let mut compound = CompoundShape::new(Vec::new());
     for x in [-2.0, 2.0] {
-        let shape: Arc<dyn Shape> = Arc::new(BoxShape::with_convex_radius(V4::splat(0.5), 0.0));
+        let shape: Arc<dyn Shape> = Arc::new(BoxShape::with_convex_radius(G4::splat(0.5), 0.0));
         compound.add_child(ShapeInstance::new(
             Transform::from_quaternion(
                 crate::base_math::Quaternion::IDENTITY,

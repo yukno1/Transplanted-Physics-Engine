@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{
     CharacterProxyManager, CharacterRigidBody, CharacterRigidBodyCinfo, CharacterRigidBodyListener,
@@ -44,7 +46,7 @@ impl CharacterRigidBodyListener for DropAndLog {
 fn world_with_ground() -> (World, crate::phys_types::BodyId) {
     let mut world = World::new(WorldCinfo::new());
     let ground = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(10.0, 0.5, 10.0),
+        G4::from_xyz(10.0, 0.5, 10.0),
         0.0,
     )) as Arc<dyn Shape>;
     let ground = world.create_body(
@@ -56,7 +58,7 @@ fn world_with_ground() -> (World, crate::phys_types::BodyId) {
 }
 
 fn character_cinfo() -> CharacterRigidBodyCinfo {
-    let shape = Arc::new(SphereShape::new(V4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(G4::ZERO, 0.5)) as Arc<dyn Shape>;
     CharacterRigidBodyCinfo::new(shape).with_position(V4::from_xyz(0.0, 0.45, 0.0))
 }
 

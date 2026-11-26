@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{
     CharacterProxy, CharacterProxyCinfo, CharacterProxyListener, CharacterProxyManager,
@@ -30,7 +32,7 @@ impl CharacterProxyListener for Recorder {
 fn scene() -> (World, CharacterProxyManager, Arc<Mutex<Vec<String>>>) {
     let mut world = World::new(WorldCinfo::new());
     let dynamic =
-        StdArc::new(crate::phys_shape::SphereShape::new(V4::ZERO, 0.4)) as StdArc<dyn Shape>;
+        StdArc::new(crate::phys_shape::SphereShape::new(G4::ZERO, 0.4)) as StdArc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(dynamic)
             .with_mass(1.0)
@@ -41,8 +43,8 @@ fn scene() -> (World, CharacterProxyManager, Arc<Mutex<Vec<String>>>) {
     let log = Arc::new(Mutex::new(Vec::new()));
     for x in [0.0, 0.3, 0.6] {
         let shape = StdArc::new(CapsuleShape::new(
-            V4::from_xyz(0.0, -0.6, 0.0),
-            V4::from_xyz(0.0, 0.6, 0.0),
+            G4::from_xyz(0.0, -0.6, 0.0),
+            G4::from_xyz(0.0, 0.6, 0.0),
             0.4,
         )) as StdArc<dyn Shape>;
         let id = manager.add_proxy(CharacterProxy::new(

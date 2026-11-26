@@ -15,6 +15,7 @@ use proton::body::BodyCinfo;
 use proton::collide::{BodyAabb, BroadPhase, BroadPhaseConfig, closest_points, collide};
 use proton::math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
 use proton::np_types::{BodyId, MotionType};
+use proton::math::{Vec4, Vec4Ext};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::solver::{ContactConstraint, Solver, SolverBody};
 use proton::thread::ThreadPool;
@@ -231,7 +232,7 @@ fn benchmark_broadphase(count: usize, iterations: u32) {
 }
 
 fn benchmark_gjk(iterations: u32) {
-    let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
     let left = Transform::IDENTITY;
     let right = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(5.0, 0.0, 0.0));
     let elapsed = measure(iterations, || {
@@ -248,7 +249,7 @@ fn benchmark_gjk(iterations: u32) {
     );
 
     let box_shape =
-        Arc::new(BoxShape::with_convex_radius(Vector4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+        Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
     let elapsed = measure(iterations, || {
         let result = closest_points(box_shape.as_ref(), &left, box_shape.as_ref(), &right).unwrap();
         black_box(result.distance);
@@ -264,7 +265,7 @@ fn benchmark_gjk(iterations: u32) {
 }
 
 fn benchmark_narrowphase(iterations: u32) {
-    let shape = Arc::new(BoxShape::with_convex_radius(Vector4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+    let shape = Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
     let left = Transform::IDENTITY;
     let right = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(1.5, 0.0, 0.0));
     let elapsed = measure(iterations, || {
@@ -319,13 +320,13 @@ fn benchmark_solver(iterations: u32) {
 fn build_fall_world(body_count: usize) -> World {
     let mut world = World::new(WorldCinfo::new());
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(6.0, 0.5, 6.0),
+        Vec4::from_xyz(6.0, 0.5, 6.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
     );
-    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..body_count {
         let x = (index % 16) as f32 * 0.7 - 5.0;
         let z = (index / 16) as f32 * 0.7 - 2.0;
@@ -405,14 +406,14 @@ fn benchmark_world_fall_scheduler(
 fn benchmark_world_stack(steps: usize) {
     let mut world = World::new(WorldCinfo::new());
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(4.0, 0.5, 4.0),
+        Vec4::from_xyz(4.0, 0.5, 4.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
     );
     let box_shape =
-        Arc::new(BoxShape::with_convex_radius(Vector4::splat(0.5), 0.0)) as Arc<dyn Shape>;
+        Arc::new(BoxShape::with_convex_radius(Vec4::splat(0.5), 0.0)) as Arc<dyn Shape>;
     for index in 0..10 {
         world.create_body(
             &BodyCinfo::new(Arc::clone(&box_shape))
@@ -439,13 +440,13 @@ fn benchmark_world_stack(steps: usize) {
 fn benchmark_raycast_world(iterations: u32) {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(6.0, 0.5, 6.0),
+        Vec4::from_xyz(6.0, 0.5, 6.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
     );
-    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..16 {
         let x = (index % 4) as f32 * 1.5 - 2.5;
         let z = (index / 4) as f32 * 1.5 - 2.5;
@@ -476,13 +477,13 @@ fn benchmark_raycast_world(iterations: u32) {
 fn benchmark_shape_cast_world(iterations: u32) {
     let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
     let ground_shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(6.0, 0.5, 6.0),
+        Vec4::from_xyz(6.0, 0.5, 6.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(ground_shape).with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
     );
-    let query = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let query = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     let start = Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
     let filter = proton::world::QueryFilter::default();
     let mut hits = 0;
@@ -504,7 +505,7 @@ fn benchmark_shape_cast_world(iterations: u32) {
 
 fn benchmark_joint_chain(body_count: usize, steps: usize) {
     let mut world = World::new(WorldCinfo::new());
-    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     let anchor = world.create_body(
         &BodyCinfo::new(Arc::clone(&sphere)).with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
     );

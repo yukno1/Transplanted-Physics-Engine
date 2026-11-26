@@ -8,16 +8,16 @@ use proton::np_types::MotionType;
 use proton::shape::{ConvexHullShape, MassConfig, Shape};
 use proton::world::{World, WorldCinfo};
 
-fn cube_points(half: f32) -> Vec<Vector4> {
+fn cube_points(half: f32) -> Vec<Vec4> {
     vec![
-        Vector4::from_xyz(-half, -half, -half),
-        Vector4::from_xyz(half, -half, -half),
-        Vector4::from_xyz(half, half, -half),
-        Vector4::from_xyz(-half, half, -half),
-        Vector4::from_xyz(-half, -half, half),
-        Vector4::from_xyz(half, -half, half),
-        Vector4::from_xyz(half, half, half),
-        Vector4::from_xyz(-half, half, half),
+        Vec4::from_xyz(-half, -half, -half),
+        Vec4::from_xyz(half, -half, -half),
+        Vec4::from_xyz(half, half, -half),
+        Vec4::from_xyz(-half, half, -half),
+        Vec4::from_xyz(-half, -half, half),
+        Vec4::from_xyz(half, -half, half),
+        Vec4::from_xyz(half, half, half),
+        Vec4::from_xyz(-half, half, half),
     ]
 }
 
@@ -25,14 +25,14 @@ fn cube_points(half: f32) -> Vec<Vector4> {
 fn point_cloud_builds_volume_mass_and_convex_radius() {
     let mut points = cube_points(1.0);
     points.extend(cube_points(1.0));
-    points.push(Vector4::ZERO);
+    points.push(Vec4::ZERO);
 
     let hull = ConvexHullShape::from_points(points, 0.1);
     assert_eq!(hull.vertices().len(), 8);
     assert_eq!(hull.faces().len(), 12);
     assert!((hull.volume().unwrap() - 8.0).abs() < 1e-3);
     assert_eq!(hull.aabb().max.x, 1.1);
-    assert_eq!(hull.support(Vector4::UNIT_X).unwrap().x, 1.1);
+    assert_eq!(hull.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap().x, 1.1);
 
     let mass = hull.mass_properties(MassConfig::from_density(2.0)).unwrap();
     assert!((mass.volume - 8.0).abs() < 1e-3);
@@ -62,9 +62,9 @@ fn welding_remaps_triangles_and_removes_degenerate_faces() {
 #[test]
 fn lower_dimensional_cloud_stays_queryable() {
     let hull =
-        ConvexHullShape::from_points(vec![Vector4::ZERO, Vector4::from_xyz(2.0, 0.0, 0.0)], 0.0);
+        ConvexHullShape::from_points(vec![Vec4::ZERO, Vec4::from_xyz(2.0, 0.0, 0.0)], 0.0);
     assert_eq!(hull.volume(), None);
-    assert_eq!(hull.support(Vector4::UNIT_X).unwrap().x, 2.0);
+    assert_eq!(hull.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap().x, 2.0);
 }
 
 fn falling_hull_world() -> World {

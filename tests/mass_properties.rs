@@ -4,7 +4,7 @@ use std::f32::consts::FRAC_PI_4;
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Matrix3, Quaternion, Transform, Vector4};
+use proton::math::{Mat3Ext, Matrix3, Quaternion, Transform, Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::mass::{MassConfig, MassError};
 use proton::shape::{BoxShape, CompoundShape, Shape, ShapeInstance, ShapeMassCache, SphereShape};
@@ -12,29 +12,31 @@ use proton::world::{World, WorldCinfo};
 
 #[test]
 fn analytic_primitives_resolve_density_and_explicit_mass() {
-    let sphere = SphereShape::new(Vector4::ZERO, 1.0);
+    let sphere = SphereShape::new(Vec4::ZERO, 1.0);
     let properties = sphere
         .mass_properties(MassConfig::from_density(2.0))
         .unwrap();
     assert!((properties.mass - 8.0 / 3.0 * std::f32::consts::PI).abs() < 1e-5);
-    assert!(properties.center_of_mass.all_equal3(Vector4::ZERO, 0.0));
-    assert!((properties.inertia_tensor.element(0, 0) - 0.8 * properties.volume).abs() < 1e-5);
+    assert_eq!(properties.center_of_mass, Vec4::ZERO);
+    assert!(
+        (properties.inertia_tensor.element_sdk(0, 0) - 0.8 * properties.volume).abs() < 1e-5
+    );
 
-    let box_shape = BoxShape::with_convex_radius(Vector4::from_xyz(1.0, 2.0, 3.0), 0.0);
+    let box_shape = BoxShape::with_convex_radius(Vec4::from_xyz(1.0, 2.0, 3.0), 0.0);
     let mut explicit = box_shape
         .mass_properties(MassConfig::from_density(1.0))
         .unwrap();
     assert_eq!(explicit.mass, 48.0);
-    assert!((explicit.inertia_tensor.element(0, 0) - 208.0).abs() < 1e-4);
+    assert!((explicit.inertia_tensor.element_sdk(0, 0) - 208.0).abs() < 1e-4);
     explicit = explicit.with_mass(96.0).unwrap();
     assert_eq!(explicit.mass, 96.0);
-    assert!((explicit.inertia_tensor.element(0, 0) - 416.0).abs() < 1e-4);
+    assert!((explicit.inertia_tensor.element_sdk(0, 0) - 416.0).abs() < 1e-4);
 }
 
 #[test]
 fn compound_aggregation_preserves_off_diagonal_terms() {
     let box_shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(1.0, 2.0, 3.0),
+        Vec4::from_xyz(1.0, 2.0, 3.0),
         0.0,
     )) as Arc<dyn Shape>;
     let rotation = Transform::from_quaternion(
@@ -47,7 +49,7 @@ fn compound_aggregation_preserves_off_diagonal_terms() {
         .unwrap();
     assert_eq!(properties.mass, 48.0);
     assert!(
-        properties.inertia_tensor.element(0, 2).abs() > 1.0,
+        properties.inertia_tensor.element_sdk(0, 2).abs() > 1.0,
         "rotated box should produce a non-diagonal inertia tensor: {:?}",
         properties.inertia_tensor
     );
@@ -55,7 +57,7 @@ fn compound_aggregation_preserves_off_diagonal_terms() {
 
 #[test]
 fn invalid_mass_config_is_rejected() {
-    let sphere = SphereShape::new(Vector4::ZERO, 1.0);
+    let sphere = SphereShape::new(Vec4::ZERO, 1.0);
     assert_eq!(
         sphere.mass_properties(MassConfig::from_density(f32::NAN)),
         Err(MassError::InvalidConfig)
@@ -66,7 +68,7 @@ fn invalid_mass_config_is_rejected() {
 fn negative_mass_bodies_derive_shape_inertia() {
     let mut world = World::new(WorldCinfo::new());
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(1.0, 2.0, 3.0),
+        Vec4::from_xyz(1.0, 2.0, 3.0),
         0.0,
     )) as Arc<dyn Shape>;
     let body_id = world.create_body(
@@ -101,7 +103,7 @@ fn negative_mass_bodies_derive_shape_inertia() {
 fn shape_derived_mass_trace_is_deterministic() {
     fn trace() -> String {
         let mut world = World::new(WorldCinfo::new());
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
         for index in 0..3 {
             world.create_body(
                 &BodyCinfo::new(Arc::clone(&shape))
@@ -119,7 +121,7 @@ fn shape_derived_mass_trace_is_deterministic() {
 
 #[test]
 fn shape_mass_cache_reuses_and_invalidates_by_identity() {
-    let shape = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     let config = MassConfig::from_density(1.0);
     let mut cache = ShapeMassCache::new();
     let first = cache.compute(&shape, config).unwrap();

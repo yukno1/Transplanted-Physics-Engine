@@ -3,7 +3,7 @@
 //! facade `convert` module, and then simulated by `phys-world`.
 
 use proton::convert::{ConvertError, body_cinfo_from_item, scene_from_bundle, shape_from_item};
-use proton::math::Vector4;
+use proton::math::{Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::serialize::vle;
 use proton::serialize::{Bundle, Value, four_cc, pack_scope};
@@ -246,7 +246,7 @@ fn converts_shape_items_to_concrete_shapes() {
         .as_any()
         .downcast_ref::<BoxShape>()
         .expect("downcast box");
-    assert_eq!(box_shape.half_extents, Vector4::from_xyz(10.0, 0.5, 10.0));
+    assert_eq!(box_shape.half_extents, Vec4::from_xyz(10.0, 0.5, 10.0));
     assert_eq!(box_shape.convex_radius, 0.0);
 
     let sphere = shape_from_item(&bundle, 2).expect("sphere");
@@ -256,7 +256,7 @@ fn converts_shape_items_to_concrete_shapes() {
         .downcast_ref::<SphereShape>()
         .expect("downcast sphere");
     assert_eq!(sphere.radius, 0.5);
-    assert_eq!(sphere.center, Vector4::ZERO);
+    assert_eq!(sphere.center, Vec4::ZERO);
 }
 
 #[test]

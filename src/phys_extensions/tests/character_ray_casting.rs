@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_collide::query::leaf_key;
 use crate::phys_extensions::{RayCastingCharacterCinfo, get_character_params};
@@ -12,18 +14,18 @@ use crate::phys_world::{World, WorldCinfo};
 
 const DT: f32 = 1.0 / 60.0;
 
-fn box_shape(half: V4) -> Arc<dyn Shape> {
+fn box_shape(half: G4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half, 0.0)) as Arc<dyn Shape>
 }
 
 fn scene() -> (World, crate::phys_types::BodyId) {
     let mut world = World::new(WorldCinfo::new());
     world.create_body(
-        &BodyCinfo::new(box_shape(V4::from_xyz(10.0, 0.5, 10.0)))
+        &BodyCinfo::new(box_shape(G4::from_xyz(10.0, 0.5, 10.0)))
             .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
     );
     let body = world.create_body(
-        &BodyCinfo::new(Arc::new(SphereShape::new(V4::ZERO, 0.5)) as Arc<dyn Shape>)
+        &BodyCinfo::new(Arc::new(SphereShape::new(G4::ZERO, 0.5)) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Dynamic)
             .with_mass(75.0)
             .with_position(V4::from_xyz(0.0, 1.0, 0.0)),
@@ -51,7 +53,7 @@ fn flat_ground_has_support_and_stable_parameters() {
 fn step_ahead_increases_displacement_towards_the_step() {
     let (mut world, body) = scene();
     world.create_body(
-        &BodyCinfo::new(box_shape(V4::from_xyz(0.5, 0.2, 0.5)))
+        &BodyCinfo::new(box_shape(G4::from_xyz(0.5, 0.2, 0.5)))
             .with_position(V4::from_xyz(0.8, 0.1, 0.0)),
     );
     let towards = get_character_params(&world, body, &info(0.4), V4::UNIT_X);
@@ -71,7 +73,7 @@ fn horizontal_obstacle_applies_bump_factor() {
         1.0
     );
     world.create_body(
-        &BodyCinfo::new(box_shape(V4::from_xyz(0.1, 0.5, 0.5)))
+        &BodyCinfo::new(box_shape(G4::from_xyz(0.1, 0.5, 0.5)))
             .with_position(V4::from_xyz(0.9, 0.5, 0.0)),
     );
     let blocked = get_character_params(&world, body, &info(0.4), V4::UNIT_X);
@@ -102,14 +104,14 @@ fn steep_slope_is_reported_as_unclimbable() {
 fn world_raycast_reports_hull_face_normal_and_leaf_key() {
     let mut world = World::new(WorldCinfo::new());
     let vertices = vec![
-        V4::from_xyz(-1.0, 1.0, -1.0),
-        V4::from_xyz(1.0, 1.0, -1.0),
-        V4::from_xyz(1.0, 1.0, 1.0),
-        V4::from_xyz(-1.0, 1.0, 1.0),
-        V4::from_xyz(-1.0, -1.0, -1.0),
-        V4::from_xyz(1.0, -1.0, -1.0),
-        V4::from_xyz(1.0, -1.0, 1.0),
-        V4::from_xyz(-1.0, -1.0, 1.0),
+        G4::from_xyz(-1.0, 1.0, -1.0),
+        G4::from_xyz(1.0, 1.0, -1.0),
+        G4::from_xyz(1.0, 1.0, 1.0),
+        G4::from_xyz(-1.0, 1.0, 1.0),
+        G4::from_xyz(-1.0, -1.0, -1.0),
+        G4::from_xyz(1.0, -1.0, -1.0),
+        G4::from_xyz(1.0, -1.0, 1.0),
+        G4::from_xyz(-1.0, -1.0, 1.0),
     ];
     let hull = Arc::new(ConvexHullShape::new(
         vertices,

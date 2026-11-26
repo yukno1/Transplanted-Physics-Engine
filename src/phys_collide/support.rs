@@ -1,11 +1,14 @@
 //! Support-function plumbing shared by GJK and EPA.
 
 use crate::base_math::{Transform, Vector4};
-use crate::phys_shape::Shape;
+use crate::phys_shape::{Shape, to_vec4, to_vector4};
 
 /// World-space support point of a convex shape in world direction `direction`.
 ///
 /// Returns `None` for shapes without a support function (composites, meshes).
+///
+/// 过渡期边界：`Shape::support` 已迁移 glam（Phase 3 步骤 2），本模块随
+/// phys_collide 迁移（步骤 4）时删除转换。
 pub(crate) fn world_support(
     shape: &dyn Shape,
     transform: &Transform,
@@ -13,8 +16,8 @@ pub(crate) fn world_support(
 ) -> Option<Vector4> {
     let local_direction = transform.rotation.rotate_inverse(direction);
     shape
-        .support(local_direction)
-        .map(|point| transform.transform_point(point))
+        .support(to_vec4(local_direction))
+        .map(|point| transform.transform_point(to_vector4(point)))
 }
 
 /// Both sides of a Minkowski-difference support point.

@@ -7,24 +7,24 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::Vector4;
+use proton::math::{Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
 
-fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
 }
 
 fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
 fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
     cinfo.with_motion_type(MotionType::Dynamic).with_mass(1.0)
 }
 
-fn ground(world: &mut World, half_extents: Vector4) -> proton::np_types::BodyId {
+fn ground(world: &mut World, half_extents: Vec4) -> proton::np_types::BodyId {
     world.create_body(
         &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
             0.0,
@@ -36,10 +36,10 @@ fn ground(world: &mut World, half_extents: Vector4) -> proton::np_types::BodyId 
 
 fn stack_world(warm_starting: bool) -> World {
     let mut world = World::new(WorldCinfo::new().with_warm_starting(warm_starting));
-    ground(&mut world, Vector4::from_xyz(4.0, 0.5, 4.0));
+    ground(&mut world, Vec4::from_xyz(4.0, 0.5, 4.0));
     for index in 0..5 {
         world.create_body(
-            &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+            &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
                 .with_position(Vector4::from_xyz(0.0, 1.0 + index as f32 * 1.1, 0.0)),
         );
     }
@@ -59,11 +59,11 @@ fn total_penetration(world: &World) -> f32 {
 #[test]
 fn two_stacks_on_one_ground_report_two_islands() {
     let mut world = World::new(WorldCinfo::new());
-    ground(&mut world, Vector4::from_xyz(8.0, 0.5, 8.0));
+    ground(&mut world, Vec4::from_xyz(8.0, 0.5, 8.0));
     for x in [-3.0, 3.0] {
         for index in 0..2 {
             world.create_body(
-                &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+                &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
                     .with_position(Vector4::from_xyz(x, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }

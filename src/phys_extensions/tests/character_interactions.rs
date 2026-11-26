@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{
     CharacterContact as Contact, CharacterInteractionInfo, CharacterObjectInteractionEvent,
@@ -18,8 +20,8 @@ const DT: f32 = 1.0 / 60.0;
 
 fn capsule(x: f32) -> CharacterProxy {
     let shape = StdArc::new(CapsuleShape::new(
-        V4::from_xyz(0.0, -0.6, 0.0),
-        V4::from_xyz(0.0, 0.6, 0.0),
+        G4::from_xyz(0.0, -0.6, 0.0),
+        G4::from_xyz(0.0, 0.6, 0.0),
         0.4,
     )) as StdArc<dyn Shape>;
     CharacterProxy::new(&CharacterProxyCinfo::new(shape).with_position(V4::from_xyz(x, 0.0, 0.0)))
@@ -67,7 +69,7 @@ impl CharacterProxyListener for InteractionRecorder {
 fn object_interaction_result_can_cancel_push() {
     let mut world = World::new(WorldCinfo::new());
     let dynamic =
-        StdArc::new(BoxShape::with_convex_radius(V4::splat(0.3), 0.0)) as StdArc<dyn Shape>;
+        StdArc::new(BoxShape::with_convex_radius(G4::splat(0.3), 0.0)) as StdArc<dyn Shape>;
     let body = world.create_body(
         &BodyCinfo::new(dynamic)
             .with_motion_type(MotionType::Dynamic)

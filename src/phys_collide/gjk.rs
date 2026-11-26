@@ -412,15 +412,16 @@ fn tetrahedron_weights(a: Vector4, b: Vector4, c: Vector4, d: Vector4) -> Option
 mod tests {
     use super::*;
     use crate::base_math::Quaternion;
+    use glam::Vec4;
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use std::sync::Arc;
 
     fn sphere(radius: f32) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
     }
 
     fn box_shape(half: f32) -> Arc<dyn Shape> {
-        Arc::new(BoxShape::with_convex_radius(Vector4::splat(half), 0.0)) as Arc<dyn Shape>
+        Arc::new(BoxShape::with_convex_radius(Vec4::splat(half), 0.0)) as Arc<dyn Shape>
     }
 
     fn translation(x: f32, y: f32, z: f32) -> Transform {

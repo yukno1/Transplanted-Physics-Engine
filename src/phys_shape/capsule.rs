@@ -7,21 +7,23 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Matrix3, Vector4};
+use glam::{Mat3, Quat, Vec4};
+
+use crate::base_math::{Aabb, QuatExt, Vec4Ext};
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::phys_shape::mass::{matrix_add, matrix_outer, matrix_scale};
 use crate::phys_shape::{
-    MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction,
+    MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, outer_product,
+    unit_direction,
 };
 
 /// Capsule (`hknpCapsuleShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CapsuleShape {
     /// Segment endpoint A.
-    pub point_a: Vector4,
+    pub point_a: Vec4,
     /// Segment endpoint B.
-    pub point_b: Vector4,
+    pub point_b: Vec4,
     /// Radius of the sphere swept along the segment.
     pub radius: f32,
 }
@@ -33,7 +35,7 @@ impl CapsuleShape {
     ///
     /// Panics in debug builds if `radius` is negative.
     #[inline]
-    pub fn new(point_a: Vector4, point_b: Vector4, radius: f32) -> Self {
+    pub fn new(point_a: Vec4, point_b: Vec4, radius: f32) -> Self {
         debug_assert!(radius >= 0.0, "invalid capsule radius");
         Self {
             point_a,
@@ -44,19 +46,21 @@ impl CapsuleShape {
 
     /// Unit axis from A to B, or `None` for a degenerate segment.
     #[inline]
-    pub fn axis(&self) -> Option<Vector4> {
+    pub fn axis(&self) -> Option<Vec4> {
         unit_direction(self.point_b - self.point_a)
     }
 
     /// Segment length.
     #[inline]
     pub fn segment_length(&self) -> f32 {
-        (self.point_b - self.point_a).length3()
+        // Legacy `length3`: xyz-only length with the fixed scalar order.
+        let segment = self.point_b - self.point_a;
+        segment.dot3(segment).sqrt()
     }
 
     /// Support point on the segment: the capsule hull has two vertices, so the
     /// extreme vertex along `direction` wins (dot == 0 keeps endpoint A).
-    fn support_on_segment(&self, direction: Vector4) -> Vector4 {
+    fn support_on_segment(&self, direction: Vec4) -> Vec4 {
         if direction.dot3(self.point_b - self.point_a) > 0.0 {
             self.point_b
         } else {
@@ -80,13 +84,13 @@ impl Shape for CapsuleShape {
 
     fn aabb(&self) -> Aabb {
         let r = self.radius;
-        Aabb::new(
-            Vector4::from_xyz(
+        Aabb::from_corners(
+            glam::Vec3A::new(
                 self.point_a.x.min(self.point_b.x) - r,
                 self.point_a.y.min(self.point_b.y) - r,
                 self.point_a.z.min(self.point_b.z) - r,
             ),
-            Vector4::from_xyz(
+            glam::Vec3A::new(
                 self.point_a.x.max(self.point_b.x) + r,
                 self.point_a.y.max(self.point_b.y) + r,
                 self.point_a.z.max(self.point_b.z) + r,
@@ -117,22 +121,24 @@ impl Shape for CapsuleShape {
         let perpendicular = cylinder_mass * (3.0 * radius_squared + length * length) / 12.0
             + cap_mass * (0.4 * radius_squared + 0.25 * length * length);
 
-        let axis = self.axis().unwrap_or(Vector4::UNIT_X);
+        let axis = self
+            .axis()
+            .unwrap_or_else(|| Vec4::new(1.0, 0.0, 0.0, 0.0));
         let reference = if axis.x.abs() < 0.9 {
-            Vector4::UNIT_X
+            Vec4::new(1.0, 0.0, 0.0, 0.0)
         } else {
-            Vector4::UNIT_Y
+            Vec4::new(0.0, 1.0, 0.0, 0.0)
         };
-        let perpendicular_a = axis.cross(reference).normalized3();
-        let perpendicular_b = axis.cross(perpendicular_a).normalized3();
-        let major_axis_space =
-            Matrix3::from_cols(perpendicular_a, perpendicular_b, axis).to_quaternion();
+        let perpendicular_a = axis.cross3(reference).normalize_or_zero3();
+        let perpendicular_b = axis.cross3(perpendicular_a).normalize_or_zero3();
+        let major_axis_space = Quat::from_matrix_sdk(Mat3::from_cols(
+            glam::Vec3::new(perpendicular_a.x, perpendicular_a.y, perpendicular_a.z),
+            glam::Vec3::new(perpendicular_b.x, perpendicular_b.y, perpendicular_b.z),
+            glam::Vec3::new(axis.x, axis.y, axis.z),
+        ));
 
-        let axial_outer = matrix_outer(axis, axis);
-        let unit_inertia = matrix_add(
-            &matrix_scale(Matrix3::IDENTITY, perpendicular),
-            &matrix_scale(axial_outer, axial - perpendicular),
-        );
+        let axial_outer = outer_product(axis, axis);
+        let unit_inertia = Mat3::IDENTITY * perpendicular + axial_outer * (axial - perpendicular);
         MassProperties::from_geometry(
             volume,
             (self.point_a + self.point_b) * 0.5,
@@ -142,7 +148,7 @@ impl Shape for CapsuleShape {
         )
     }
 
-    fn support(&self, direction: Vector4) -> Option<Vector4> {
+    fn support(&self, direction: Vec4) -> Option<Vec4> {
         let segment_point = self.support_on_segment(direction);
         match unit_direction(direction) {
             Some(unit) => Some(segment_point + unit * self.radius),
@@ -163,8 +169,8 @@ mod tests {
     #[test]
     fn aabb_and_volume_of_y_capsule() {
         let capsule = CapsuleShape::new(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.5,
         );
         let aabb = capsule.aabb();
@@ -178,41 +184,46 @@ mod tests {
     #[test]
     fn support_uses_closest_segment_point() {
         let capsule = CapsuleShape::new(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             1.0,
         );
-        let support = capsule.support(Vector4::UNIT_X).unwrap();
+        let support = capsule.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
         // Direction X projects onto the segment at t = 0 (dot == 0), so the
         // support is endpoint A plus one radius in X.
         assert_eq!(support.x, 1.0);
         assert!((-1.0..=1.0).contains(&support.y));
         assert_eq!(support.z, 0.0);
 
-        let support = capsule.support(Vector4::UNIT_Y).unwrap();
-        assert_eq!(support, Vector4::from_xyz(0.0, 2.0, 0.0));
+        let support = capsule.support(Vec4::new(0.0, 1.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(0.0, 2.0, 0.0));
     }
 
     #[test]
     fn degenerate_capsule_behaves_like_sphere() {
         let capsule = CapsuleShape::new(
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Vector4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
             2.0,
         );
-        let support = capsule.support(Vector4::UNIT_X).unwrap();
-        assert_eq!(support, Vector4::from_xyz(3.0, 0.0, 0.0));
+        let support = capsule.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(3.0, 0.0, 0.0));
         assert_eq!(capsule.axis(), None);
         assert_eq!(capsule.segment_length(), 0.0);
     }
 
     #[test]
     fn diagonal_capsule_support() {
-        let capsule = CapsuleShape::new(Vector4::ZERO, Vector4::from_xyz(2.0, 2.0, 0.0), 1.0);
-        let support = capsule.support(Vector4::UNIT_X).unwrap();
+        let capsule = CapsuleShape::new(Vec4::ZERO, Vec4::from_xyz(2.0, 2.0, 0.0), 1.0);
+        let support = capsule.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
         // Direction X has a positive projection on the segment, so endpoint B
         // is the hull support point; the radius is added along X.
-        let expected = Vector4::from_xyz(3.0, 2.0, 0.0);
-        assert!(support.all_equal3(expected, 1e-5), "got {support:?}");
+        let expected = Vec4::from_xyz(3.0, 2.0, 0.0);
+        assert!(
+            (support.x - expected.x).abs() < 1e-5
+                && (support.y - expected.y).abs() < 1e-5
+                && (support.z - expected.z).abs() < 1e-5,
+            "got {support:?}"
+        );
     }
 }

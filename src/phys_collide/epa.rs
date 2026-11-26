@@ -388,6 +388,7 @@ pub(crate) fn penetration_or_zero(
 mod tests {
     use super::*;
     use crate::base_math::Quaternion;
+    use glam::Vec4;
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use std::sync::Arc;
 
@@ -397,7 +398,7 @@ mod tests {
 
     #[test]
     fn overlapping_spheres_have_expected_depth() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let depth = penetration_or_zero(
             shape.as_ref(),
             &Transform::IDENTITY,
@@ -410,7 +411,7 @@ mod tests {
     #[test]
     fn overlapping_boxes_have_expected_depth() {
         let shape =
-            Arc::new(BoxShape::with_convex_radius(Vector4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+            Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
         let depth = penetration_or_zero(
             shape.as_ref(),
             &Transform::IDENTITY,
@@ -422,7 +423,7 @@ mod tests {
 
     #[test]
     fn separated_shapes_have_zero_depth() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         assert_eq!(
             penetration_or_zero(
                 shape.as_ref(),

@@ -7,13 +7,13 @@ use proton::extensions::{
     DEFAULT_EASING_DURATION, LimitSnapshot, Ragdoll, RagdollController, RagdollControllerCinfo,
     RagdollData, RagdollError, RagdollState,
 };
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4};
 use proton::np_types::{ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{World, WorldCinfo, WorldJoint};
 
 fn chain(world: &mut World) -> (Ragdoll, proton::np_types::BodyId, ConstraintId) {
-    let shape = || Arc::new(SphereShape::new(Vector4::ZERO, 0.25)) as Arc<dyn Shape>;
+    let shape = || Arc::new(SphereShape::new(Vec4::ZERO, 0.25)) as Arc<dyn Shape>;
     let root = world.create_body(
         &BodyCinfo::new(shape())
             .with_motion_type(MotionType::Dynamic)

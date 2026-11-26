@@ -170,14 +170,15 @@ impl core::fmt::Debug for BodyManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::base_math::{Transform, Vector4};
+    use crate::base_math::Transform;
+    use glam::Vec4;
     use crate::phys_body::Body;
     use crate::phys_shape::{Shape, SphereShape};
     use crate::phys_types::MotionId;
     use std::sync::Arc;
 
     fn make_body() -> Body {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         Body::new(shape, Transform::IDENTITY, MotionId::PRESET_STATIC)
     }
 

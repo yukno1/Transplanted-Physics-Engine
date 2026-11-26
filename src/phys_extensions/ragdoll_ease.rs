@@ -553,6 +553,7 @@ pub fn lerp(current: f32, original: f32, weight: f32) -> f32 {
 mod tests {
     use super::*;
     use crate::base_math::{Quaternion, Transform, Vector4};
+    use glam::Vec4;
     use crate::phys_body::BodyCinfo;
     use crate::phys_extensions::ragdoll::{Ragdoll, RagdollData};
     use crate::phys_shape::{Shape, SphereShape};
@@ -568,7 +569,7 @@ mod tests {
 
     fn ragdoll_world() -> (World, crate::phys_types::BodyId, Vec<ConstraintId>) {
         let mut world = World::new(crate::phys_world::WorldCinfo::new());
-        let shape = || Arc::new(SphereShape::new(Vector4::ZERO, 0.25)) as Arc<dyn Shape>;
+        let shape = || Arc::new(SphereShape::new(Vec4::ZERO, 0.25)) as Arc<dyn Shape>;
         let a = world.create_body(
             &BodyCinfo::new(shape())
                 .with_motion_type(MotionType::Dynamic)

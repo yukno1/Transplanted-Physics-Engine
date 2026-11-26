@@ -4,7 +4,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
-use crate::base_math::{DVec4, Matrix3, PreciseTransform, Quaternion, Transform, Vector4};
+use crate::base_math::{DVec4, Mat3Ext, Matrix3, PreciseTransform, Quaternion, Transform, Vector4};
+use glam::Quat;
 use crate::base_thread::{TaskExecutor, ThreadPool, WorkStealingPool};
 use crate::phys_body::{
     Body, BodyCinfo, BodyManager, Motion, MotionManager, inverse_inertia_diagonal_matrix,
@@ -720,9 +721,11 @@ impl World {
         Some(MassProperties {
             volume: 0.0,
             mass: body.mass,
-            center_of_mass: body.transform.translation,
-            inertia_tensor,
-            major_axis_space: Quaternion::IDENTITY,
+            // 过渡期边界：`MassProperties` 已迁移 glam（Phase 3 步骤 2），本
+            // 模块随 phys_world 迁移（步骤 5）时删除转换。
+            center_of_mass: crate::phys_shape::to_vec4(body.transform.translation),
+            inertia_tensor: crate::phys_shape::to_mat3(&inertia_tensor),
+            major_axis_space: Quat::IDENTITY,
         })
     }
 
@@ -746,14 +749,14 @@ impl World {
             return;
         }
         let old_position = motion.position;
-        let (inverse_world, _) = combined.inertia_tensor.inverse();
+        let (inverse_world, _) = combined.inertia_tensor.inverse_sdk();
         if let Some(motion) = self.motions.get_mut(motion_id) {
             motion.mass = combined.mass;
-            motion.position = combined.center_of_mass;
-            motion.set_inverse_inertia_world(inverse_world);
-            motion.linear_velocity += motion
-                .angular_velocity
-                .cross(combined.center_of_mass - old_position);
+            motion.position = crate::phys_shape::to_vector4(combined.center_of_mass);
+            motion.set_inverse_inertia_world(crate::phys_shape::to_matrix3(inverse_world));
+            motion.linear_velocity += motion.angular_velocity.cross(crate::phys_shape::to_vector4(
+                combined.center_of_mass - crate::phys_shape::to_vec4(old_position),
+            ));
         }
     }
 
@@ -3443,27 +3446,29 @@ mod tests {
         PrismaticPositionMotorCinfo, PrismaticSpringMotorCinfo,
     };
     use glam::Vec3A;
+    use glam::Vec4;
+    use crate::base_math::Vec4Ext;
     use std::f32::consts::FRAC_PI_2;
     use std::sync::{Arc, Mutex};
 
     fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
     }
 
-    fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+    fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
         Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
     }
 
     fn parallel_scene() -> World {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
         world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(1.0, 0.5, 0.0)));
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+            &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
                 .with_position(Vector4::from_xyz(-1.0, 0.5, 0.0)),
@@ -3596,7 +3601,7 @@ mod tests {
     fn falling_sphere_settles_on_static_ground() {
         let mut world = World::new(WorldCinfo::new());
         let ground = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let sphere =
@@ -4398,7 +4403,7 @@ mod tests {
     fn islands_split_bodies_on_a_shared_ground() {
         let mut world = World::new(WorldCinfo::new());
         let ground = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let left =
@@ -4432,17 +4437,17 @@ mod tests {
     fn contact_chain_forms_one_island() {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(4.0, 0.5, 4.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(4.0, 0.5, 4.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+            &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
                 .with_position(Vector4::from_xyz(0.0, 0.6, 0.0)),
         );
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+            &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(1.0)
                 .with_position(Vector4::from_xyz(0.0, 1.7, 0.0)),
@@ -4461,7 +4466,7 @@ mod tests {
     fn contact_cache_is_pruned_when_bodies_disappear() {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let sphere =
@@ -4485,7 +4490,7 @@ mod tests {
     fn warm_starting_can_be_disabled() {
         let mut world = World::new(WorldCinfo::new().with_warm_starting(false));
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)));
@@ -4761,7 +4766,7 @@ mod tests {
     fn quiet_island_falls_asleep_and_skips_narrow_phase() {
         let mut world = sleeping_world();
         let ground = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let ball =
@@ -4793,7 +4798,7 @@ mod tests {
     fn falling_body_wakes_a_sleeping_island() {
         let mut world = sleeping_world();
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let resting =
@@ -4858,7 +4863,7 @@ mod tests {
     fn setting_velocity_or_transform_wakes_the_body() {
         let mut world = sleeping_world();
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(3.0, 0.5, 3.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(3.0, 0.5, 3.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let ball =
@@ -4914,11 +4919,11 @@ mod tests {
     /// Returns `(chassis, [front, rear], [front_id, rear_id])`.
     fn wheeled_cart(world: &mut World) -> (BodyId, [BodyId; 2], [ConstraintId; 2]) {
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let chassis = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(1.0, 0.25, 0.5)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(1.0, 0.25, 0.5)))
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(2.0)
                 .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
@@ -5025,10 +5030,10 @@ mod tests {
 
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let trigger = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(1.0))).with_position(Vector4::ZERO),
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0))).with_position(Vector4::ZERO),
         );
         let other = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+            &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_position(Vector4::from_xyz(0.5, 0.0, 0.0)),
         );
         assert!(world.set_body_trigger(trigger, true));
@@ -5074,7 +5079,7 @@ mod tests {
     fn contact_modifier_drops_points_and_post_collide_reports_them() {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
@@ -5105,7 +5110,7 @@ mod tests {
     fn contact_modifier_edits_friction_seen_by_post_collide() {
         let mut world = World::new(WorldCinfo::new());
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         world.create_body(&dynamic_cinfo(0.5).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)));
@@ -5131,9 +5136,9 @@ mod tests {
         use crate::phys_world::events::TriggerStatus;
 
         let mut world = World::new(WorldCinfo::new().with_raise_trigger_updated_events(true));
-        let a = world.create_body(&BodyCinfo::new(box_shape(Vector4::splat(0.5))));
+        let a = world.create_body(&BodyCinfo::new(box_shape(Vec4::splat(0.5))));
         let b = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+            &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
                 .with_position(Vector4::from_xyz(8.0, 0.0, 0.0)),
         );
         let log = Arc::new(Mutex::new(Vec::new()));

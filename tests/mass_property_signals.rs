@@ -3,13 +3,13 @@
 use std::sync::{Arc, Mutex};
 
 use proton::body::BodyCinfo;
-use proton::math::Vector4;
+use proton::math::{Vector4, Vec4};
 use proton::np_types::MotionType;
 use proton::shape::{MassConfig, Shape, SphereShape};
 use proton::world::{MassChangeEvent, MassChangeReason, MotionMassUpdateMode, World, WorldCinfo};
 
 fn body(world: &mut World, radius: f32, position: Vector4) -> proton::np_types::BodyId {
-    let shape = Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)
@@ -32,7 +32,7 @@ fn s1_shape_replacement_fires_post_rebuild_event() {
     let events = recorder(&world);
     let old_mass = world.body(id).unwrap().mass;
 
-    let replacement = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+    let replacement = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
     assert!(world.set_body_shape(id, replacement));
     let emitted = events.lock().unwrap().clone();
     assert_eq!(emitted.len(), 1);
@@ -79,7 +79,7 @@ fn s4_shape_change_rebuilds_shared_motion() {
     assert!(world.attach_bodies_with_mode(target, &[child], MotionMassUpdateMode::Rebuild));
     let before = world.motion(motion).unwrap().mass;
 
-    let replacement = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+    let replacement = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
     assert!(world.set_body_shape(child, replacement));
     let after = world.motion(motion).unwrap().mass;
     assert!(after > before);

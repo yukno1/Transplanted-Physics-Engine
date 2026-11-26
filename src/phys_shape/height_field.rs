@@ -187,8 +187,19 @@ impl Shape for HeightFieldShape {
                 let p10 = self.vertex(x + 1, z);
                 let p01 = self.vertex(x, z + 1);
                 let p11 = self.vertex(x + 1, z + 1);
-                let first = TriangleShape::with_convex_radius(p00, p10, p11, 0.0);
-                let second = TriangleShape::with_convex_radius(p00, p11, p01, 0.0);
+                // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
+                let first = TriangleShape::with_convex_radius(
+                    crate::phys_shape::to_vec4(p00),
+                    crate::phys_shape::to_vec4(p10),
+                    crate::phys_shape::to_vec4(p11),
+                    0.0,
+                );
+                let second = TriangleShape::with_convex_radius(
+                    crate::phys_shape::to_vec4(p00),
+                    crate::phys_shape::to_vec4(p11),
+                    crate::phys_shape::to_vec4(p01),
+                    0.0,
+                );
                 properties.push(first.mass_properties(config)?);
                 properties.push(second.mass_properties(config)?);
             }

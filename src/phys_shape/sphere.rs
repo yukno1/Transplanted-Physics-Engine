@@ -2,23 +2,22 @@
 //!
 //! Port of `Collide/Shape/Convex/Sphere/hknpSphereShape.{h,inl}`. The C++ shape
 //! stores a `hkFloat3 m_center` and `hkReal m_radius`; here the center is a
-//! [`Vector4`] whose `w` is ignored (points carry `w = 0` in the port).
+//! [`glam::Vec4`] whose `w` is ignored (points carry `w = 0` in the port).
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Quaternion, Vector4};
+use glam::{Mat3, Quat, Vec4};
+
+use crate::base_math::Aabb;
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::phys_shape::mass::matrix_diagonal;
-use crate::phys_shape::{
-    MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction,
-};
+use crate::phys_shape::{MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction};
 
 /// Sphere (`hknpSphereShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SphereShape {
     /// Sphere center (local space).
-    pub center: Vector4,
+    pub center: Vec4,
     /// Sphere radius.
     pub radius: f32,
 }
@@ -30,7 +29,7 @@ impl SphereShape {
     ///
     /// Panics in debug builds if `radius` is negative or not finite.
     #[inline]
-    pub fn new(center: Vector4, radius: f32) -> Self {
+    pub fn new(center: Vec4, radius: f32) -> Self {
         debug_assert!(radius >= 0.0 && radius.is_finite(), "invalid sphere radius");
         Self { center, radius }
     }
@@ -50,13 +49,13 @@ impl Shape for SphereShape {
     }
 
     fn aabb(&self) -> Aabb {
-        Aabb::new(
-            Vector4::from_xyz(
+        Aabb::from_corners(
+            glam::Vec3A::new(
                 self.center.x - self.radius,
                 self.center.y - self.radius,
                 self.center.z - self.radius,
             ),
-            Vector4::from_xyz(
+            glam::Vec3A::new(
                 self.center.x + self.radius,
                 self.center.y + self.radius,
                 self.center.z + self.radius,
@@ -75,11 +74,11 @@ impl Shape for SphereShape {
     fn mass_properties(&self, config: MassConfig) -> Result<MassProperties, MassError> {
         let radius_squared = self.radius * self.radius;
         let volume = 4.0 / 3.0 * core::f32::consts::PI * radius_squared * self.radius;
-        let inertia = matrix_diagonal(Vector4::splat(0.4 * volume * radius_squared));
-        MassProperties::from_geometry(volume, self.center, inertia, Quaternion::IDENTITY, config)
+        let inertia = Mat3::from_diagonal(glam::Vec3::splat(0.4 * volume * radius_squared));
+        MassProperties::from_geometry(volume, self.center, inertia, Quat::IDENTITY, config)
     }
 
-    fn support(&self, direction: Vector4) -> Option<Vector4> {
+    fn support(&self, direction: Vec4) -> Option<Vec4> {
         match unit_direction(direction) {
             Some(unit) => Some(self.center + unit * self.radius),
             None => Some(self.center),
@@ -94,11 +93,12 @@ impl Shape for SphereShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base_math::Vec4Ext;
     use glam::Vec3A;
 
     #[test]
     fn unit_sphere_at_origin() {
-        let sphere = SphereShape::new(Vector4::ZERO, 1.0);
+        let sphere = SphereShape::new(Vec4::ZERO, 1.0);
         let aabb = sphere.aabb();
         assert_eq!(aabb.min, Vec3A::new(-1.0, -1.0, -1.0));
         assert_eq!(aabb.max, Vec3A::new(1.0, 1.0, 1.0));
@@ -108,10 +108,10 @@ mod tests {
 
     #[test]
     fn support_is_center_plus_radius() {
-        let sphere = SphereShape::new(Vector4::from_xyz(1.0, 2.0, 3.0), 2.5);
-        let support = sphere.support(Vector4::UNIT_X).unwrap();
-        assert_eq!(support, Vector4::from_xyz(3.5, 2.0, 3.0));
-        let support = sphere.support(Vector4::new(1.0, 1.0, 0.0, 0.0)).unwrap();
+        let sphere = SphereShape::new(Vec4::from_xyz(1.0, 2.0, 3.0), 2.5);
+        let support = sphere.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(3.5, 2.0, 3.0));
+        let support = sphere.support(Vec4::new(1.0, 1.0, 0.0, 0.0)).unwrap();
         let expected = 2.5 / (2.0f32).sqrt();
         assert!((support.x - (1.0 + expected)).abs() < 1e-5);
         assert!((support.y - (2.0 + expected)).abs() < 1e-5);
@@ -119,13 +119,13 @@ mod tests {
 
     #[test]
     fn zero_direction_returns_center() {
-        let sphere = SphereShape::new(Vector4::from_xyz(4.0, 0.0, 0.0), 1.0);
-        assert_eq!(sphere.support(Vector4::ZERO).unwrap(), sphere.center);
+        let sphere = SphereShape::new(Vec4::from_xyz(4.0, 0.0, 0.0), 1.0);
+        assert_eq!(sphere.support(Vec4::ZERO).unwrap(), sphere.center);
     }
 
     #[test]
     fn offset_sphere_aabb() {
-        let sphere = SphereShape::new(Vector4::from_xyz(10.0, -20.0, 30.0), 3.0);
+        let sphere = SphereShape::new(Vec4::from_xyz(10.0, -20.0, 30.0), 3.0);
         let aabb = sphere.aabb();
         assert!(aabb.min.abs_diff_eq(Vec3A::new(7.0, -23.0, 27.0), 0.0));
         assert!(aabb.max.abs_diff_eq(Vec3A::new(13.0, -17.0, 33.0), 0.0));

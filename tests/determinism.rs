@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Vector4};
+use proton::math::{Quaternion, Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::ThreadPool;
@@ -19,17 +19,17 @@ body 8000000000000002 p 3fc00000 3fddced6 00000000 q 00000000 00000000 3e190650 
 ";
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
-fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
 }
 
 fn build_scene() -> World {
     let mut world = World::new(WorldCinfo::new());
     world.create_body(
-        &BodyCinfo::new(box_shape(Vector4::from_xyz(4.0, 0.5, 4.0)))
+        &BodyCinfo::new(box_shape(Vec4::from_xyz(4.0, 0.5, 4.0)))
             .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
     );
     world.create_body(
@@ -39,7 +39,7 @@ fn build_scene() -> World {
             .with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
     );
     world.create_body(
-        &BodyCinfo::new(box_shape(Vector4::splat(0.5)))
+        &BodyCinfo::new(box_shape(Vec4::splat(0.5)))
             .with_motion_type(MotionType::Dynamic)
             .with_mass(1.0)
             .with_position(Vector4::from_xyz(1.5, 3.0, 0.0))

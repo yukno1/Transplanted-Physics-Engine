@@ -526,13 +526,15 @@ mod tests {
     use crate::phys_shape::{BoxShape, MeshShape, Shape, SphereShape};
     use crate::phys_types::MotionType;
     use crate::phys_world::WorldCinfo;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use std::sync::Arc;
 
     fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
     }
 
-    fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+    fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
         Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
     }
 
@@ -580,11 +582,11 @@ mod tests {
     fn raycast_breaks_ties_by_lower_body_id() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let first = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(1.0)))
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
         );
         let second = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(1.0)))
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_position(Vector4::from_xyz(0.0, 10.0, 0.0)),
         );
         // Two identical boxes share a pose: both produce the same hit fraction
@@ -600,7 +602,7 @@ mod tests {
     fn raycast_hits_rotated_body() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(1.0)))
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_orientation(Quaternion::from_axis_angle(
                     Vector4::UNIT_Z,
                     core::f32::consts::FRAC_PI_4,
@@ -789,7 +791,7 @@ mod tests {
     fn cast_shape_ignores_the_casting_body() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let ground = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
         );
         let caster = world.create_body(
@@ -809,7 +811,7 @@ mod tests {
     fn cast_shape_reports_start_penetration() {
         let mut world = World::new(WorldCinfo::new().with_gravity(Vector4::ZERO));
         let body = world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::splat(1.0)))
+            &BodyCinfo::new(box_shape(Vec4::splat(1.0)))
                 .with_position(Vector4::from_xyz(0.0, 0.0, 0.0)),
         );
         let query = sphere_shape(0.5);

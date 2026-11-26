@@ -32,6 +32,11 @@ pub trait QuatExt: Sized {
     /// trace algorithm + post normalization
     /// (legacy `Quaternion::from_matrix`, `quaternion.rs:219-260`).
     fn from_matrix_sdk(rotation: Mat3) -> Self;
+
+    /// `hkRotationf::set(hkQuaternionf)` — the rotation matrix built by
+    /// rotating the unit axes with the SDK `_setRotatedDir` formula
+    /// (legacy `Quaternion::to_matrix`, `quaternion.rs:260-268`).
+    fn to_matrix_sdk(self) -> Mat3;
 }
 
 /// Hamilton product with the SDK's expansion order (`setMul`).
@@ -127,6 +132,20 @@ impl QuatExt for Quat {
         // The C++ helper deliberately skips the 0.5/sqrt(t) scaling here and
         // normalizes afterwards.
         quat_normalize(q)
+    }
+
+    fn to_matrix_sdk(self) -> Mat3 {
+        let unit_x = Vec4::new(1.0, 0.0, 0.0, 0.0);
+        let unit_y = Vec4::new(0.0, 1.0, 0.0, 0.0);
+        let unit_z = Vec4::new(0.0, 0.0, 1.0, 0.0);
+        let x = self.rotate_sdk(unit_x);
+        let y = self.rotate_sdk(unit_y);
+        let z = self.rotate_sdk(unit_z);
+        Mat3::from_cols(
+            glam::Vec3::new(x.x, x.y, x.z),
+            glam::Vec3::new(y.x, y.y, y.z),
+            glam::Vec3::new(z.x, z.y, z.z),
+        )
     }
 }
 

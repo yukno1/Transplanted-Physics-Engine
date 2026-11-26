@@ -8,14 +8,14 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::{Ragdoll, RagdollData, RagdollError};
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape};
 use proton::world::{JointType, World, WorldCinfo};
 
 fn body(world: &mut World, x: f32, y: f32) -> BodyId {
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(0.2, 0.2, 0.2),
+        Vec4::from_xyz(0.2, 0.2, 0.2),
         0.0,
     )) as Arc<dyn Shape>;
     let id = world.create_body(

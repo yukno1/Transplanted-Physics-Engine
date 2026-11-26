@@ -173,9 +173,11 @@ impl Shape for CompoundShape {
 mod tests {
     use super::*;
     use crate::base_math::{Quaternion, Vector4};
+    use crate::base_math::Vec4Ext;
     use crate::phys_shape::{BoxShape, SphereShape};
     use core::f32::consts::FRAC_PI_2;
     use glam::Vec3A;
+    use glam::Vec4;
 
     #[test]
     fn empty_compound_is_empty() {
@@ -188,9 +190,9 @@ mod tests {
 
     #[test]
     fn aabb_is_union_of_transformed_children() {
-        let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let box_shape =
-            Arc::new(BoxShape::with_convex_radius(Vector4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+            Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
 
         let compound = CompoundShape::new(vec![
             ShapeInstance::new(Transform::IDENTITY, Arc::clone(&sphere)),
@@ -211,9 +213,9 @@ mod tests {
 
     #[test]
     fn volume_sums_children() {
-        let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let box_shape =
-            Arc::new(BoxShape::with_convex_radius(Vector4::splat(1.0), 0.0)) as Arc<dyn Shape>;
+            Arc::new(BoxShape::with_convex_radius(Vec4::splat(1.0), 0.0)) as Arc<dyn Shape>;
         let compound = CompoundShape::new(vec![
             ShapeInstance::new(Transform::IDENTITY, sphere),
             ShapeInstance::new(Transform::IDENTITY, box_shape),
@@ -239,7 +241,7 @@ mod tests {
     #[test]
     fn rotated_child_uses_world_aabb() {
         let box_shape = Arc::new(BoxShape::with_convex_radius(
-            Vector4::from_xyz(2.0, 1.0, 1.0),
+            Vec4::from_xyz(2.0, 1.0, 1.0),
             0.0,
         )) as Arc<dyn Shape>;
         let transform = Transform::from_quaternion(

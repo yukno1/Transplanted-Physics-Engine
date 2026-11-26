@@ -2,8 +2,8 @@
 //!
 //! The SDK separates geometry (volume, centre of mass, inertia tensor) from the
 //! mass configuration used to turn unit-density geometry into actual mass data.
-//! This module mirrors that split without introducing a linear-algebra crate:
-//! [`proton::math::Matrix3`] carries the full inertia tensor and
+//! This module mirrors that split: [`proton::math::Mat3`] (glam-backed, with
+//! SDK-order extension traits) carries the full inertia tensor and
 //! [`MassConfig`] carries either an explicit mass or a negative density.
 //!
 //! All tensors are expressed about the shape's centre of mass in shape-local
@@ -12,7 +12,8 @@
 //! [`diagonalize_symmetric`]; neither is claimed to be bit-identical to the
 //! SDK's float-bit packing without a real `.hkx` golden comparison.
 
-use crate::base_math::{Aabb, Matrix3, Quaternion, Transform, Vector4};
+use crate::base_math::{Aabb, Mat3Ext, QuatExt, Transform, Vec4Ext, quat_mul};
+use glam::{Mat3, Quat, Vec4};
 
 mod cache;
 mod compressed;
@@ -171,11 +172,11 @@ pub struct MassProperties {
     /// Resolved mass.
     pub mass: f32,
     /// Centre of mass in shape-local space.
-    pub center_of_mass: Vector4,
+    pub center_of_mass: Vec4,
     /// Full inertia tensor about [`MassProperties::center_of_mass`].
-    pub inertia_tensor: Matrix3,
+    pub inertia_tensor: Mat3,
     /// Principal-axis frame of the diagonalized SDK representation.
-    pub major_axis_space: Quaternion,
+    pub major_axis_space: Quat,
 }
 
 impl MassProperties {
@@ -185,18 +186,18 @@ impl MassProperties {
         Self {
             volume: 0.0,
             mass: 0.0,
-            center_of_mass: Vector4::ZERO,
-            inertia_tensor: Matrix3::ZERO,
-            major_axis_space: Quaternion::IDENTITY,
+            center_of_mass: Vec4::ZERO,
+            inertia_tensor: Mat3::ZERO,
+            major_axis_space: Quat::IDENTITY,
         }
     }
 
     /// Build from unit-density geometry and a mass config.
     pub fn from_geometry(
         volume: f32,
-        center_of_mass: Vector4,
-        unit_inertia: Matrix3,
-        major_axis_space: Quaternion,
+        center_of_mass: Vec4,
+        unit_inertia: Mat3,
+        major_axis_space: Quat,
         config: MassConfig,
     ) -> Result<Self, MassError> {
         config.validate()?;
@@ -219,7 +220,7 @@ impl MassProperties {
             volume,
             mass,
             center_of_mass,
-            inertia_tensor: matrix_scale(unit_inertia, inertia_scale),
+            inertia_tensor: unit_inertia * inertia_scale,
             major_axis_space,
         })
     }
@@ -231,9 +232,9 @@ impl MassProperties {
             return Err(MassError::InvalidConfig);
         }
         let inertia = if self.mass > 0.0 {
-            matrix_scale(self.inertia_tensor, mass / self.mass)
+            self.inertia_tensor * (mass / self.mass)
         } else {
-            Matrix3::ZERO
+            Mat3::ZERO
         };
         Ok(Self {
             mass,
@@ -244,16 +245,22 @@ impl MassProperties {
 
     /// Transform local properties by a rigid transform (`R I Rᵀ`).
     pub fn transformed(&self, transform: &Transform) -> Self {
-        let rotation = transform.rotation;
+        // 过渡期：`Transform` 仍为 legacy 类型（步骤 3 迁移），此处逐位转换。
+        let rotation = crate::phys_shape::to_mat3(&transform.rotation);
         let inertia = rotation
-            .mul_mat(&self.inertia_tensor)
-            .mul_mat(&rotation.transpose());
+            .mul_mat_sdk(self.inertia_tensor)
+            .mul_mat_sdk(rotation.transpose());
         Self {
             volume: self.volume,
             mass: self.mass,
-            center_of_mass: transform.transform_point(self.center_of_mass),
+            center_of_mass: crate::phys_shape::to_vec4(transform.transform_point(
+                crate::phys_shape::to_vector4(self.center_of_mass),
+            )),
             inertia_tensor: inertia,
-            major_axis_space: rotation.to_quaternion() * self.major_axis_space,
+            major_axis_space: quat_mul(
+                Quat::from_matrix_sdk(rotation),
+                self.major_axis_space,
+            ),
         }
     }
 
@@ -272,7 +279,7 @@ impl MassProperties {
             volume: self.volume + other.volume,
             mass: total_mass,
             center_of_mass,
-            inertia_tensor: matrix_add(&left, &right),
+            inertia_tensor: left + right,
             major_axis_space: self.major_axis_space,
         }
     }
@@ -290,14 +297,12 @@ impl MassProperties {
     }
 
     /// Inertia of this body about `point` in the same frame.
-    fn inertia_about(&self, point: Vector4) -> Matrix3 {
+    fn inertia_about(&self, point: Vec4) -> Mat3 {
         let offset = self.center_of_mass - point;
         let distance_squared = offset.dot3(offset);
-        let shift = matrix_sub(
-            &matrix_diagonal(Vector4::splat(distance_squared)),
-            &matrix_outer(offset, offset),
-        );
-        matrix_add(&self.inertia_tensor, &matrix_scale(shift, self.mass))
+        let shift = Mat3::from_diagonal(glam::Vec3::splat(distance_squared))
+            - crate::phys_shape::outer_product(offset, offset);
+        self.inertia_tensor + shift * self.mass
     }
 }
 
@@ -305,91 +310,55 @@ impl MassProperties {
 pub fn mass_from_aabb(aabb: &Aabb, config: MassConfig) -> Result<MassProperties, MassError> {
     let half = aabb.half_extents();
     let volume = 8.0 * half.x * half.y * half.z;
-    let unit_inertia = matrix_diagonal(Vector4::from_xyz(
+    let unit_inertia = Mat3::from_diagonal(glam::Vec3::new(
         volume / 3.0 * (half.y * half.y + half.z * half.z),
         volume / 3.0 * (half.x * half.x + half.z * half.z),
         volume / 3.0 * (half.x * half.x + half.y * half.y),
     ));
+    let center = aabb.center();
     MassProperties::from_geometry(
         volume,
-        Vector4::from_xyz(aabb.center().x, aabb.center().y, aabb.center().z),
+        Vec4::new(center.x, center.y, center.z, 0.0),
         unit_inertia,
-        Quaternion::IDENTITY,
+        Quat::IDENTITY,
         config,
     )
 }
 
-/// Build a diagonal matrix from a vector.
+/// Whether the first three components of a vector are finite (`w` is padding).
 #[inline]
-pub fn matrix_diagonal(value: Vector4) -> Matrix3 {
-    Matrix3::from_cols(
-        Vector4::from_xyz(value.x, 0.0, 0.0),
-        Vector4::from_xyz(0.0, value.y, 0.0),
-        Vector4::from_xyz(0.0, 0.0, value.z),
-    )
-}
-
-/// Outer product `a ⊗ b` as a column-major matrix.
-#[inline]
-pub fn matrix_outer(a: Vector4, b: Vector4) -> Matrix3 {
-    Matrix3::from_cols(a * b.x, a * b.y, a * b.z)
-}
-
-/// Component-wise matrix addition.
-#[inline]
-pub fn matrix_add(a: &Matrix3, b: &Matrix3) -> Matrix3 {
-    Matrix3::from_cols(a.col0 + b.col0, a.col1 + b.col1, a.col2 + b.col2)
-}
-
-/// Component-wise matrix subtraction.
-#[inline]
-pub fn matrix_sub(a: &Matrix3, b: &Matrix3) -> Matrix3 {
-    Matrix3::from_cols(a.col0 - b.col0, a.col1 - b.col1, a.col2 - b.col2)
-}
-
-/// Scale every component of a matrix.
-#[inline]
-pub fn matrix_scale(a: Matrix3, scale: f32) -> Matrix3 {
-    Matrix3::from_cols(a.col0 * scale, a.col1 * scale, a.col2 * scale)
-}
-
-/// Trace of a matrix.
-#[inline]
-pub fn matrix_trace(a: Matrix3) -> f32 {
-    a.element(0, 0) + a.element(1, 1) + a.element(2, 2)
-}
-
-/// Whether the first three components of a vector are finite.
-#[inline]
-pub fn vector3_is_finite(value: Vector4) -> bool {
+pub fn vector3_is_finite(value: Vec4) -> bool {
     value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }
 
 /// Whether every matrix component is finite.
 #[inline]
-pub fn matrix_is_finite(a: Matrix3) -> bool {
-    vector3_is_finite(a.col0) && vector3_is_finite(a.col1) && vector3_is_finite(a.col2)
+pub fn matrix_is_finite(a: Mat3) -> bool {
+    a.x_axis.is_finite() && a.y_axis.is_finite() && a.z_axis.is_finite()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::base_math::Mat3Ext;
     use core::f32::consts::PI;
 
     #[test]
     fn explicit_mass_scales_inertia() {
         let unit = MassProperties::from_geometry(
             8.0,
-            Vector4::ZERO,
-            matrix_diagonal(Vector4::from_xyz(8.0 / 3.0 * 4.0, 0.0, 0.0)),
-            Quaternion::IDENTITY,
+            Vec4::ZERO,
+            Mat3::from_diagonal(glam::Vec3::new(8.0 / 3.0 * 4.0, 0.0, 0.0)),
+            Quat::IDENTITY,
             MassConfig::from_mass(2.0),
         )
         .unwrap();
         let scaled = unit.with_mass(6.0).unwrap();
         assert_eq!(scaled.mass, 6.0);
         assert!(
-            (scaled.inertia_tensor.element(0, 0) / unit.inertia_tensor.element(0, 0) - 3.0).abs()
+            (scaled.inertia_tensor.element_sdk(0, 0) / unit.inertia_tensor.element_sdk(0, 0)
+                - 3.0)
+                .abs()
                 < 1e-6
         );
     }
@@ -399,38 +368,38 @@ mod tests {
         let volume = 4.0 / 3.0 * PI;
         let properties = MassProperties::from_geometry(
             volume,
-            Vector4::ZERO,
-            matrix_diagonal(Vector4::splat(0.4 * volume)),
-            Quaternion::IDENTITY,
+            Vec4::ZERO,
+            Mat3::from_diagonal(glam::Vec3::splat(0.4 * volume)),
+            Quat::IDENTITY,
             MassConfig::from_density(2.0),
         )
         .unwrap();
         assert!((properties.mass - 2.0 * volume).abs() < 1e-5);
-        assert!((properties.inertia_tensor.element(0, 0) - 0.8 * volume).abs() < 1e-5);
+        assert!((properties.inertia_tensor.element_sdk(0, 0) - 0.8 * volume).abs() < 1e-5);
     }
 
     #[test]
     fn combine_uses_parallel_axis_theorem() {
         let left = MassProperties::from_geometry(
             1.0,
-            Vector4::from_xyz(-1.0, 0.0, 0.0),
-            Matrix3::ZERO,
-            Quaternion::IDENTITY,
+            Vec4::new(-1.0, 0.0, 0.0, 0.0),
+            Mat3::ZERO,
+            Quat::IDENTITY,
             MassConfig::from_mass(1.0),
         )
         .unwrap();
         let right = MassProperties::from_geometry(
             1.0,
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Matrix3::ZERO,
-            Quaternion::IDENTITY,
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Mat3::ZERO,
+            Quat::IDENTITY,
             MassConfig::from_mass(1.0),
         )
         .unwrap();
         let combined = left.combined(&right);
         assert_eq!(combined.mass, 2.0);
-        assert_eq!(combined.center_of_mass, Vector4::ZERO);
-        assert_eq!(combined.inertia_tensor.element(1, 1), 2.0);
-        assert_eq!(combined.inertia_tensor.element(0, 0), 0.0);
+        assert_eq!(combined.center_of_mass, Vec4::ZERO);
+        assert_eq!(combined.inertia_tensor.element_sdk(1, 1), 2.0);
+        assert_eq!(combined.inertia_tensor.element_sdk(0, 0), 0.0);
     }
 }

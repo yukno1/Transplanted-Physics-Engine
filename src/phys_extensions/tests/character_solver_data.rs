@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{
     CharacterProxyManager, CharacterRigidBody, CharacterRigidBodyCinfo, CharacterRigidBodyListener,
@@ -19,7 +21,7 @@ const DT: f32 = 1.0 / 60.0;
 fn world_with_ground() -> World {
     let mut world = World::new(WorldCinfo::new());
     let ground = StdArc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(10.0, 0.5, 10.0),
+        G4::from_xyz(10.0, 0.5, 10.0),
         0.0,
     )) as StdArc<dyn Shape>;
     world.create_body(
@@ -31,7 +33,7 @@ fn world_with_ground() -> World {
 }
 
 fn character_cinfo() -> CharacterRigidBodyCinfo {
-    let shape = StdArc::new(SphereShape::new(V4::ZERO, 0.5)) as StdArc<dyn Shape>;
+    let shape = StdArc::new(SphereShape::new(G4::ZERO, 0.5)) as StdArc<dyn Shape>;
     CharacterRigidBodyCinfo::new(shape).with_position(V4::from_xyz(0.0, 0.45, 0.0))
 }
 

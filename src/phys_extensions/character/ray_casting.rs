@@ -374,9 +374,11 @@ mod tests {
     use crate::phys_shape::{BoxShape, Shape, SphereShape};
     use crate::phys_types::MotionType;
     use crate::phys_world::WorldCinfo;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use std::sync::Arc;
 
-    fn box_shape(half: Vector4) -> Arc<dyn Shape> {
+    fn box_shape(half: Vec4) -> Arc<dyn Shape> {
         Arc::new(BoxShape::with_convex_radius(half, 0.0)) as Arc<dyn Shape>
     }
 
@@ -384,11 +386,11 @@ mod tests {
         let mut world =
             World::new(WorldCinfo::new().with_gravity(Vector4::from_xyz(0.0, -9.81, 0.0)));
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
                 .with_position(Vector4::from_xyz(0.0, height - 0.5, 0.0)),
         );
         let character = world.create_body(
-            &BodyCinfo::new(Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>)
+            &BodyCinfo::new(Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>)
                 .with_motion_type(MotionType::Dynamic)
                 .with_mass(75.0)
                 .with_position(Vector4::from_xyz(0.0, height + 0.5, 0.0)),
@@ -412,7 +414,7 @@ mod tests {
     fn step_up_reports_positive_displacement_when_inputs_agree() {
         let (mut world, body) = scene(0.0);
         world.create_body(
-            &BodyCinfo::new(box_shape(Vector4::from_xyz(1.0, 0.2, 1.0)))
+            &BodyCinfo::new(box_shape(Vec4::from_xyz(1.0, 0.2, 1.0)))
                 .with_position(Vector4::from_xyz(2.0, -0.2, 0.0)),
         );
         let info = RayCastingCharacterCinfo::new(Vector4::UNIT_X, 1.0, 1.0, 0.5, 1.0, 0.5);

@@ -33,14 +33,19 @@ pub fn world_inverse_inertia_from_mass_properties(
     properties: &MassProperties,
     transform: &Transform,
 ) -> Matrix3 {
+    use crate::base_math::Mat3Ext;
+    use crate::phys_shape::{to_mat3, to_matrix3};
+
     if properties.mass <= 0.0 {
         return Matrix3::ZERO;
     }
-    let (inverse_local, _) = properties.inertia_tensor.inverse();
-    let rotation = transform.rotation;
-    rotation
-        .mul_mat(&inverse_local)
-        .mul_mat(&rotation.transpose())
+    let (inverse_local, _) = properties.inertia_tensor.inverse_sdk();
+    let rotation = to_mat3(&transform.rotation);
+    to_matrix3(
+        rotation
+            .mul_mat_sdk(inverse_local)
+            .mul_mat_sdk(rotation.transpose()),
+    )
 }
 
 /// Motion state of a body (`hknpMotion`).

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use proton::body::BodyCinfo;
 use proton::extensions::vehicle::{DriverInput, VehicleInstance, VehicleSetup, WheelSetup};
 use proton::extensions::world_hash::hash_world;
-use proton::math::Vector4;
+use proton::math::{Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape};
 use proton::world::{World, WorldCinfo};
@@ -20,7 +20,7 @@ fn ground_plane(world: &mut World) {
     // Static ground with its top surface at y = 0.
     world.create_body(
         &BodyCinfo::new(Arc::new(BoxShape::with_convex_radius(
-            Vector4::from_xyz(50.0, 0.5, 50.0),
+            Vec4::from_xyz(50.0, 0.5, 50.0),
             0.0,
         )) as Arc<dyn Shape>)
         .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
@@ -33,7 +33,7 @@ fn raycast_vehicle(world: &mut World) -> (BodyId, VehicleInstance) {
     ground_plane(world);
     let chassis = world.create_body(
         &BodyCinfo::new(Arc::new(BoxShape::with_convex_radius(
-            Vector4::from_xyz(0.5, 0.25, 1.2),
+            Vec4::from_xyz(0.5, 0.25, 1.2),
             0.0,
         )) as Arc<dyn Shape>)
         .with_motion_type(MotionType::Dynamic)

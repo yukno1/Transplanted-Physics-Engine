@@ -9,6 +9,8 @@
 use std::sync::Arc;
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_extensions::{
     CharacterContext, CharacterInput, CharacterOutput, CharacterProxy, CharacterProxyCinfo,
     CharacterStateManager, CharacterStateType, SupportedState, SurfaceInfo,
@@ -25,7 +27,7 @@ const UP: V4 = V4::from_xyz(0.0, 1.0, 0.0);
 fn ground_world() -> World {
     let mut world = World::new(WorldCinfo::new());
     let ground = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(20.0, 0.5, 20.0),
+        G4::from_xyz(20.0, 0.5, 20.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
@@ -36,8 +38,8 @@ fn ground_world() -> World {
 
 fn capsule_proxy(position: V4) -> CharacterProxy {
     let shape = Arc::new(CapsuleShape::new(
-        V4::from_xyz(0.0, -0.6, 0.0),
-        V4::from_xyz(0.0, 0.6, 0.0),
+        G4::from_xyz(0.0, -0.6, 0.0),
+        G4::from_xyz(0.0, 0.6, 0.0),
         0.4,
     )) as Arc<dyn Shape>;
     let mut proxy = CharacterProxy::new(
@@ -85,7 +87,7 @@ fn step_frame(
 fn walking_into_a_wall_stops_the_character() {
     let mut world = ground_world();
     let wall = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(0.5, 2.0, 3.0),
+        G4::from_xyz(0.5, 2.0, 3.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
@@ -177,7 +179,7 @@ fn jump_reaches_in_air_and_lands_back_on_ground() {
 fn walking_character_pushes_dynamic_box() {
     let mut world = ground_world();
     let box_shape = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(0.5, 0.5, 0.5),
+        G4::from_xyz(0.5, 0.5, 0.5),
         0.0,
     )) as Arc<dyn Shape>;
     let box_id = world.create_body(
@@ -211,7 +213,7 @@ fn character_loop_is_deterministic() {
     let run = || {
         let mut world = ground_world();
         let wall = Arc::new(BoxShape::with_convex_radius(
-            V4::from_xyz(0.5, 2.0, 3.0),
+            G4::from_xyz(0.5, 2.0, 3.0),
             0.0,
         )) as Arc<dyn Shape>;
         world.create_body(
@@ -244,7 +246,7 @@ fn steep_slope_touches_manifold_and_classifies_support() {
     // A 60° slope: normal has vertical component cos(60°) = 0.5.
     let ramp_angle = 60.0f32.to_radians();
     let ramp = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(4.0, 0.25, 4.0),
+        G4::from_xyz(4.0, 0.25, 4.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(

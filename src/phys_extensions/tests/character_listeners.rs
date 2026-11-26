@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_extensions::{
     CharacterContact as Contact, CharacterProxy, CharacterProxyCinfo, CharacterProxyListener,
     CharacterProxyState, SurfaceInfo, TriggerEvent, TriggerStatus,
@@ -74,8 +76,8 @@ fn recorder(name: &'static str, log: &Log) -> Box<dyn CharacterProxyListener> {
 
 fn proxy_at(position: V4) -> CharacterProxy {
     let shape = Arc::new(CapsuleShape::new(
-        V4::from_xyz(0.0, -0.6, 0.0),
-        V4::from_xyz(0.0, 0.6, 0.0),
+        G4::from_xyz(0.0, -0.6, 0.0),
+        G4::from_xyz(0.0, 0.6, 0.0),
         0.4,
     )) as Arc<dyn Shape>;
     CharacterProxy::new(
@@ -89,7 +91,7 @@ fn proxy_at(position: V4) -> CharacterProxy {
 fn world_with_ground() -> (World, BodyId) {
     let mut world = World::new(WorldCinfo::new());
     let ground = Arc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(20.0, 0.5, 20.0),
+        G4::from_xyz(20.0, 0.5, 20.0),
         0.0,
     )) as Arc<dyn Shape>;
     let id = world.create_body(

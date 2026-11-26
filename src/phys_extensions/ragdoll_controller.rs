@@ -766,6 +766,7 @@ impl RagdollController {
 mod tests {
     use super::*;
     use crate::base_math::{Quaternion, Transform, Vector4};
+    use glam::Vec4;
     use crate::phys_body::BodyCinfo;
     use crate::phys_extensions::ragdoll::{RagdollData, RagdollLimits};
     use crate::phys_shape::{Shape, SphereShape};
@@ -774,7 +775,7 @@ mod tests {
     use std::sync::Arc;
 
     fn sphere() -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>
     }
 
     fn two_bone_world() -> (World, Ragdoll, BodyId, BodyId) {

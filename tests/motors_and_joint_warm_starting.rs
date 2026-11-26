@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
@@ -16,7 +16,7 @@ use proton::world::{
 };
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
 fn dynamic_sphere(radius: f32, position: Vector4) -> BodyCinfo {

@@ -315,8 +315,13 @@ fn cast_mesh(
                         mesh.vertices()[triangle[1] as usize],
                         mesh.vertices()[triangle[2] as usize],
                     ];
-                    let leaf =
-                        TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
+                    // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
+                    let leaf = TriangleShape::with_convex_radius(
+                        crate::phys_shape::to_vec4(points[0]),
+                        crate::phys_shape::to_vec4(points[1]),
+                        crate::phys_shape::to_vec4(points[2]),
+                        0.0,
+                    );
                     let key = leaf_key::new(leaf_key::MESH, triangle_index);
                     let Some(hit) = cast_convex(
                         query_shape,
@@ -387,7 +392,13 @@ fn cast_height_field(
             let p01 = heightfield.vertex(x, z + 1);
             let p11 = heightfield.vertex(x + 1, z + 1);
             for (points, sub) in [([p00, p10, p11], 0usize), ([p00, p11, p01], 1usize)] {
-                let leaf = TriangleShape::with_convex_radius(points[0], points[1], points[2], 0.0);
+                // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
+                let leaf = TriangleShape::with_convex_radius(
+                    crate::phys_shape::to_vec4(points[0]),
+                    crate::phys_shape::to_vec4(points[1]),
+                    crate::phys_shape::to_vec4(points[2]),
+                    0.0,
+                );
                 let key = leaf_key::height_field(z, x, sub);
                 let Some(hit) = cast_convex(
                     query_shape,
@@ -474,14 +485,16 @@ fn compose_transform(parent: &Transform, child: &Transform) -> Transform {
 mod tests {
     use super::*;
     use crate::base_math::Quaternion;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use crate::phys_shape::{BoxShape, SphereShape};
     use std::sync::Arc;
 
     fn sphere(radius: f32) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
     }
 
-    fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+    fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
         Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
     }
 
@@ -490,7 +503,7 @@ mod tests {
         let query = sphere(0.5);
         let start =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
-        let ground = box_shape(Vector4::from_xyz(5.0, 0.5, 5.0));
+        let ground = box_shape(Vec4::from_xyz(5.0, 0.5, 5.0));
         let ground_transform =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, -0.5, 0.0));
         let hit = shape_cast(
@@ -526,7 +539,7 @@ mod tests {
         let query = sphere(0.5);
         let start =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
-        let ground = box_shape(Vector4::from_xyz(5.0, 0.5, 5.0));
+        let ground = box_shape(Vec4::from_xyz(5.0, 0.5, 5.0));
         let ground_transform =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, -0.5, 0.0));
         assert!(
@@ -567,7 +580,7 @@ mod tests {
         let query = sphere(0.5);
         let start =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
-        let wall = box_shape(Vector4::from_xyz(0.5, 5.0, 5.0));
+        let wall = box_shape(Vec4::from_xyz(0.5, 5.0, 5.0));
         let wall_transform =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(3.0, 0.0, 0.0));
         assert!(
@@ -588,8 +601,8 @@ mod tests {
     fn capsule_cast_hits_mesh_triangle() {
         // A downward capsule above a single flat triangle at y = 0.
         let query = Arc::new(crate::phys_shape::CapsuleShape::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.5,
         )) as Arc<dyn Shape>;
         let mesh = Arc::new(MeshShape::new(
@@ -757,7 +770,7 @@ mod tests {
     #[test]
     fn casts_are_deterministic() {
         let query = sphere(0.5);
-        let ground = box_shape(Vector4::from_xyz(5.0, 0.5, 5.0));
+        let ground = box_shape(Vec4::from_xyz(5.0, 0.5, 5.0));
         let start =
             Transform::from_quaternion(Quaternion::IDENTITY, Vector4::from_xyz(0.0, 5.0, 0.0));
         let ground_transform =

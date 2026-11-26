@@ -1335,14 +1335,16 @@ impl CharacterProxy {
 mod tests {
     use super::*;
     use crate::base_math::Vector4 as V4;
+    use crate::base_math::Vec4Ext;
     use crate::phys_shape::{BoxShape, SphereShape};
     use crate::phys_world::WorldCinfo;
+    use glam::Vec4 as G4;
     use std::sync::Arc;
 
     fn ground_world() -> (World, crate::phys_types::BodyId) {
         let mut world = World::new(WorldCinfo::new());
         let ground = Arc::new(BoxShape::with_convex_radius(
-            V4::from_xyz(10.0, 0.5, 10.0),
+            G4::from_xyz(10.0, 0.5, 10.0),
             0.0,
         )) as Arc<dyn Shape>;
         let id = world.create_body(
@@ -1353,8 +1355,8 @@ mod tests {
 
     fn capsule_proxy(position: V4) -> CharacterProxy {
         let shape = Arc::new(crate::phys_shape::CapsuleShape::new(
-            V4::from_xyz(0.0, -0.6, 0.0),
-            V4::from_xyz(0.0, 0.6, 0.0),
+            G4::from_xyz(0.0, -0.6, 0.0),
+            G4::from_xyz(0.0, 0.6, 0.0),
             0.4,
         )) as Arc<dyn Shape>;
         let mut proxy = CharacterProxy::new(&CharacterProxyCinfo::new(shape));
@@ -1411,7 +1413,7 @@ mod tests {
     fn integrate_into_wall_stops() {
         let (mut world, _ground) = ground_world();
         let wall = Arc::new(BoxShape::with_convex_radius(
-            V4::from_xyz(0.5, 2.0, 2.0),
+            G4::from_xyz(0.5, 2.0, 2.0),
             0.0,
         )) as Arc<dyn Shape>;
         world.create_body(
@@ -1440,7 +1442,7 @@ mod tests {
         // -x); max slope 30° (cos ≈ 0.866).
         let ramp_angle = 60.0f32.to_radians();
         let ramp = Arc::new(BoxShape::with_convex_radius(
-            V4::from_xyz(2.0, 0.25, 2.0),
+            G4::from_xyz(2.0, 0.25, 2.0),
             0.0,
         )) as Arc<dyn Shape>;
         world.create_body(
@@ -1471,7 +1473,7 @@ mod tests {
     fn resolve_contacts_pushes_dynamic_body() {
         let (mut world, _ground) = ground_world();
         let box_shape = Arc::new(BoxShape::with_convex_radius(
-            V4::from_xyz(0.5, 0.5, 0.5),
+            G4::from_xyz(0.5, 0.5, 0.5),
             0.0,
         )) as Arc<dyn Shape>;
         let box_id = world.create_body(
@@ -1514,7 +1516,7 @@ mod tests {
 
     #[test]
     fn cinfo_defaults_match_sdk() {
-        let shape = Arc::new(SphereShape::new(V4::ZERO, 0.5)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(G4::ZERO, 0.5)) as Arc<dyn Shape>;
         let info = CharacterProxyCinfo::new(shape);
         assert_eq!(info.dynamic_friction, 1.0);
         assert_eq!(info.static_friction, 0.0);

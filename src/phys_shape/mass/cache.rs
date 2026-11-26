@@ -159,7 +159,7 @@ mod tests {
     #[test]
     fn cache_computes_once_and_invalidates_explicitly() {
         let shape =
-            Arc::new(SphereShape::new(crate::base_math::Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+            Arc::new(SphereShape::new(crate::base_math::Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let mut cache = ShapeMassCache::new();
         assert!(cache.is_empty());
         let first = cache
@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn mass_tree_compresses_full_groups_deterministically() {
         let sphere =
-            Arc::new(SphereShape::new(crate::base_math::Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+            Arc::new(SphereShape::new(crate::base_math::Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
         let properties = sphere
             .mass_properties(MassConfig::from_density(1.0))
             .unwrap();
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn mass_tree_caches_32_child_words_deterministically() {
         let sphere =
-            Arc::new(SphereShape::new(crate::base_math::Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+            Arc::new(SphereShape::new(crate::base_math::Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
         let properties = sphere
             .mass_properties(MassConfig::from_density(1.0))
             .unwrap();

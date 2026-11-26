@@ -43,12 +43,16 @@ pub struct MassSummary {
 impl MassSummary {
     /// Summarize optional full mass properties.
     pub fn from_properties(properties: Option<&MassProperties>) -> Option<Self> {
+        use crate::phys_shape::{to_quaternion, to_vector4};
+
         properties.map(|properties| Self {
             mass: properties.mass,
             volume: properties.volume,
-            center_of_mass: properties.center_of_mass,
+            // 过渡期边界：`MassProperties` 已迁移 glam（Phase 3 步骤 2），
+            // `MassSummary` 仍为 legacy（步骤 5 迁移时删除转换）。
+            center_of_mass: to_vector4(properties.center_of_mass),
             inverse_inertia_world: Matrix3::ZERO,
-            major_axis_space: properties.major_axis_space,
+            major_axis_space: to_quaternion(properties.major_axis_space),
         })
     }
 }

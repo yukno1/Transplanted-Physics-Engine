@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, MassConfig, MassDistribution, Shape};
 use proton::world::{World, WorldCinfo};
@@ -12,7 +12,7 @@ use proton::world::{World, WorldCinfo};
 fn d1_world_exposes_body_mass_distribution() {
     let mut world = World::new(WorldCinfo::new());
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(1.0, 1.0, 1.0),
+        Vec4::from_xyz(1.0, 1.0, 1.0),
         0.0,
     )) as Arc<dyn Shape>;
     let body = world.create_body(
@@ -31,7 +31,7 @@ fn d1_world_exposes_body_mass_distribution() {
 #[test]
 fn d2_distribution_from_shapes_matches_world_helper() {
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(0.5, 0.5, 0.5),
+        Vec4::from_xyz(0.5, 0.5, 0.5),
         0.0,
     )) as Arc<dyn Shape>;
     let shapes = [

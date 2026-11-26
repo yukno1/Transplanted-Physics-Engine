@@ -9,22 +9,23 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Matrix3, Vector4};
+use glam::{Mat3, Quat, Vec4};
+
+use crate::base_math::{Aabb, QuatExt, Vec4Ext};
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::phys_shape::mass::{matrix_add, matrix_outer, matrix_scale};
 use crate::phys_shape::{
     DEFAULT_CONVEX_RADIUS, MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius,
-    unit_direction,
+    outer_product, unit_direction,
 };
 
 /// Finite cylinder (`hknpCylinderShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CylinderShape {
     /// Axis endpoint A.
-    pub point_a: Vector4,
+    pub point_a: Vec4,
     /// Axis endpoint B.
-    pub point_b: Vector4,
+    pub point_b: Vec4,
     /// Cylinder radius.
     pub radius: f32,
     /// Number of sides used to tessellate the cylinder (`numSides`, default 16).
@@ -36,7 +37,7 @@ pub struct CylinderShape {
 impl CylinderShape {
     /// Construct with the SDK defaults (`numSides = 16`, default convex radius).
     #[inline]
-    pub fn new(point_a: Vector4, point_b: Vector4, radius: f32) -> Self {
+    pub fn new(point_a: Vec4, point_b: Vec4, radius: f32) -> Self {
         Self::with_params(point_a, point_b, radius, 16, DEFAULT_CONVEX_RADIUS)
     }
 
@@ -48,8 +49,8 @@ impl CylinderShape {
     /// three sides.
     #[inline]
     pub fn with_params(
-        point_a: Vector4,
-        point_b: Vector4,
+        point_a: Vec4,
+        point_b: Vec4,
         radius: f32,
         num_sides: u32,
         convex_radius: f32,
@@ -70,7 +71,9 @@ impl CylinderShape {
     /// Segment length (cylinder height).
     #[inline]
     pub fn height(&self) -> f32 {
-        (self.point_b - self.point_a).length3()
+        // Legacy `length3`: xyz-only length with the fixed scalar order.
+        let segment = self.point_b - self.point_a;
+        segment.dot3(segment).sqrt()
     }
 
     /// Cross-sectional area of the tessellated polygon.
@@ -97,15 +100,15 @@ impl Shape for CylinderShape {
     fn aabb(&self) -> Aabb {
         let radius = self.radius + self.convex_radius;
         let segment = self.point_b - self.point_a;
-        let length = segment.length3();
+        let length = segment.dot3(segment).sqrt();
         if length == 0.0 {
-            return Aabb::new(
-                Vector4::from_xyz(
+            return Aabb::from_corners(
+                glam::Vec3A::new(
                     self.point_a.x - radius,
                     self.point_a.y - radius,
                     self.point_a.z - radius,
                 ),
-                Vector4::from_xyz(
+                glam::Vec3A::new(
                     self.point_a.x + radius,
                     self.point_a.y + radius,
                     self.point_a.z + radius,
@@ -119,18 +122,18 @@ impl Shape for CylinderShape {
         // Exact support extent of the finite cylinder along each world axis:
         // h*|axis_i| + r*sqrt(1 - axis_i^2) (plus the convex radius).
         let radial = |axis_component: f32| (1.0 - axis_component * axis_component).max(0.0).sqrt();
-        let extent = Vector4::from_xyz(
+        let extent = Vec4::from_xyz(
             half_height * axis.x.abs() + radius * radial(axis.x),
             half_height * axis.y.abs() + radius * radial(axis.y),
             half_height * axis.z.abs() + radius * radial(axis.z),
         );
-        Aabb::new(
-            Vector4::from_xyz(
+        Aabb::from_corners(
+            glam::Vec3A::new(
                 center.x - extent.x,
                 center.y - extent.y,
                 center.z - extent.z,
             ),
-            Vector4::from_xyz(
+            glam::Vec3A::new(
                 center.x + extent.x,
                 center.y + extent.y,
                 center.z + extent.z,
@@ -153,22 +156,23 @@ impl Shape for CylinderShape {
         let axial = 0.5 * volume * radius_squared;
         let perpendicular = volume * (3.0 * radius_squared + height * height) / 12.0;
 
-        let axis = unit_direction(self.point_b - self.point_a).unwrap_or(Vector4::UNIT_X);
+        let axis = unit_direction(self.point_b - self.point_a)
+            .unwrap_or_else(|| Vec4::new(1.0, 0.0, 0.0, 0.0));
         let reference = if axis.x.abs() < 0.9 {
-            Vector4::UNIT_X
+            Vec4::new(1.0, 0.0, 0.0, 0.0)
         } else {
-            Vector4::UNIT_Y
+            Vec4::new(0.0, 1.0, 0.0, 0.0)
         };
-        let perpendicular_a = axis.cross(reference).normalized3();
-        let perpendicular_b = axis.cross(perpendicular_a).normalized3();
-        let major_axis_space =
-            Matrix3::from_cols(perpendicular_a, perpendicular_b, axis).to_quaternion();
+        let perpendicular_a = axis.cross3(reference).normalize_or_zero3();
+        let perpendicular_b = axis.cross3(perpendicular_a).normalize_or_zero3();
+        let major_axis_space = Quat::from_matrix_sdk(Mat3::from_cols(
+            glam::Vec3::new(perpendicular_a.x, perpendicular_a.y, perpendicular_a.z),
+            glam::Vec3::new(perpendicular_b.x, perpendicular_b.y, perpendicular_b.z),
+            glam::Vec3::new(axis.x, axis.y, axis.z),
+        ));
 
-        let axial_outer = matrix_outer(axis, axis);
-        let unit_inertia = matrix_add(
-            &matrix_scale(Matrix3::IDENTITY, perpendicular),
-            &matrix_scale(axial_outer, axial - perpendicular),
-        );
+        let axial_outer = outer_product(axis, axis);
+        let unit_inertia = Mat3::IDENTITY * perpendicular + axial_outer * (axial - perpendicular);
         MassProperties::from_geometry(
             volume,
             (self.point_a + self.point_b) * 0.5,
@@ -178,19 +182,21 @@ impl Shape for CylinderShape {
         )
     }
 
-    fn support(&self, direction: Vector4) -> Option<Vector4> {
-        let segment = self.point_b - self.point_a;
-        let length = segment.length3();
+    fn support(&self, direction: Vec4) -> Option<Vec4> {
+        let a = self.point_a;
+        let b = self.point_b;
+        let segment = b - a;
+        let length = segment.dot3(segment).sqrt();
         if length == 0.0 {
             // Degenerate cylinder: behave like a sphere at point A.
             return Some(match unit_direction(direction) {
-                Some(unit) => self.point_a + unit * self.radius,
-                None => self.point_a,
+                Some(unit) => a + unit * self.radius,
+                None => a,
             });
         }
 
         let axis = segment / length;
-        let center = (self.point_a + self.point_b) * 0.5;
+        let center = (a + b) * 0.5;
         let half_height = length * 0.5;
         let axial = axis
             * (half_height
@@ -201,18 +207,18 @@ impl Shape for CylinderShape {
                 });
 
         let radial_projection = direction - axis * direction.dot3(axis);
-        let radial_length = radial_projection.length3();
+        let radial_length = radial_projection.dot3(radial_projection).sqrt();
         let radial = if radial_length > 1e-6 {
             radial_projection / radial_length * self.radius
         } else {
             // Direction is parallel to the axis: any rim point works. Pick a
             // stable perpendicular.
             let reference = if axis.x.abs() < 0.9 {
-                Vector4::UNIT_X
+                Vec4::new(1.0, 0.0, 0.0, 0.0)
             } else {
-                Vector4::UNIT_Y
+                Vec4::new(0.0, 1.0, 0.0, 0.0)
             };
-            let perpendicular = axis.cross(reference).normalized3();
+            let perpendicular = axis.cross3(reference).normalize_or_zero3();
             perpendicular * self.radius
         };
 
@@ -235,8 +241,8 @@ mod tests {
 
     fn y_cylinder(radius: f32, half_height: f32) -> CylinderShape {
         CylinderShape::with_params(
-            Vector4::from_xyz(0.0, -half_height, 0.0),
-            Vector4::from_xyz(0.0, half_height, 0.0),
+            Vec4::from_xyz(0.0, -half_height, 0.0),
+            Vec4::from_xyz(0.0, half_height, 0.0),
             radius,
             16,
             0.0,
@@ -257,14 +263,14 @@ mod tests {
     #[test]
     fn radial_support() {
         let cylinder = y_cylinder(1.0, 2.0);
-        let support = cylinder.support(Vector4::UNIT_X).unwrap();
-        assert_eq!(support, Vector4::from_xyz(1.0, 2.0, 0.0));
+        let support = cylinder.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(1.0, 2.0, 0.0));
 
-        let support = cylinder.support(Vector4::UNIT_Z).unwrap();
-        assert_eq!(support, Vector4::from_xyz(0.0, 2.0, 1.0));
+        let support = cylinder.support(Vec4::new(0.0, 0.0, 1.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(0.0, 2.0, 1.0));
 
         // Downward radial direction selects the lower cap.
-        let support = cylinder.support(Vector4::from_xyz(0.0, 0.0, -1.0)).unwrap();
+        let support = cylinder.support(Vec4::from_xyz(0.0, 0.0, -1.0)).unwrap();
         assert_eq!(support.z, -1.0);
         // The axial component is unconstrained for a purely radial direction;
         // the port keeps the +axis convention (dot == 0).
@@ -274,7 +280,7 @@ mod tests {
     #[test]
     fn axial_support_uses_finite_cap() {
         let cylinder = y_cylinder(1.0, 2.0);
-        let support = cylinder.support(Vector4::UNIT_Y).unwrap();
+        let support = cylinder.support(Vec4::new(0.0, 1.0, 0.0, 0.0)).unwrap();
         assert!((support.x * support.x + support.z * support.z - 1.0).abs() < 1e-5);
         assert_eq!(support.y, 2.0);
     }
@@ -282,21 +288,21 @@ mod tests {
     #[test]
     fn convex_radius_adds_to_support() {
         let cylinder = CylinderShape::with_params(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             1.0,
             16,
             0.5,
         );
-        let support = cylinder.support(Vector4::UNIT_X).unwrap();
-        assert_eq!(support, Vector4::from_xyz(1.5, 1.0, 0.0));
+        let support = cylinder.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(1.5, 1.0, 0.0));
     }
 
     #[test]
     fn degenerate_cylinder_is_a_sphere() {
-        let cylinder = CylinderShape::with_params(Vector4::ZERO, Vector4::ZERO, 2.0, 16, 0.0);
-        let support = cylinder.support(Vector4::UNIT_X).unwrap();
-        assert_eq!(support, Vector4::from_xyz(2.0, 0.0, 0.0));
+        let cylinder = CylinderShape::with_params(Vec4::ZERO, Vec4::ZERO, 2.0, 16, 0.0);
+        let support = cylinder.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap();
+        assert_eq!(support, Vec4::from_xyz(2.0, 0.0, 0.0));
         assert_eq!(cylinder.height(), 0.0);
         assert_eq!(cylinder.volume().unwrap(), 0.0);
     }

@@ -7,21 +7,21 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::collide::{GroupCollisionFilter, PairCollisionFilter};
-use proton::math::{Matrix3, Transform, Vector4};
+use proton::math::{Matrix3, Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{QueryFilter, World, WorldCinfo};
 
-fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
 }
 
 fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
 fn ground(layer: u32) -> BodyCinfo {
-    BodyCinfo::new(box_shape(Vector4::from_xyz(10.0, 0.5, 10.0)))
+    BodyCinfo::new(box_shape(Vec4::from_xyz(10.0, 0.5, 10.0)))
         .with_position(Vector4::from_xyz(0.0, -0.5, 0.0))
         .with_collision_filter_info(GroupCollisionFilter::calc_filter_info(layer))
 }

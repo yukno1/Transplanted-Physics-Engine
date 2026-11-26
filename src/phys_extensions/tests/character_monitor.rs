@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_extensions::{
     CharacterMonitorEvent, CharacterMonitorPhase, CharacterProxy, CharacterProxyCinfo,
@@ -19,8 +21,8 @@ const DT: f32 = 1.0 / 60.0;
 
 fn proxy() -> CharacterProxy {
     let shape = StdArc::new(CapsuleShape::new(
-        V4::from_xyz(0.0, -0.6, 0.0),
-        V4::from_xyz(0.0, 0.6, 0.0),
+        G4::from_xyz(0.0, -0.6, 0.0),
+        G4::from_xyz(0.0, 0.6, 0.0),
         0.4,
     )) as StdArc<dyn Shape>;
     CharacterProxy::new(&CharacterProxyCinfo::new(shape).with_position(V4::ZERO))
@@ -102,7 +104,7 @@ fn managed_proxy_emits_post_solve_without_duplicating_spans() {
 fn rigid_body_reports_all_monitor_phases() {
     let mut world = World::new(WorldCinfo::new());
     let ground = StdArc::new(BoxShape::with_convex_radius(
-        V4::from_xyz(10.0, 0.5, 10.0),
+        G4::from_xyz(10.0, 0.5, 10.0),
         0.0,
     )) as StdArc<dyn Shape>;
     world.create_body(
@@ -111,7 +113,7 @@ fn rigid_body_reports_all_monitor_phases() {
             .with_position(V4::from_xyz(0.0, -0.5, 0.0)),
     );
     let manager = CharacterProxyManager::new();
-    let shape = StdArc::new(SphereShape::new(V4::ZERO, 0.5)) as StdArc<dyn Shape>;
+    let shape = StdArc::new(SphereShape::new(G4::ZERO, 0.5)) as StdArc<dyn Shape>;
     let cinfo = CharacterRigidBodyCinfo::new(shape).with_position(V4::from_xyz(0.0, 0.45, 0.0));
     let character = CharacterRigidBody::new(&mut world, &cinfo);
     let id = manager.add_rigid_body(character);

@@ -2,7 +2,8 @@
 
 use std::sync::Arc;
 
-use proton::math::{Matrix3, Quaternion, Vector4};
+use glam::Vec3;
+use proton::math::{Mat3, Quaternion, Quat, Vec4, Vec4Ext, Vector4};
 use proton::shape::{
     CompoundShape, CompressedMassProperties, MassConfig, MassError, MassProperties, MassQuality,
     Shape, ShapeInstance, SphereShape,
@@ -11,13 +12,13 @@ use proton::shape::{
 fn sample_properties() -> MassProperties {
     MassProperties::from_geometry(
         8.0,
-        Vector4::from_xyz(0.5, -0.25, 0.125),
-        Matrix3::from_cols(
-            Vector4::from_xyz(8.0, 0.5, 0.0),
-            Vector4::from_xyz(0.5, 4.0, 0.0),
-            Vector4::from_xyz(0.0, 0.0, 2.0),
+        Vec4::from_xyz(0.5, -0.25, 0.125),
+        Mat3::from_cols(
+            Vec3::new(8.0, 0.5, 0.0),
+            Vec3::new(0.5, 4.0, 0.0),
+            Vec3::new(0.0, 0.0, 2.0),
         ),
-        Quaternion::IDENTITY,
+        Quat::IDENTITY,
         MassConfig::from_density(1.5),
     )
     .unwrap()
@@ -37,7 +38,7 @@ fn c1_compressed_round_trip_is_bounded_and_deterministic() {
 #[test]
 fn c2_invalid_geometry_is_rejected() {
     let mut invalid = sample_properties();
-    invalid.center_of_mass = Vector4::from_xyz(f32::NAN, 0.0, 0.0);
+    invalid.center_of_mass = Vec4::from_xyz(f32::NAN, 0.0, 0.0);
     assert_eq!(
         CompressedMassProperties::pack(&invalid),
         Err(MassError::InvalidGeometry)
@@ -46,7 +47,7 @@ fn c2_invalid_geometry_is_rejected() {
 
 #[test]
 fn c3_high_quality_compound_is_deterministic() {
-    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.25)) as Arc<dyn Shape>;
+    let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.25)) as Arc<dyn Shape>;
     let children = (0..6)
         .map(|index| {
             ShapeInstance::new(

@@ -179,7 +179,9 @@ fn raycast_sphere(
 ) -> Option<RayHit> {
     let local_origin = transform.inverse_transform_point(origin);
     let local_direction = transform.rotation.rotate_inverse(direction);
-    let offset = local_origin - sphere.center;
+    // 过渡期边界：`SphereShape` 字段已迁移 glam（Phase 3 步骤 2）。
+    let center = crate::phys_shape::to_vector4(sphere.center);
+    let offset = local_origin - center;
     let b = offset.dot3(local_direction);
     let c = offset.dot3(offset) - sphere.radius * sphere.radius;
     let discriminant = b * b - c;
@@ -193,7 +195,7 @@ fn raycast_sphere(
         return None;
     }
     let local_point = local_origin + local_direction * near;
-    let local_normal = (local_point - sphere.center).normalized3();
+    let local_normal = (local_point - center).normalized3();
     Some(RayHit {
         hit_fraction: near,
         position: transform.transform_point(local_point),
@@ -216,7 +218,8 @@ fn raycast_box(
     let local_origin = transform.inverse_transform_point(origin);
     let local_direction = transform.rotation.rotate_inverse(direction);
     let radius = box_shape.convex_radius.max(0.0);
-    let half = box_shape.half_extents + Vector4::splat(radius);
+    let half =
+        crate::phys_shape::to_vector4(box_shape.half_extents) + Vector4::splat(radius);
     let mut entry = f32::NEG_INFINITY;
     let mut exit = f32::INFINITY;
     let mut axis = 0;
@@ -290,7 +293,14 @@ fn raycast_convex_hull_faces(
         ) else {
             continue;
         };
-        let Some((fraction, normal)) = ray_triangle(local_origin, local_direction, a, b, c) else {
+        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
+        let Some((fraction, normal)) = ray_triangle(
+            local_origin,
+            local_direction,
+            crate::phys_shape::to_vector4(a),
+            crate::phys_shape::to_vector4(b),
+            crate::phys_shape::to_vector4(c),
+        ) else {
             continue;
         };
         if fraction > max_length {
@@ -392,14 +402,17 @@ fn refine_convex_normal(shape: &dyn Shape, local_point: Vector4) -> Option<Vecto
 }
 
 fn capsule_normal(capsule: &CapsuleShape, point: Vector4) -> Option<Vector4> {
-    let segment = capsule.point_b - capsule.point_a;
+    // 过渡期边界：`CapsuleShape` 字段已迁移 glam（Phase 3 步骤 2）。
+    let point_a = crate::phys_shape::to_vector4(capsule.point_a);
+    let point_b = crate::phys_shape::to_vector4(capsule.point_b);
+    let segment = point_b - point_a;
     let length_sq = segment.length_squared3();
     let t = if length_sq <= f32::EPSILON {
         0.0
     } else {
-        ((point - capsule.point_a).dot3(segment) / length_sq).clamp(0.0, 1.0)
+        ((point - point_a).dot3(segment) / length_sq).clamp(0.0, 1.0)
     };
-    let closest = capsule.point_a + segment * t;
+    let closest = point_a + segment * t;
     let normal = point - closest;
     if normal.length_squared3() <= 1e-12 {
         None
@@ -409,11 +422,14 @@ fn capsule_normal(capsule: &CapsuleShape, point: Vector4) -> Option<Vector4> {
 }
 
 fn cylinder_normal(cylinder: &CylinderShape, point: Vector4) -> Option<Vector4> {
-    let segment = cylinder.point_b - cylinder.point_a;
+    // 过渡期边界：`CylinderShape` 字段已迁移 glam（Phase 3 步骤 2）。
+    let point_a = crate::phys_shape::to_vector4(cylinder.point_a);
+    let point_b = crate::phys_shape::to_vector4(cylinder.point_b);
+    let segment = point_b - point_a;
     let length_sq = segment.length_squared3();
-    let center = (cylinder.point_a + cylinder.point_b) * 0.5;
+    let center = (point_a + point_b) * 0.5;
     if length_sq <= f32::EPSILON {
-        let normal = point - cylinder.point_a;
+        let normal = point - point_a;
         return if normal.length_squared3() <= 1e-12 {
             None
         } else {
@@ -456,7 +472,13 @@ fn hull_rounded_normal(hull: &ConvexHullShape, point: Vector4) -> Option<Vector4
         ) else {
             continue;
         };
-        let closest = closest_point_on_triangle(point, a, b, c);
+        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
+        let closest = closest_point_on_triangle(
+            point,
+            crate::phys_shape::to_vector4(a),
+            crate::phys_shape::to_vector4(b),
+            crate::phys_shape::to_vector4(c),
+        );
         let distance_sq = (point - closest).length_squared3();
         if best.is_none_or(|(current, _)| distance_sq < current) {
             best = Some((distance_sq, closest));
@@ -577,7 +599,13 @@ fn hull_face_key_at_local_point(hull: &ConvexHullShape, local_point: Vector4) ->
         ) else {
             continue;
         };
-        let closest = closest_point_on_triangle(local_point, a, b, c);
+        // 过渡期边界：`ConvexHullShape` 顶点已迁移 glam（Phase 3 步骤 2）。
+        let closest = closest_point_on_triangle(
+            local_point,
+            crate::phys_shape::to_vector4(a),
+            crate::phys_shape::to_vector4(b),
+            crate::phys_shape::to_vector4(c),
+        );
         let distance_sq = (local_point - closest).length_squared3();
         if best.is_none_or(|(current, _)| distance_sq < current) {
             best = Some((distance_sq, index as u32));
@@ -990,8 +1018,8 @@ impl Shape for PointShape {
         Some(0.0)
     }
 
-    fn support(&self, _direction: Vector4) -> Option<Vector4> {
-        Some(self.0)
+    fn support(&self, _direction: glam::Vec4) -> Option<glam::Vec4> {
+        Some(crate::phys_shape::to_vec4(self.0))
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1003,15 +1031,19 @@ impl Shape for PointShape {
 mod tests {
     use super::*;
     use crate::base_math::Quaternion;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use crate::phys_shape::{BoxShape, CapsuleShape, ConvexHullShape, CylinderShape, SphereShape};
     use std::sync::Arc;
 
     fn sphere(radius: f32, center: Vector4) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(center, radius)) as Arc<dyn Shape>
+        // 过渡期边界：构造已迁移 glam（Phase 3 步骤 2），测试输入保持 legacy。
+        Arc::new(SphereShape::new(crate::phys_shape::to_vec4(center), radius))
+            as Arc<dyn Shape>
     }
 
     fn box_shape(half: f32) -> Arc<dyn Shape> {
-        Arc::new(BoxShape::with_convex_radius(Vector4::splat(half), 0.0)) as Arc<dyn Shape>
+        Arc::new(BoxShape::with_convex_radius(Vec4::splat(half), 0.0)) as Arc<dyn Shape>
     }
 
     #[test]
@@ -1104,8 +1136,8 @@ mod tests {
     #[test]
     fn ray_hits_capsule() {
         let shape: Arc<dyn Shape> = Arc::new(CapsuleShape::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 2.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 2.0, 0.0),
             0.5,
         ));
         let hit = raycast(
@@ -1126,8 +1158,8 @@ mod tests {
     #[test]
     fn capsule_side_normal_is_radial() {
         let shape: Arc<dyn Shape> = Arc::new(CapsuleShape::new(
-            Vector4::from_xyz(0.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 2.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 2.0, 0.0),
             0.5,
         ));
         let hit = raycast(
@@ -1148,8 +1180,8 @@ mod tests {
     #[test]
     fn cylinder_side_normal_is_radial() {
         let shape: Arc<dyn Shape> = Arc::new(CylinderShape::with_params(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             1.0,
             16,
             0.0,
@@ -1172,14 +1204,14 @@ mod tests {
     #[test]
     fn rounded_hull_face_normal_is_analytic() {
         let points = vec![
-            Vector4::from_xyz(-1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, 1.0, -1.0),
-            Vector4::from_xyz(-1.0, 1.0, -1.0),
-            Vector4::from_xyz(-1.0, -1.0, 1.0),
-            Vector4::from_xyz(1.0, -1.0, 1.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
-            Vector4::from_xyz(-1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, 1.0, -1.0),
+            Vec4::from_xyz(-1.0, 1.0, -1.0),
+            Vec4::from_xyz(-1.0, -1.0, 1.0),
+            Vec4::from_xyz(1.0, -1.0, 1.0),
+            Vec4::from_xyz(1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, 1.0, 1.0),
         ];
         let shape: Arc<dyn Shape> = Arc::new(ConvexHullShape::from_points(points, 0.2));
         let hit = raycast(
@@ -1201,12 +1233,12 @@ mod tests {
     fn ray_hits_convex_hull() {
         // Octahedron around the origin.
         let vertices = vec![
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Vector4::from_xyz(-1.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 0.0, 1.0),
-            Vector4::from_xyz(0.0, 0.0, -1.0),
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(-1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 1.0),
+            Vec4::from_xyz(0.0, 0.0, -1.0),
         ];
         let shape: Arc<dyn Shape> = Arc::new(ConvexHullShape::new(vertices, Vec::new(), 0.0));
         let hit = raycast(
@@ -1227,14 +1259,14 @@ mod tests {
     #[test]
     fn hull_face_raycast_returns_exact_normal_and_face_key() {
         let vertices = vec![
-            Vector4::from_xyz(-1.0, 1.0, -1.0),
-            Vector4::from_xyz(1.0, 1.0, -1.0),
-            Vector4::from_xyz(1.0, 1.0, 1.0),
-            Vector4::from_xyz(-1.0, 1.0, 1.0),
-            Vector4::from_xyz(-1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, -1.0, -1.0),
-            Vector4::from_xyz(1.0, -1.0, 1.0),
-            Vector4::from_xyz(-1.0, -1.0, 1.0),
+            Vec4::from_xyz(-1.0, 1.0, -1.0),
+            Vec4::from_xyz(1.0, 1.0, -1.0),
+            Vec4::from_xyz(1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, 1.0, 1.0),
+            Vec4::from_xyz(-1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, -1.0, -1.0),
+            Vec4::from_xyz(1.0, -1.0, 1.0),
+            Vec4::from_xyz(-1.0, -1.0, 1.0),
         ];
         let faces = vec![[0, 1, 2], [0, 2, 3]];
         let shape = ConvexHullShape::new(vertices, faces, 0.0);
@@ -1472,11 +1504,16 @@ mod tests {
     #[test]
     fn leaf_key_resolver_covers_hull_mesh_height_field_and_compound() {
         let hull = ConvexHullShape::new(
-            vec![Vector4::ZERO, Vector4::UNIT_X, Vector4::UNIT_Y],
+            vec![
+                Vec4::ZERO,
+                Vec4::new(1.0, 0.0, 0.0, 0.0),
+                Vec4::new(0.0, 1.0, 0.0, 0.0),
+            ],
             vec![[0, 1, 2]],
             0.0,
         );
-        let face_center = (Vector4::ZERO + Vector4::UNIT_X + Vector4::UNIT_Y) * (1.0 / 3.0);
+        let face_center =
+            (Vector4::ZERO + Vector4::UNIT_X + Vector4::UNIT_Y) * (1.0 / 3.0);
         assert_eq!(
             leaf_key_at_local_point(&hull, face_center),
             leaf_key::new(leaf_key::CONVEX_HULL_FACE, 0)

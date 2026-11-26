@@ -100,8 +100,9 @@ fn sphere_sphere(
     transform_b: &Transform,
     tolerance: f32,
 ) -> Option<Manifold> {
-    let center_a = transform_a.transform_point(sphere_a.center);
-    let center_b = transform_b.transform_point(sphere_b.center);
+    // 过渡期边界：`SphereShape` 字段已迁移 glam（Phase 3 步骤 2）。
+    let center_a = transform_a.transform_point(crate::phys_shape::to_vector4(sphere_a.center));
+    let center_b = transform_b.transform_point(crate::phys_shape::to_vector4(sphere_b.center));
     let delta = center_a - center_b;
     let center_distance = delta.length3();
     let normal = if center_distance > 1e-8 {
@@ -159,15 +160,17 @@ fn support_estimate(
 mod tests {
     use super::*;
     use crate::base_math::Quaternion;
+    use crate::base_math::Vec4Ext;
+    use glam::Vec4;
     use crate::phys_shape::{BoxShape, CapsuleShape};
     use std::sync::Arc;
 
     fn sphere(radius: f32) -> Arc<dyn Shape> {
-        Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+        Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
     }
 
     fn box_shape(half: f32) -> Arc<dyn Shape> {
-        Arc::new(BoxShape::with_convex_radius(Vector4::splat(half), 0.0)) as Arc<dyn Shape>
+        Arc::new(BoxShape::with_convex_radius(Vec4::splat(half), 0.0)) as Arc<dyn Shape>
     }
 
     fn translation(x: f32, y: f32, z: f32) -> Transform {
@@ -267,13 +270,13 @@ mod tests {
     #[test]
     fn capsules_collide() {
         let a = Arc::new(CapsuleShape::new(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.5,
         )) as Arc<dyn Shape>;
         let b = Arc::new(CapsuleShape::new(
-            Vector4::from_xyz(0.0, -1.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::from_xyz(0.0, -1.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.5,
         )) as Arc<dyn Shape>;
         let manifold = collide(

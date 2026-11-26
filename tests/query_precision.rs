@@ -4,7 +4,7 @@ use proton::body::BodyCinfo;
 use proton::collide::query::leaf_key;
 use proton::collide::raycast;
 use proton::extensions::{WorldTriggerEvent, hash_world};
-use proton::math::{Transform, Vector4};
+use proton::math::{Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{MotionType, ShapeKey};
 use proton::shape::{
     CapsuleShape, CompoundShape, ConvexHullShape, CylinderShape, HeightFieldShape, MeshShape,
@@ -24,24 +24,24 @@ fn quad_mesh() -> Arc<dyn Shape> {
     )) as Arc<dyn Shape>
 }
 
-fn cube_points() -> Vec<Vector4> {
+fn cube_points() -> Vec<Vec4> {
     vec![
-        Vector4::from_xyz(-1.0, -1.0, -1.0),
-        Vector4::from_xyz(1.0, -1.0, -1.0),
-        Vector4::from_xyz(1.0, 1.0, -1.0),
-        Vector4::from_xyz(-1.0, 1.0, -1.0),
-        Vector4::from_xyz(-1.0, -1.0, 1.0),
-        Vector4::from_xyz(1.0, -1.0, 1.0),
-        Vector4::from_xyz(1.0, 1.0, 1.0),
-        Vector4::from_xyz(-1.0, 1.0, 1.0),
+        Vec4::from_xyz(-1.0, -1.0, -1.0),
+        Vec4::from_xyz(1.0, -1.0, -1.0),
+        Vec4::from_xyz(1.0, 1.0, -1.0),
+        Vec4::from_xyz(-1.0, 1.0, -1.0),
+        Vec4::from_xyz(-1.0, -1.0, 1.0),
+        Vec4::from_xyz(1.0, -1.0, 1.0),
+        Vec4::from_xyz(1.0, 1.0, 1.0),
+        Vec4::from_xyz(-1.0, 1.0, 1.0),
     ]
 }
 
 #[test]
 fn analytic_normals_are_exposed_through_the_facade() {
     let capsule: Arc<dyn Shape> = Arc::new(CapsuleShape::new(
-        Vector4::from_xyz(0.0, 0.0, 0.0),
-        Vector4::from_xyz(0.0, 2.0, 0.0),
+        Vec4::from_xyz(0.0, 0.0, 0.0),
+        Vec4::from_xyz(0.0, 2.0, 0.0),
         0.5,
     ));
     let hit = raycast(
@@ -55,8 +55,8 @@ fn analytic_normals_are_exposed_through_the_facade() {
     assert!(hit.normal.all_equal3(Vector4::UNIT_X, 1e-2));
 
     let cylinder: Arc<dyn Shape> = Arc::new(CylinderShape::with_params(
-        Vector4::from_xyz(0.0, -1.0, 0.0),
-        Vector4::from_xyz(0.0, 1.0, 0.0),
+        Vec4::from_xyz(0.0, -1.0, 0.0),
+        Vec4::from_xyz(0.0, 1.0, 0.0),
         1.0,
         16,
         0.0,
@@ -90,7 +90,7 @@ fn trigger_world_with(
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::ZERO);
     let trigger = world.create_body(
-        &BodyCinfo::new(Arc::new(SphereShape::new(Vector4::ZERO, 0.3)) as Arc<dyn Shape>)
+        &BodyCinfo::new(Arc::new(SphereShape::new(Vec4::ZERO, 0.3)) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Static)
             .with_position(trigger_position),
     );
@@ -131,14 +131,14 @@ fn world_trigger_emits_compound_child_leaf_key() {
     let compound: Arc<dyn Shape> = Arc::new(CompoundShape::new(vec![
         ShapeInstance::new(
             Transform::IDENTITY,
-            Arc::new(SphereShape::new(Vector4::ZERO, 1.0)),
+            Arc::new(SphereShape::new(Vec4::ZERO, 1.0)),
         ),
         ShapeInstance::new(
             Transform::from_quaternion(
                 proton::math::Quaternion::IDENTITY,
                 Vector4::from_xyz(5.0, 0.0, 0.0),
             ),
-            Arc::new(SphereShape::new(Vector4::ZERO, 1.0)),
+            Arc::new(SphereShape::new(Vec4::ZERO, 1.0)),
         ),
     ]));
     let (_, events) = trigger_world_with(compound, Vector4::from_xyz(0.9, 0.0, 0.0));

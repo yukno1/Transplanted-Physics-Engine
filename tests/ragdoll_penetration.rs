@@ -11,14 +11,14 @@ use proton::extensions::{
     RagdollController, RagdollControllerCinfo, RagdollData, RagdollState,
     detect_and_resolve_penetration, detect_penetration,
 };
-use proton::math::{Transform, Vector4};
+use proton::math::{Transform, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, CollisionFlags, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
 
 fn ground(world: &mut World) {
     let shape = Arc::new(BoxShape::with_convex_radius(
-        Vector4::from_xyz(2.0, 0.5, 2.0),
+        Vec4::from_xyz(2.0, 0.5, 2.0),
         0.0,
     )) as Arc<dyn Shape>;
     world.create_body(
@@ -29,7 +29,7 @@ fn ground(world: &mut World) {
 }
 
 fn dynamic_sphere(world: &mut World, position: Vector4) -> BodyId {
-    let shape = Arc::new(SphereShape::new(Vector4::ZERO, 0.25)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.25)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)

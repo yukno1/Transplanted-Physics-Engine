@@ -3,6 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use crate::base_math::Vec4Ext;
+use glam::Vec4 as G4;
 use crate::phys_extensions::{
     CharacterProxy, CharacterProxyCinfo, CharacterProxyListener, CharacterProxyManager,
     CharacterProxyState,
@@ -15,8 +17,8 @@ const DT: f32 = 1.0 / 60.0;
 
 fn proxy() -> CharacterProxy {
     let shape = StdArc::new(CapsuleShape::new(
-        V4::from_xyz(0.0, -0.6, 0.0),
-        V4::from_xyz(0.0, 0.6, 0.0),
+        G4::from_xyz(0.0, -0.6, 0.0),
+        G4::from_xyz(0.0, 0.6, 0.0),
         0.4,
     )) as StdArc<dyn Shape>;
     CharacterProxy::new(&CharacterProxyCinfo::new(shape).with_position(V4::ZERO))

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::hash_world;
-use proton::math::{DVec4, Vector4};
+use proton::math::{DVec4, Mat3Ext, Vec4, Vec4Ext, Vector4};
 use proton::np_types::MotionType;
 use proton::shape::{BoxShape, CompressedMassProperties, MassConfig, MassPropertiesTree, Shape};
 use proton::world::{World, WorldCinfo};
@@ -10,7 +10,7 @@ use proton::world::{World, WorldCinfo};
 fn simple_world() -> (World, proton::np_types::BodyId) {
     let mut world = World::new(WorldCinfo::new());
     world.set_gravity(Vector4::from_xyz(0.0, -9.81, 0.0));
-    let shape = BoxShape::with_convex_radius(Vector4::from_xyz(0.5, 0.5, 0.5), 0.0);
+    let shape = BoxShape::with_convex_radius(Vec4::from_xyz(0.5, 0.5, 0.5), 0.0);
     let body = world.create_body(
         &BodyCinfo::new(Arc::new(shape) as Arc<dyn Shape>)
             .with_motion_type(MotionType::Dynamic)
@@ -50,7 +50,7 @@ fn zero_origin_shift_does_not_change_simulation_hash() {
 
 #[test]
 fn sdk_mass_bytes_and_32_child_word_cache_are_deterministic() {
-    let shape = BoxShape::with_convex_radius(Vector4::from_xyz(1.0, 1.0, 1.0), 0.0);
+    let shape = BoxShape::with_convex_radius(Vec4::from_xyz(1.0, 1.0, 1.0), 0.0);
     let properties = shape
         .mass_properties(MassConfig::from_density(1.0))
         .unwrap();
@@ -78,5 +78,5 @@ fn world_applies_mass_distribution_with_explicit_mass() {
     assert!(world.set_body_mass_distribution(body, distribution, 4.0));
     let properties = world.body_mass_properties(body).unwrap();
     assert!((properties.mass - 4.0).abs() < 1e-6);
-    assert!(properties.inertia_tensor.element(0, 0) > 0.0);
+    assert!(properties.inertia_tensor.element_sdk(0, 0) > 0.0);
 }

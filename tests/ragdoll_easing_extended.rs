@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::extensions::{EaseConstraintsAction, LimitSnapshot, Ragdoll, RagdollData};
-use proton::math::{Quaternion, Transform, Vector4};
+use proton::math::{Quaternion, Transform, Vector4, Vec4};
 use proton::np_types::{BodyId, ConstraintId, MotionType};
 use proton::shape::{Shape, SphereShape};
 use proton::world::{
@@ -12,7 +12,7 @@ use proton::world::{
 };
 
 fn body(world: &mut World, position: Vector4) -> BodyId {
-    let shape = Arc::new(SphereShape::new(Vector4::ZERO, 0.2)) as Arc<dyn Shape>;
+    let shape = Arc::new(SphereShape::new(Vec4::ZERO, 0.2)) as Arc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)

@@ -52,18 +52,19 @@
 //! use proton::body::BodyCinfo;
 //! use proton::extensions::vehicle::{DriverInput, VehicleInstance, VehicleSetup, WheelSetup};
 //! use proton::math::Vector4;
+//! use proton::math::{Vec4, Vec4Ext};
 //! use proton::np_types::MotionType;
 //! use proton::shape::{BoxShape, Shape};
 //! use proton::world::{World, WorldCinfo};
 //!
 //! let mut world = World::new(WorldCinfo::new());
-//! let ground = BoxShape::with_convex_radius(Vector4::from_xyz(20.0, 0.5, 20.0), 0.0);
+//! let ground = BoxShape::with_convex_radius(Vec4::from_xyz(20.0, 0.5, 20.0), 0.0);
 //! world.create_body(
 //!     &BodyCinfo::new(Arc::new(ground) as Arc<dyn Shape>)
 //!         .with_position(Vector4::from_xyz(0.0, -0.5, 0.0)),
 //! );
 //!
-//! let chassis_shape = BoxShape::new(Vector4::from_xyz(0.5, 0.25, 1.0));
+//! let chassis_shape = BoxShape::new(Vec4::from_xyz(0.5, 0.25, 1.0));
 //! let chassis = world.create_body(
 //!     &BodyCinfo::new(Arc::new(chassis_shape) as Arc<dyn Shape>)
 //!         .with_motion_type(MotionType::Dynamic)

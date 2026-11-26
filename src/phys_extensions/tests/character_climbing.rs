@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use crate::base_math::Vector4 as V4;
+use glam::Vec4 as G4;
 use crate::phys_extensions::{
     CharacterContext, CharacterInput, CharacterOutput, CharacterStateManager, CharacterStateType,
     SupportedState, SurfaceInfo, TriggerEvent, TriggerStatus, TriggerTracker,
@@ -95,7 +96,7 @@ fn c3_leaving_ladder_returns_to_air() {
 #[test]
 fn t1_tracker_reports_enter_exit_and_clear() {
     let mut world = World::new(WorldCinfo::new());
-    let shape = || Arc::new(BoxShape::with_convex_radius(V4::splat(0.5), 0.0)) as Arc<dyn Shape>;
+    let shape = || Arc::new(BoxShape::with_convex_radius(G4::splat(0.5), 0.0)) as Arc<dyn Shape>;
     let first = world.create_body(
         &crate::phys_body::BodyCinfo::new(shape())
             .with_motion_type(MotionType::Static)

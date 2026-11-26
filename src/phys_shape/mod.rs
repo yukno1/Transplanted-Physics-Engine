@@ -52,7 +52,9 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Transform, Vector4};
+use glam::{Mat3, Quat, Vec4};
+
+use crate::base_math::{Aabb, Matrix3, Quaternion, Transform, Vector4, Vec4Ext};
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
 pub mod box_shape;
@@ -147,7 +149,7 @@ pub trait Shape: Send + Sync + core::fmt::Debug {
     }
 
     /// Local support point in `direction` (convex shapes only).
-    fn support(&self, direction: Vector4) -> Option<Vector4> {
+    fn support(&self, direction: Vec4) -> Option<Vec4> {
         let _ = direction;
         None
     }
@@ -206,14 +208,17 @@ pub(crate) fn aabb_bounding_radius(aabb: &Aabb) -> f32 {
     (x * x + y * y + z * z).sqrt()
 }
 
-/// Unit direction, or `None` for a zero direction.
-pub(crate) fn unit_direction(direction: Vector4) -> Option<Vector4> {
-    let length = direction.length3();
+/// Unit direction, or `None` for a zero direction (`hkVector4f::normalize<3>`
+/// with an explicit zero-length check; same scalar order as legacy
+/// `unit_direction`, `mod.rs:210-221`).
+pub(crate) fn unit_direction(direction: Vec4) -> Option<Vec4> {
+    let length = direction.dot3(direction).sqrt();
     if length > 0.0 {
-        Some(Vector4::from_xyz(
+        Some(Vec4::new(
             direction.x / length,
             direction.y / length,
             direction.z / length,
+            0.0,
         ))
     } else {
         None
@@ -227,13 +232,65 @@ pub(crate) fn aabb_union(a: &Aabb, b: &Aabb) -> Aabb {
     result
 }
 
+// 过渡期 legacy↔glam 逐位复制转换（`Shape` 构造签名在提交 ② 换 glam，
+// phys_body/phys_world 的对应迁移在步骤 3/5；全部转换随后删除）。
+
+/// legacy `Vector4` → glam `Vec4`.
+#[inline]
+pub(crate) fn to_vec4(value: Vector4) -> Vec4 {
+    Vec4::new(value.x, value.y, value.z, value.w)
+}
+
+/// glam `Vec4` → legacy `Vector4`.
+#[inline]
+pub(crate) fn to_vector4(value: Vec4) -> Vector4 {
+    Vector4::new(value.x, value.y, value.z, value.w)
+}
+
+/// legacy `Matrix3` → glam `Mat3`（列的 `w` 为填充位，恒为零）。
+#[inline]
+pub(crate) fn to_mat3(value: &Matrix3) -> Mat3 {
+    Mat3::from_cols(
+        glam::Vec3::new(value.col0.x, value.col0.y, value.col0.z),
+        glam::Vec3::new(value.col1.x, value.col1.y, value.col1.z),
+        glam::Vec3::new(value.col2.x, value.col2.y, value.col2.z),
+    )
+}
+
+/// glam `Mat3` → legacy `Matrix3`。
+#[inline]
+pub(crate) fn to_matrix3(value: Mat3) -> Matrix3 {
+    Matrix3::from_cols(
+        Vector4::from_xyz(value.x_axis.x, value.x_axis.y, value.x_axis.z),
+        Vector4::from_xyz(value.y_axis.x, value.y_axis.y, value.y_axis.z),
+        Vector4::from_xyz(value.z_axis.x, value.z_axis.y, value.z_axis.z),
+    )
+}
+
+/// glam `Quat` → legacy `Quaternion`。
+#[inline]
+pub(crate) fn to_quaternion(value: Quat) -> Quaternion {
+    Quaternion::new(value.x, value.y, value.z, value.w)
+}
+
+/// 外积矩阵（legacy `mass.rs::matrix_outer(a, b)`：列 `i` = `a * b[i]`，
+/// 分量逐位一致；`a` 的 `w` 为填充位恒零）。
+#[inline]
+pub(crate) fn outer_product(a: Vec4, b: Vec4) -> Mat3 {
+    Mat3::from_cols(
+        glam::Vec3::new(a.x * b.x, a.y * b.x, a.z * b.x),
+        glam::Vec3::new(a.x * b.y, a.y * b.y, a.z * b.y),
+        glam::Vec3::new(a.x * b.z, a.y * b.z, a.z * b.z),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn dispatch_and_flags_defaults() {
-        let sphere = SphereShape::new(Vector4::ZERO, 1.0);
+        let sphere = SphereShape::new(Vec4::ZERO, 1.0);
         assert_eq!(sphere.dispatch_type(), CollisionDispatchType::Convex);
         assert!(sphere.is_convex());
         assert!(sphere.flags().contains(ShapeFlags::IS_CONVEX_SHAPE));

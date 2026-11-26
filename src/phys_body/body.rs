@@ -19,12 +19,13 @@ pub const DEFAULT_MAX_DEPENETRATION_SPEED: f32 = 1.0;
 ///
 /// ```
 /// use std::sync::Arc;
+/// use proton::math::Vec4;
 /// use proton::math::Vector4;
 /// use proton::body::BodyCinfo;
 /// use proton::shape::SphereShape;
 /// use proton::np_types::MotionType;
 ///
-/// let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0));
+/// let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0));
 /// let cinfo = BodyCinfo::new(shape)
 ///     .with_motion_type(MotionType::Dynamic)
 ///     .with_position(Vector4::from_xyz(0.0, 10.0, 0.0))
@@ -342,11 +343,12 @@ mod tests {
     use crate::base_math::Quaternion;
     use crate::phys_shape::SphereShape;
     use glam::Vec3A;
+    use glam::Vec4;
     use std::f32::consts::FRAC_PI_2;
 
     #[test]
     fn cinfo_defaults_match_sdk() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let cinfo = BodyCinfo::new(shape);
         assert_eq!(cinfo.motion_type, MotionType::Static);
         assert_eq!(cinfo.material_id, MaterialId::PRESET_DEFAULT);
@@ -362,7 +364,7 @@ mod tests {
 
     #[test]
     fn cinfo_builder_sets_transform() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let cinfo = BodyCinfo::new(shape)
             .with_motion_type(MotionType::Dynamic)
             .with_position(Vector4::from_xyz(1.0, 2.0, 3.0))
@@ -383,7 +385,7 @@ mod tests {
 
     #[test]
     fn body_transform_updates_aabb() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 2.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 2.0)) as Arc<dyn Shape>;
         let mut body = Body::new(
             Arc::clone(&shape),
             Transform::IDENTITY,
@@ -400,7 +402,7 @@ mod tests {
 
     #[test]
     fn flags_and_motion_helpers() {
-        let shape = Arc::new(SphereShape::new(Vector4::ZERO, 1.0)) as Arc<dyn Shape>;
+        let shape = Arc::new(SphereShape::new(Vec4::ZERO, 1.0)) as Arc<dyn Shape>;
         let mut body = Body::new(shape, Transform::IDENTITY, MotionId::PRESET_STATIC);
         body.flags = CollisionFlags::IS_DYNAMIC | CollisionFlags::IS_ACTIVE;
         assert!(body.is_dynamic());

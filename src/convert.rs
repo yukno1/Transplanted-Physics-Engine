@@ -22,8 +22,10 @@
 
 use std::sync::Arc;
 
+use glam::{Quat, Vec4};
+
 use crate::body::BodyCinfo;
-use crate::math::{Quaternion, Transform, Vector4};
+use crate::math::{Transform, Vector4};
 use crate::np_types::{BodyId, MotionType};
 use crate::serialize::{Bundle, Record, TypeId, Value};
 use crate::shape::{
@@ -31,6 +33,9 @@ use crate::shape::{
     MeshShape, Shape, ShapeInstance, SphereShape,
 };
 use crate::world::{World, WorldCinfo};
+
+use crate::base_math::Vec4Ext;
+use crate::shape::{to_quaternion, to_vector4};
 
 /// Errors raised while converting a generic `Value` tree to physics objects.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -154,14 +159,14 @@ fn as_floats(value: &Value, name: &'static str) -> Result<Vec<f32>, ConvertError
 /// Read a 3d/4d vector from either a fixed float array (`[x,y,z,w]`) or a
 /// record with `x`/`y`/`z` (`m_x`/`m_y`/`m_z`) fields.  The fourth component
 /// defaults to zero.
-fn as_vector(value: &Value, name: &'static str) -> Result<Vector4, ConvertError> {
+fn as_vector(value: &Value, name: &'static str) -> Result<Vec4, ConvertError> {
     match value {
         Value::Array(_) => {
             let values = as_floats(value, name)?;
             if values.len() < 3 {
                 return Err(ConvertError::InvalidVector(name));
             }
-            Ok(Vector4::from_xyz(values[0], values[1], values[2]))
+            Ok(Vec4::from_xyz(values[0], values[1], values[2]))
         }
         Value::Record(_) => {
             let Value::Record(record) = value else {
@@ -174,7 +179,7 @@ fn as_vector(value: &Value, name: &'static str) -> Result<Vector4, ConvertError>
             let x = component(&["m_x", "x"])?;
             let y = component(&["m_y", "y"])?;
             let z = component(&["m_z", "z"])?;
-            Ok(Vector4::from_xyz(x, y, z))
+            Ok(Vec4::from_xyz(x, y, z))
         }
         _ => Err(ConvertError::InvalidVector(name)),
     }
@@ -182,7 +187,7 @@ fn as_vector(value: &Value, name: &'static str) -> Result<Vector4, ConvertError>
 
 /// Read a quaternion from a float array (`[x,y,z,w]`) or a record with
 /// `x`/`y`/`z`/`w` fields.
-fn as_quaternion(value: &Value, name: &'static str) -> Result<Quaternion, ConvertError> {
+fn as_quaternion(value: &Value, name: &'static str) -> Result<Quat, ConvertError> {
     let (x, y, z, w) = match value {
         Value::Array(_) => {
             let values = as_floats(value, name)?;
@@ -208,7 +213,7 @@ fn as_quaternion(value: &Value, name: &'static str) -> Result<Quaternion, Conver
         }
         _ => return Err(ConvertError::InvalidVector(name)),
     };
-    Ok(Quaternion { x, y, z, w })
+    Ok(Quat::from_xyzw(x, y, z, w))
 }
 
 /// Read a quaternion + translation pair as a [`Transform`].
@@ -221,8 +226,8 @@ fn as_transform(value: &Value, name: &'static str) -> Result<Transform, ConvertE
     let translation_value = field(record, &["m_translation", "translation"])
         .ok_or(ConvertError::MissingField("m_translation"))?;
     Ok(Transform::from_quaternion(
-        as_quaternion(rotation_value, "m_rotation")?,
-        as_vector(translation_value, "m_translation")?,
+        to_quaternion(as_quaternion(rotation_value, "m_rotation")?),
+        to_vector4(as_vector(translation_value, "m_translation")?),
     ))
 }
 
@@ -257,7 +262,7 @@ fn shape_from_record(
         let center = field(record, &["m_center", "center"])
             .map(|value| as_vector(value, "m_center"))
             .transpose()?
-            .unwrap_or(Vector4::ZERO);
+            .unwrap_or(Vec4::ZERO);
         let radius =
             field(record, &["m_radius", "radius"]).ok_or(ConvertError::MissingField("m_radius"))?;
         Arc::new(SphereShape::new(center, as_float(radius, "m_radius")?))
@@ -333,7 +338,7 @@ fn shape_from_record(
         };
         let vertices = vertex_values
             .iter()
-            .map(|value| as_vector(value, "m_vertices"))
+            .map(|value| as_vector(value, "m_vertices").map(to_vector4))
             .collect::<Result<Vec<_>, _>>()?;
         let triangles = field(record, &["m_triangles", "triangles"])
             .ok_or(ConvertError::MissingField("m_triangles"))?;
@@ -347,7 +352,7 @@ fn shape_from_record(
         let size_z = field(record, &["m_numElemsZ", "size_z"])
             .ok_or(ConvertError::MissingField("m_numElemsZ"))?;
         let scale = field(record, &["m_scale", "scale"])
-            .map(|value| as_vector(value, "m_scale"))
+            .map(|value| as_vector(value, "m_scale").map(to_vector4))
             .transpose()?
             .unwrap_or(Vector4::from_xyz(1.0, 1.0, 1.0));
         let heights = field(record, &["m_heights", "heights"])
@@ -443,10 +448,10 @@ pub fn body_cinfo_from_item(bundle: &Bundle, item: u32) -> Result<BodyCinfo, Con
         cinfo = cinfo.with_motion_type(motion_type);
     }
     if let Some(position) = field(record, &["m_position", "position"]) {
-        cinfo = cinfo.with_position(as_vector(position, "m_position")?);
+        cinfo = cinfo.with_position(to_vector4(as_vector(position, "m_position")?));
     }
     if let Some(orientation) = field(record, &["m_orientation", "orientation"]) {
-        cinfo = cinfo.with_orientation(as_quaternion(orientation, "m_orientation")?);
+        cinfo = cinfo.with_orientation(to_quaternion(as_quaternion(orientation, "m_orientation")?));
     }
     if let Some(mass) = field(record, &["m_mass", "mass"]) {
         cinfo = cinfo.with_mass(as_float(mass, "m_mass")?);

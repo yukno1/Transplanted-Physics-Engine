@@ -7,21 +7,21 @@
 
 use core::any::Any;
 
-use crate::base_math::{Aabb, Matrix3, Quaternion, Vector4};
+use glam::{Mat3, Quat, Vec4};
+
+use crate::base_math::{Aabb, QuatExt, Vec4Ext};
 use crate::phys_types::{CollisionDispatchType, ShapeFlags, ShapeType};
 
-use crate::phys_shape::mass::{
-    matrix_add, matrix_diagonal, matrix_outer, matrix_scale, matrix_sub, matrix_trace,
-};
 use crate::phys_shape::{
-    MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, unit_direction,
+    MassConfig, MassError, MassProperties, Shape, aabb_bounding_radius, outer_product,
+    unit_direction,
 };
 
 /// Triangle (`hknpTriangleShape`).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TriangleShape {
     /// Triangle vertices.
-    pub points: [Vector4; 3],
+    pub points: [Vec4; 3],
     /// Convex radius.
     pub convex_radius: f32,
 }
@@ -30,13 +30,13 @@ impl TriangleShape {
     /// Construct a triangle with the SDK default convex radius
     /// ([`crate::phys_shape::DEFAULT_CONVEX_RADIUS`]).
     #[inline]
-    pub fn new(a: Vector4, b: Vector4, c: Vector4) -> Self {
+    pub fn new(a: Vec4, b: Vec4, c: Vec4) -> Self {
         Self::with_convex_radius(a, b, c, crate::phys_shape::DEFAULT_CONVEX_RADIUS)
     }
 
     /// Construct a triangle with an explicit convex radius.
     #[inline]
-    pub fn with_convex_radius(a: Vector4, b: Vector4, c: Vector4, convex_radius: f32) -> Self {
+    pub fn with_convex_radius(a: Vec4, b: Vec4, c: Vec4, convex_radius: f32) -> Self {
         debug_assert!(convex_radius >= 0.0, "invalid triangle convex radius");
         Self {
             points: [a, b, c],
@@ -46,14 +46,16 @@ impl TriangleShape {
 
     /// Triangle normal (not normalized; zero for a degenerate triangle).
     #[inline]
-    pub fn normal(&self) -> Vector4 {
-        (self.points[1] - self.points[0]).cross(self.points[2] - self.points[0])
+    pub fn normal(&self) -> Vec4 {
+        (self.points[1] - self.points[0]).cross3(self.points[2] - self.points[0])
     }
 
     /// Area of the triangle.
     #[inline]
     pub fn area(&self) -> f32 {
-        0.5 * self.normal().length3()
+        // Legacy `length3`: xyz-only length with the fixed scalar order.
+        let normal = self.normal();
+        0.5 * normal.dot3(normal).sqrt()
     }
 }
 
@@ -78,9 +80,9 @@ impl Shape for TriangleShape {
             max = max.max(*point);
         }
         let r = self.convex_radius;
-        Aabb::new(
-            Vector4::from_xyz(min.x - r, min.y - r, min.z - r),
-            Vector4::from_xyz(max.x + r, max.y + r, max.z + r),
+        Aabb::from_corners(
+            glam::Vec3A::new(min.x - r, min.y - r, min.z - r),
+            glam::Vec3A::new(max.x + r, max.y + r, max.z + r),
         )
     }
 
@@ -99,46 +101,42 @@ impl Shape for TriangleShape {
             return MassProperties::from_geometry(
                 0.0,
                 self.points[0],
-                Matrix3::ZERO,
-                Quaternion::IDENTITY,
+                Mat3::ZERO,
+                Quat::IDENTITY,
                 config,
             );
         }
 
-        let center = (self.points[0] + self.points[1] + self.points[2]) / 3.0;
-        let sum = self.points[0] + self.points[1] + self.points[2];
-        let squares = matrix_add(
-            &matrix_add(
-                &matrix_outer(self.points[0], self.points[0]),
-                &matrix_outer(self.points[1], self.points[1]),
-            ),
-            &matrix_outer(self.points[2], self.points[2]),
-        );
-        let second_moment =
-            matrix_scale(matrix_add(&matrix_outer(sum, sum), &squares), area / 12.0);
-        let shifted = matrix_sub(
-            &second_moment,
-            &matrix_scale(matrix_outer(center, center), area),
-        );
-        let inertia = matrix_sub(
-            &matrix_diagonal(Vector4::splat(matrix_trace(shifted))),
-            &shifted,
-        );
+        let p0 = self.points[0];
+        let p1 = self.points[1];
+        let p2 = self.points[2];
+        let center = (p0 + p1 + p2) / 3.0;
+        let sum = p0 + p1 + p2;
+        let squares = outer_product(p0, p0) + outer_product(p1, p1) + outer_product(p2, p2);
+        let second_moment = (outer_product(sum, sum) + squares) * (area / 12.0);
+        let shifted = second_moment - outer_product(center, center) * area;
+        let trace = shifted.x_axis.x + shifted.y_axis.y + shifted.z_axis.z;
+        let inertia = Mat3::from_diagonal(glam::Vec3::splat(trace)) - shifted;
 
-        let normal = unit_direction(self.normal()).unwrap_or(Vector4::UNIT_Z);
+        let normal =
+            unit_direction(self.normal()).unwrap_or_else(|| Vec4::new(0.0, 0.0, 1.0, 0.0));
         let reference = if normal.x.abs() < 0.9 {
-            Vector4::UNIT_X
+            Vec4::new(1.0, 0.0, 0.0, 0.0)
         } else {
-            Vector4::UNIT_Y
+            Vec4::new(0.0, 1.0, 0.0, 0.0)
         };
-        let tangent_a = normal.cross(reference).normalized3();
-        let tangent_b = normal.cross(tangent_a).normalized3();
-        let major_axis_space = Matrix3::from_cols(tangent_a, tangent_b, normal).to_quaternion();
+        let tangent_a = normal.cross3(reference).normalize_or_zero3();
+        let tangent_b = normal.cross3(tangent_a).normalize_or_zero3();
+        let major_axis_space = Quat::from_matrix_sdk(Mat3::from_cols(
+            glam::Vec3::new(tangent_a.x, tangent_a.y, tangent_a.z),
+            glam::Vec3::new(tangent_b.x, tangent_b.y, tangent_b.z),
+            glam::Vec3::new(normal.x, normal.y, normal.z),
+        ));
 
         MassProperties::from_geometry(area, center, inertia, major_axis_space, config)
     }
 
-    fn support(&self, direction: Vector4) -> Option<Vector4> {
+    fn support(&self, direction: Vec4) -> Option<Vec4> {
         let mut best = self.points[0];
         let mut best_dot = best.dot3(direction);
         for point in &self.points[1..] {
@@ -167,9 +165,9 @@ mod tests {
     #[test]
     fn aabb_covers_vertices_and_radius() {
         let triangle = TriangleShape::with_convex_radius(
-            Vector4::ZERO,
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::ZERO,
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.1,
         );
         let aabb = triangle.aabb();
@@ -181,33 +179,33 @@ mod tests {
     #[test]
     fn support_picks_extreme_vertex() {
         let triangle = TriangleShape::with_convex_radius(
-            Vector4::ZERO,
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 1.0, 0.0),
+            Vec4::ZERO,
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 1.0, 0.0),
             0.0,
         );
         assert_eq!(
-            triangle.support(Vector4::UNIT_X).unwrap(),
-            Vector4::from_xyz(1.0, 0.0, 0.0)
+            triangle.support(Vec4::new(1.0, 0.0, 0.0, 0.0)).unwrap(),
+            Vec4::from_xyz(1.0, 0.0, 0.0)
         );
         assert_eq!(
-            triangle.support(Vector4::UNIT_Y).unwrap(),
-            Vector4::from_xyz(0.0, 1.0, 0.0)
+            triangle.support(Vec4::new(0.0, 1.0, 0.0, 0.0)).unwrap(),
+            Vec4::from_xyz(0.0, 1.0, 0.0)
         );
         // Diagonal direction: the two positive vertices tie; the first one wins.
-        let support = triangle.support(Vector4::new(1.0, 1.0, 0.0, 0.0)).unwrap();
+        let support = triangle.support(Vec4::new(1.0, 1.0, 0.0, 0.0)).unwrap();
         assert!((support.x + support.y - 1.0).abs() < 1e-6);
     }
 
     #[test]
     fn volume_is_zero_and_normal_is_oriented() {
         let triangle = TriangleShape::with_convex_radius(
-            Vector4::ZERO,
-            Vector4::from_xyz(1.0, 0.0, 0.0),
-            Vector4::from_xyz(0.0, 0.0, 1.0),
+            Vec4::ZERO,
+            Vec4::from_xyz(1.0, 0.0, 0.0),
+            Vec4::from_xyz(0.0, 0.0, 1.0),
             0.0,
         );
         assert_eq!(triangle.volume().unwrap(), 0.0);
-        assert_eq!(triangle.normal(), Vector4::from_xyz(0.0, -1.0, 0.0));
+        assert_eq!(triangle.normal(), Vec4::from_xyz(0.0, -1.0, 0.0));
     }
 }

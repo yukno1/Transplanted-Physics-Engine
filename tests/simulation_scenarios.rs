@@ -7,16 +7,16 @@ use std::sync::Arc;
 
 use proton::body::BodyCinfo;
 use proton::collide::{BodyAabb, BodyPair, BroadPhase, BroadPhaseConfig};
-use proton::math::{Quaternion, Vector4};
+use proton::math::{Quaternion, Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, CapsuleShape, CylinderShape, Shape, SphereShape};
 use proton::world::{World, WorldCinfo};
 
 fn sphere(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
-fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
 }
 
@@ -24,7 +24,7 @@ fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
     cinfo.with_motion_type(MotionType::Dynamic).with_mass(1.0)
 }
 
-fn ground(world: &mut World, half_extents: Vector4) -> BodyId {
+fn ground(world: &mut World, half_extents: Vec4) -> BodyId {
     world.create_body(
         &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
             0.0,
@@ -75,7 +75,7 @@ fn s1_free_fall_matches_analytic_integration() {
 #[test]
 fn s2_sphere_rests_on_static_ground() {
     let mut world = World::new(WorldCinfo::new());
-    let ground_id = ground(&mut world, Vector4::from_xyz(3.0, 0.5, 3.0));
+    let ground_id = ground(&mut world, Vec4::from_xyz(3.0, 0.5, 3.0));
     let sphere_id = world.create_body(
         &dynamic(BodyCinfo::new(sphere(0.5))).with_position(Vector4::from_xyz(0.0, 2.0, 0.0)),
     );
@@ -105,17 +105,17 @@ fn s2_sphere_rests_on_static_ground() {
 #[test]
 fn s3_three_boxes_stack_without_tunneling() {
     let mut world = World::new(WorldCinfo::new());
-    let _ground_id = ground(&mut world, Vector4::from_xyz(4.0, 0.5, 4.0));
+    let _ground_id = ground(&mut world, Vec4::from_xyz(4.0, 0.5, 4.0));
     let box_a = world.create_body(
-        &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+        &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
             .with_position(Vector4::from_xyz(0.0, 1.0, 0.0)),
     );
     let box_b = world.create_body(
-        &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+        &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
             .with_position(Vector4::from_xyz(0.0, 2.2, 0.0)),
     );
     let box_c = world.create_body(
-        &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+        &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
             .with_position(Vector4::from_xyz(0.0, 3.4, 0.0)),
     );
 
@@ -134,7 +134,7 @@ fn s3_three_boxes_stack_without_tunneling() {
 #[test]
 fn s4_friction_slows_sliding_sphere() {
     let mut world = World::new(WorldCinfo::new());
-    let _ground_id = ground(&mut world, Vector4::from_xyz(5.0, 0.5, 5.0));
+    let _ground_id = ground(&mut world, Vec4::from_xyz(5.0, 0.5, 5.0));
     let sphere_id = world.create_body(
         &dynamic(BodyCinfo::new(sphere(0.5)))
             .with_position(Vector4::from_xyz(0.0, 0.5, 0.0))
@@ -160,10 +160,10 @@ fn s4_friction_slows_sliding_sphere() {
 #[test]
 fn s5_capsule_rests_on_ground() {
     let mut world = World::new(WorldCinfo::new());
-    let _ground_id = ground(&mut world, Vector4::from_xyz(3.0, 0.5, 3.0));
+    let _ground_id = ground(&mut world, Vec4::from_xyz(3.0, 0.5, 3.0));
     let capsule = Arc::new(CapsuleShape::new(
-        Vector4::from_xyz(0.0, -0.5, 0.0),
-        Vector4::from_xyz(0.0, 0.5, 0.0),
+        Vec4::from_xyz(0.0, -0.5, 0.0),
+        Vec4::from_xyz(0.0, 0.5, 0.0),
         0.5,
     )) as Arc<dyn Shape>;
     let capsule_id = world.create_body(
@@ -180,10 +180,10 @@ fn s5_capsule_rests_on_ground() {
 #[test]
 fn s6_cylinder_rests_on_ground() {
     let mut world = World::new(WorldCinfo::new());
-    let _ground_id = ground(&mut world, Vector4::from_xyz(3.0, 0.5, 3.0));
+    let _ground_id = ground(&mut world, Vec4::from_xyz(3.0, 0.5, 3.0));
     let cylinder = Arc::new(CylinderShape::with_params(
-        Vector4::from_xyz(0.0, -0.5, 0.0),
-        Vector4::from_xyz(0.0, 0.5, 0.0),
+        Vec4::from_xyz(0.0, -0.5, 0.0),
+        Vec4::from_xyz(0.0, 0.5, 0.0),
         0.5,
         16,
         0.0,

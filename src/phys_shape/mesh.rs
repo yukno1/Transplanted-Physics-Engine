@@ -177,10 +177,11 @@ impl Shape for MeshShape {
         }
         let mut properties = Vec::with_capacity(self.triangles.len());
         for &[a, b, c] in &self.triangles {
+            // 过渡期边界：`TriangleShape` 构造已迁移 glam（Phase 3 步骤 2）。
             let triangle = TriangleShape::with_convex_radius(
-                self.vertices[a as usize],
-                self.vertices[b as usize],
-                self.vertices[c as usize],
+                crate::phys_shape::to_vec4(self.vertices[a as usize]),
+                crate::phys_shape::to_vec4(self.vertices[b as usize]),
+                crate::phys_shape::to_vec4(self.vertices[c as usize]),
                 0.0,
             );
             properties.push(triangle.mass_properties(config)?);

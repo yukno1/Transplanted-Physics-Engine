@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::base_math::Vector4 as V4;
+use glam::Vec4 as G4;
 use crate::phys_body::BodyCinfo;
 use crate::phys_collide::query::leaf_key;
 use crate::phys_extensions::{TriggerTracker, WorldTriggerEvent, WorldTriggerStatus};
@@ -13,7 +14,7 @@ use crate::phys_world::{QueryFilter, World, WorldCinfo};
 use std::sync::Arc as StdArc;
 
 fn box_body(world: &mut World, position: V4) -> crate::phys_types::BodyId {
-    let shape = StdArc::new(BoxShape::with_convex_radius(V4::splat(0.5), 0.0)) as StdArc<dyn Shape>;
+    let shape = StdArc::new(BoxShape::with_convex_radius(G4::splat(0.5), 0.0)) as StdArc<dyn Shape>;
     world.create_body(
         &BodyCinfo::new(shape)
             .with_motion_type(MotionType::Static)

@@ -8,25 +8,25 @@
 use std::sync::Arc;
 
 use proton::body::BodyCinfo;
-use proton::math::Vector4;
+use proton::math::{Vector4, Vec4, Vec4Ext};
 use proton::np_types::{BodyId, MotionType};
 use proton::shape::{BoxShape, Shape, SphereShape};
 use proton::thread::{ThreadPool, WorkStealingPool};
 use proton::world::{ExecutorKind, SchedulerConfig, World, WorldCinfo};
 
-fn box_shape(half_extents: Vector4) -> Arc<dyn Shape> {
+fn box_shape(half_extents: Vec4) -> Arc<dyn Shape> {
     Arc::new(BoxShape::with_convex_radius(half_extents, 0.0)) as Arc<dyn Shape>
 }
 
 fn sphere_shape(radius: f32) -> Arc<dyn Shape> {
-    Arc::new(SphereShape::new(Vector4::ZERO, radius)) as Arc<dyn Shape>
+    Arc::new(SphereShape::new(Vec4::ZERO, radius)) as Arc<dyn Shape>
 }
 
 fn dynamic(cinfo: BodyCinfo) -> BodyCinfo {
     cinfo.with_motion_type(MotionType::Dynamic).with_mass(1.0)
 }
 
-fn ground(world: &mut World, half_extents: Vector4) -> BodyId {
+fn ground(world: &mut World, half_extents: Vec4) -> BodyId {
     world.create_body(
         &BodyCinfo::new(box_shape(half_extents)).with_position(Vector4::from_xyz(
             0.0,
@@ -42,7 +42,7 @@ fn resting_world(sleeping: bool) -> (World, BodyId) {
             .with_sleeping(sleeping)
             .with_sleeping_settings(0.2, 0.1, 0.1),
     );
-    ground(&mut world, Vector4::from_xyz(4.0, 0.5, 4.0));
+    ground(&mut world, Vec4::from_xyz(4.0, 0.5, 4.0));
     let ball = world.create_body(
         &dynamic(BodyCinfo::new(sphere_shape(0.5))).with_position(Vector4::from_xyz(0.0, 0.5, 0.0)),
     );
@@ -98,15 +98,15 @@ fn island_sleeps_and_stays_frozen_until_contact() {
 fn parallel_island_solving_matches_single_threaded() {
     let scene = || {
         let mut world = World::new(WorldCinfo::new());
-        ground(&mut world, Vector4::from_xyz(6.0, 0.5, 6.0));
+        ground(&mut world, Vec4::from_xyz(6.0, 0.5, 6.0));
         // Two separate stacks (two islands) plus a freely flying body.
         for index in 0..3 {
             world.create_body(
-                &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+                &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
                     .with_position(Vector4::from_xyz(-2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
             world.create_body(
-                &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+                &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
                     .with_position(Vector4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }
@@ -142,7 +142,7 @@ fn parallel_island_solving_matches_single_threaded() {
 fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
     let scene = || {
         let mut world = World::new(WorldCinfo::new());
-        ground(&mut world, Vector4::from_xyz(8.0, 0.5, 8.0));
+        ground(&mut world, Vec4::from_xyz(8.0, 0.5, 8.0));
         // Left stack with a ball-socket jointed pair; right stack plain.
         let a = world.create_body(
             &dynamic(BodyCinfo::new(sphere_shape(0.5)))
@@ -160,7 +160,7 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
         ));
         for index in 0..3 {
             world.create_body(
-                &dynamic(BodyCinfo::new(box_shape(Vector4::splat(0.5))))
+                &dynamic(BodyCinfo::new(box_shape(Vec4::splat(0.5))))
                     .with_position(Vector4::from_xyz(2.0, 1.0 + index as f32 * 1.1, 0.0)),
             );
         }
@@ -181,8 +181,8 @@ fn parallel_solving_with_warm_starting_and_joints_is_bitwise_identical() {
 
 fn many_bodies_scene_with(cinfo: WorldCinfo) -> World {
     let mut world = World::new(cinfo);
-    ground(&mut world, Vector4::from_xyz(6.0, 0.5, 6.0));
-    let sphere = Arc::new(SphereShape::new(Vector4::ZERO, 0.5)) as Arc<dyn Shape>;
+    ground(&mut world, Vec4::from_xyz(6.0, 0.5, 6.0));
+    let sphere = Arc::new(SphereShape::new(Vec4::ZERO, 0.5)) as Arc<dyn Shape>;
     for index in 0..36 {
         let x = (index % 6) as f32 * 1.2 - 3.0;
         let z = (index / 6) as f32 * 1.2 - 3.0;

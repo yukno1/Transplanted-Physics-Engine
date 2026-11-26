@@ -213,6 +213,121 @@ fn mat3_ext_matches_legacy_bit_for_bit() {
 }
 
 #[test]
+fn quat_normalize_matches_legacy_bit_for_bit() {
+    for &(x, y) in SPECIAL_PAIRS {
+        let normalized = proton::math::quat_normalize(Quat::from_xyzw(x, y, -x, y));
+        let mut legacy = Quaternion::new(x, y, -x, y);
+        legacy.normalize();
+        assert_eq!(
+            normalized.x.to_bits(),
+            legacy.x.to_bits(),
+            "normalize.x {x:?}/{y:?}"
+        );
+        assert_eq!(
+            normalized.y.to_bits(),
+            legacy.y.to_bits(),
+            "normalize.y {x:?}/{y:?}"
+        );
+        assert_eq!(
+            normalized.z.to_bits(),
+            legacy.z.to_bits(),
+            "normalize.z {x:?}/{y:?}"
+        );
+        assert_eq!(
+            normalized.w.to_bits(),
+            legacy.w.to_bits(),
+            "normalize.w {x:?}/{y:?}"
+        );
+    }
+
+    // Zero maps to zero (HK_SQRT_SET_ZERO).
+    assert_eq!(
+        proton::math::quat_normalize(Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)),
+        Quat::from_xyzw(0.0, 0.0, 0.0, 0.0)
+    );
+}
+
+#[test]
+fn quat_to_matrix_sdk_matches_legacy_bit_for_bit() {
+    let to_lm = |m: &Matrix3| -> [[u32; 3]; 3] {
+        [
+            [m.col0.x.to_bits(), m.col0.y.to_bits(), m.col0.z.to_bits()],
+            [m.col1.x.to_bits(), m.col1.y.to_bits(), m.col1.z.to_bits()],
+            [m.col2.x.to_bits(), m.col2.y.to_bits(), m.col2.z.to_bits()],
+        ]
+    };
+
+    for &(x, y) in &[(0.3f32, 0.4f32), (-0.7f32, 0.1f32)] {
+        let axis = Vec3::new(1.0, 2.0, 2.0).normalize();
+        let angle = x + 0.5 * y.abs();
+        let legacy_q =
+            Quaternion::from_axis_angle(Vector4::new(axis.x, axis.y, axis.z, 0.0), angle);
+        let glam_q = Quat::from_axis_angle(axis, angle);
+
+        let legacy_m = legacy_q.to_matrix();
+        let glam_m = glam_q.to_matrix_sdk();
+        let expected = to_lm(&legacy_m);
+        assert_eq!(glam_m.x_axis.to_array().map(f32::to_bits), expected[0]);
+        assert_eq!(glam_m.y_axis.to_array().map(f32::to_bits), expected[1]);
+        assert_eq!(glam_m.z_axis.to_array().map(f32::to_bits), expected[2]);
+    }
+}
+
+#[test]
+fn mat3_mul_mat_and_element_match_legacy_bit_for_bit() {
+    let to_gm = |m: &Matrix3| {
+        Mat3::from_cols(
+            Vec3::new(m.col0.x, m.col0.y, m.col0.z),
+            Vec3::new(m.col1.x, m.col1.y, m.col1.z),
+            Vec3::new(m.col2.x, m.col2.y, m.col2.z),
+        )
+    };
+
+    let cases = [
+        Matrix3::from_rows(
+            Vector4::from_xyz(2.0, 1.0, 0.0),
+            Vector4::from_xyz(1.0, 3.0, 1.0),
+            Vector4::from_xyz(0.0, 1.0, 2.0),
+        ),
+        Matrix3::IDENTITY,
+    ];
+
+    for legacy_m in &cases {
+        let glam_m = to_gm(legacy_m);
+        let other = &cases[0];
+
+        // mul_mat: each product column via the SDK multiplyVector order.
+        let legacy_product = legacy_m.mul_mat(other);
+        let glam_product = glam_m.mul_mat_sdk(to_gm(other));
+        for column in 0..3 {
+            for row in 0..3 {
+                assert_eq!(
+                    glam_product.element_sdk(row, column).to_bits(),
+                    legacy_product.element(row, column).to_bits(),
+                    "mul_mat [{row},{column}]"
+                );
+            }
+        }
+
+        // element accessor agreement.
+        for row in 0..3 {
+            for column in 0..3 {
+                assert_eq!(
+                    glam_m.element_sdk(row, column).to_bits(),
+                    legacy_m.element(row, column).to_bits(),
+                    "element [{row},{column}]"
+                );
+            }
+        }
+    }
+
+    // set_element mutates in place.
+    let mut glam_m = to_gm(&cases[0]);
+    glam_m.set_element_sdk(1, 2, -7.5);
+    assert_eq!(glam_m.element_sdk(1, 2), -7.5);
+}
+
+#[test]
 fn aabb_matches_legacy_scalar_reference() {
     // include_point with NaN must keep the non-NaN operand (f32::min/max rules).
     let mut aabb = Aabb::empty();

@@ -7,10 +7,11 @@
 //! bit-identical to Havok's float-bit packing without a real `.hkx` golden
 //! comparison.
 
-use crate::base_math::{Matrix3, Quaternion, Vector4};
+use crate::base_math::{Mat3Ext, QuatExt, Vec4Ext, quat_normalize};
+use glam::{Mat3, Quat, Vec4};
 
 use super::eigen::diagonalize_symmetric;
-use super::{MassError, MassProperties, matrix_diagonal, matrix_is_finite, vector3_is_finite};
+use super::{MassError, MassProperties, matrix_is_finite, vector3_is_finite};
 
 const MANTISSA_SCALE: f32 = 32767.0;
 const UNIT_SCALE: f32 = 30000.0 * 65536.0;
@@ -35,7 +36,7 @@ impl PackedVector3 {
     };
 
     /// Pack a finite vector into 15-bit mantissas with a shared base-2 exponent.
-    pub fn pack(value: Vector4) -> Self {
+    pub fn pack(value: Vec4) -> Self {
         if !vector3_is_finite(value) {
             return Self::ZERO;
         }
@@ -62,10 +63,10 @@ impl PackedVector3 {
     }
 
     /// Unpack to a full-precision vector.
-    pub fn unpack(self) -> Vector4 {
+    pub fn unpack(self) -> Vec4 {
         let power = power_of_two(self.values[3]);
         let scale = power / MANTISSA_SCALE;
-        Vector4::from_xyz(
+        Vec4::from_xyz(
             self.values[0] as f32 * scale,
             self.values[1] as f32 * scale,
             self.values[2] as f32 * scale,
@@ -76,7 +77,7 @@ impl PackedVector3 {
     ///
     /// The result uses the SDK mantissa/exponent words; byte order is the
     /// explicit little-endian layout used by [`Self::to_bytes`].
-    pub fn pack_sdk(value: Vector4) -> Self {
+    pub fn pack_sdk(value: Vec4) -> Self {
         if !vector3_is_finite(value) {
             return Self::ZERO;
         }
@@ -108,13 +109,13 @@ impl PackedVector3 {
     }
 
     /// Unpack SDK float-bit words (`hkPackedVector3::unpack`).
-    pub fn unpack_sdk(self) -> Vector4 {
+    pub fn unpack_sdk(self) -> Vec4 {
         let exponent = f32::from_bits((self.values[3] as u32) << 16);
         let component = |index: usize| {
             let mantissa = (self.values[index] as i64) << 16;
             (mantissa as f32) * exponent
         };
-        Vector4::from_xyz(component(0), component(1), component(2))
+        Vec4::from_xyz(component(0), component(1), component(2))
     }
 
     /// Explicit little-endian byte storage (8 bytes).
@@ -168,8 +169,7 @@ impl PackedUnitVector4 {
     };
 
     /// Pack a unit quaternion, canonicalized to the `w >= 0` hemisphere.
-    pub fn pack(quaternion: Quaternion) -> Self {
-        let mut quaternion = quaternion;
+    pub fn pack(quaternion: Quat) -> Self {
         if !quaternion.w.is_finite()
             || !quaternion.x.is_finite()
             || !quaternion.y.is_finite()
@@ -180,11 +180,12 @@ impl PackedUnitVector4 {
         if quaternion.length_squared() <= 0.0 {
             return Self::IDENTITY;
         }
-        quaternion.normalize();
-        if quaternion.w < 0.0 {
-            quaternion =
-                Quaternion::new(-quaternion.x, -quaternion.y, -quaternion.z, -quaternion.w);
-        }
+        let quaternion = quat_normalize(quaternion);
+        let quaternion = if quaternion.w < 0.0 {
+            Quat::from_xyzw(-quaternion.x, -quaternion.y, -quaternion.z, -quaternion.w)
+        } else {
+            quaternion
+        };
         let components = [quaternion.x, quaternion.y, quaternion.z, quaternion.w];
         let mut values = [0u16; 4];
         for (index, component) in components.iter().enumerate() {
@@ -195,7 +196,7 @@ impl PackedUnitVector4 {
     }
 
     /// Unpack and normalize the quaternion.
-    pub fn unpack(self) -> Quaternion {
+    pub fn unpack(self) -> Quat {
         let mut components = [0.0f32; 4];
         for (index, value) in self.values.iter().enumerate() {
             let signed = (*value as i16) as i64 * 65536;
@@ -207,18 +208,16 @@ impl PackedUnitVector4 {
             let fixed = signed + offset;
             components[index] = (fixed as f32 / UNIT_SCALE).clamp(-1.0, 1.0);
         }
-        let mut quaternion =
-            Quaternion::new(components[0], components[1], components[2], components[3]);
+        let quaternion = Quat::from_xyzw(components[0], components[1], components[2], components[3]);
         if quaternion.length_squared() > 0.0 {
-            quaternion.normalize();
+            quat_normalize(quaternion)
         } else {
-            quaternion = Quaternion::IDENTITY;
+            Quat::IDENTITY
         }
-        quaternion
     }
 
     /// Pack with the SDK convention (no hemisphere canonicalization).
-    pub fn pack_sdk(quaternion: Quaternion) -> Self {
+    pub fn pack_sdk(quaternion: Quat) -> Self {
         if !quaternion.x.is_finite()
             || !quaternion.y.is_finite()
             || !quaternion.z.is_finite()
@@ -237,7 +236,7 @@ impl PackedUnitVector4 {
     }
 
     /// Unpack SDK words without normalizing the quaternion.
-    pub fn unpack_sdk(self) -> Quaternion {
+    pub fn unpack_sdk(self) -> Quat {
         let mut components = [0.0f32; 4];
         for (index, value) in self.values.iter().enumerate() {
             let signed = (*value as i16) as i64 * 65536;
@@ -248,7 +247,7 @@ impl PackedUnitVector4 {
             };
             components[index] = ((signed + offset) as f32 / UNIT_SCALE).clamp(-1.0, 1.0);
         }
-        Quaternion::new(components[0], components[1], components[2], components[3])
+        Quat::from_xyzw(components[0], components[1], components[2], components[3])
     }
 
     /// Explicit little-endian byte storage (8 bytes).
@@ -310,9 +309,16 @@ impl CompressedMassProperties {
     /// Unpack to full mass properties for diagnostics or cache reconstruction.
     pub fn unpack(self) -> MassProperties {
         let orientation = self.major_axis_space.unpack();
-        let rotation = Matrix3::from_quaternion(orientation);
-        let diagonal = matrix_diagonal(self.inertia.unpack());
-        let inertia_tensor = rotation.mul_mat(&diagonal).mul_mat(&rotation.transpose());
+        let rotation = orientation.to_matrix_sdk();
+        let diagonal_value = self.inertia.unpack();
+        let diagonal = Mat3::from_diagonal(glam::Vec3::new(
+            diagonal_value.x,
+            diagonal_value.y,
+            diagonal_value.z,
+        ));
+        let inertia_tensor = rotation
+            .mul_mat_sdk(diagonal)
+            .mul_mat_sdk(rotation.transpose());
         MassProperties {
             volume: self.volume,
             mass: self.mass,
@@ -351,13 +357,20 @@ impl CompressedMassProperties {
     pub fn unpack_sdk(self) -> MassProperties {
         let mut orientation = self.major_axis_space.unpack_sdk();
         if orientation.length_squared() > 0.0 {
-            orientation.normalize();
+            orientation = quat_normalize(orientation);
         } else {
-            orientation = Quaternion::IDENTITY;
+            orientation = Quat::IDENTITY;
         }
-        let rotation = Matrix3::from_quaternion(orientation);
-        let diagonal = matrix_diagonal(self.inertia.unpack_sdk());
-        let inertia_tensor = rotation.mul_mat(&diagonal).mul_mat(&rotation.transpose());
+        let rotation = orientation.to_matrix_sdk();
+        let diagonal_value = self.inertia.unpack_sdk();
+        let diagonal = Mat3::from_diagonal(glam::Vec3::new(
+            diagonal_value.x,
+            diagonal_value.y,
+            diagonal_value.z,
+        ));
+        let inertia_tensor = rotation
+            .mul_mat_sdk(diagonal)
+            .mul_mat_sdk(rotation.transpose());
         MassProperties {
             volume: self.volume,
             mass: self.mass,
@@ -407,13 +420,14 @@ impl CompressedMassProperties {
         error = error.max((unpacked.volume - original.volume).abs());
         for axis in 0..3 {
             error = error.max(
-                (unpacked.center_of_mass.component(axis) - original.center_of_mass.component(axis))
+                (unpacked.center_of_mass.to_array()[axis]
+                    - original.center_of_mass.to_array()[axis])
                     .abs(),
             );
             for row in 0..3 {
                 error = error.max(
-                    (unpacked.inertia_tensor.element(row, axis)
-                        - original.inertia_tensor.element(row, axis))
+                    (unpacked.inertia_tensor.element_sdk(row, axis)
+                        - original.inertia_tensor.element_sdk(row, axis))
                     .abs(),
                 );
             }
@@ -425,15 +439,17 @@ impl CompressedMassProperties {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec3;
 
     #[test]
     fn packed_vector_round_trip_stays_within_relative_bound() {
-        let value = Vector4::from_xyz(12.5, -3.25, 0.75);
+        let value = Vec4::from_xyz(12.5, -3.25, 0.75);
         let unpacked = PackedVector3::pack(value).unpack();
         for axis in 0..3 {
-            let expected = value.component(axis);
+            let expected = value.to_array()[axis];
             assert!(
-                (unpacked.component(axis) - expected).abs() <= expected.abs() * 1.0e-4 + 1.0e-4,
+                (unpacked.to_array()[axis] - expected).abs()
+                    <= expected.abs() * 1.0e-4 + 1.0e-4,
                 "axis {axis}: {unpacked:?} vs {value:?}"
             );
         }
@@ -441,7 +457,7 @@ mod tests {
 
     #[test]
     fn packed_unit_vector_round_trip_is_normalized() {
-        let quaternion = Quaternion::from_axis_angle(Vector4::from_xyz(1.0, 2.0, 3.0), 0.8);
+        let quaternion = Quat::from_axis_angle(Vec3::new(1.0, 2.0, 3.0), 0.8);
         let packed = PackedUnitVector4::pack(quaternion);
         let unpacked = packed.unpack();
         assert!((unpacked.length() - 1.0).abs() < 1.0e-5);
@@ -451,13 +467,13 @@ mod tests {
     fn compressed_mass_properties_round_trip_is_deterministic() {
         let properties = MassProperties::from_geometry(
             8.0,
-            Vector4::from_xyz(0.1, -0.2, 0.3),
-            Matrix3::from_cols(
-                Vector4::from_xyz(8.0, 0.4, 0.0),
-                Vector4::from_xyz(0.4, 4.0, 0.0),
-                Vector4::from_xyz(0.0, 0.0, 2.0),
+            Vec4::from_xyz(0.1, -0.2, 0.3),
+            Mat3::from_cols(
+                Vec3::new(8.0, 0.4, 0.0),
+                Vec3::new(0.4, 4.0, 0.0),
+                Vec3::new(0.0, 0.0, 2.0),
             ),
-            Quaternion::IDENTITY,
+            Quat::IDENTITY,
             super::super::MassConfig::from_density(2.0),
         )
         .unwrap();
@@ -483,7 +499,7 @@ mod tests {
 
     #[test]
     fn sdk_packed_vector_round_trip_is_stable() {
-        let value = Vector4::from_xyz(12.5, -3.25, 0.75);
+        let value = Vec4::from_xyz(12.5, -3.25, 0.75);
         let packed = PackedVector3::pack_sdk(value);
         assert_eq!(packed, PackedVector3::pack_sdk(value));
         let unpacked = packed.unpack_sdk();
@@ -496,13 +512,13 @@ mod tests {
     fn compressed_mass_sdk_bytes_round_trip() {
         let properties = MassProperties::from_geometry(
             8.0,
-            Vector4::from_xyz(0.1, -0.2, 0.3),
-            Matrix3::from_cols(
-                Vector4::from_xyz(8.0, 0.4, 0.0),
-                Vector4::from_xyz(0.4, 4.0, 0.0),
-                Vector4::from_xyz(0.0, 0.0, 2.0),
+            Vec4::from_xyz(0.1, -0.2, 0.3),
+            Mat3::from_cols(
+                Vec3::new(8.0, 0.4, 0.0),
+                Vec3::new(0.4, 4.0, 0.0),
+                Vec3::new(0.0, 0.0, 2.0),
             ),
-            Quaternion::IDENTITY,
+            Quat::IDENTITY,
             super::super::MassConfig::from_density(2.0),
         )
         .unwrap();

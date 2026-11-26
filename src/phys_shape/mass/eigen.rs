@@ -1,6 +1,7 @@
 //! Deterministic symmetric 3x3 diagonalization for mass properties.
 
-use crate::base_math::{Matrix3, Quaternion, Vector4};
+use crate::base_math::{Mat3Ext, QuatExt, Vec4Ext, quat_normalize};
+use glam::{Mat3, Quat, Vec4};
 
 const EPS: f32 = 1.0e-6;
 const MAX_SWEEPS: usize = 12;
@@ -10,11 +11,11 @@ const PAIRS: [(usize, usize); 3] = [(0, 1), (0, 2), (1, 2)];
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct DiagonalizedSymmetric {
     /// Eigenvalues (diagonal inertia) in ascending order.
-    pub diagonal: Vector4,
+    pub diagonal: Vec4,
     /// Orthonormal eigenvectors as matrix columns.
-    pub axes: Matrix3,
+    pub axes: Mat3,
     /// Rotation from principal-axis space to the original space.
-    pub orientation: Quaternion,
+    pub orientation: Quat,
 }
 
 /// Diagonalize a symmetric matrix with a fixed cyclic Jacobi schedule.
@@ -23,20 +24,20 @@ pub struct DiagonalizedSymmetric {
 /// are fixed so identical inputs produce identical frames across runs. The
 /// result is deterministic but not guaranteed to match the SDK's eigen
 /// ordering bit-for-bit.
-pub fn diagonalize_symmetric(matrix: Matrix3) -> DiagonalizedSymmetric {
+pub fn diagonalize_symmetric(matrix: Mat3) -> DiagonalizedSymmetric {
     let mut a = matrix;
-    let mut axes = Matrix3::IDENTITY;
+    let mut axes = Mat3::IDENTITY;
 
     for _ in 0..MAX_SWEEPS {
         let mut changed = false;
         for (p, q) in PAIRS {
-            let off_diagonal = a.element(p, q);
+            let off_diagonal = a.element_sdk(p, q);
             if off_diagonal.abs() <= EPS {
                 continue;
             }
             changed = true;
-            let app = a.element(p, p);
-            let aqq = a.element(q, q);
+            let app = a.element_sdk(p, p);
+            let aqq = a.element_sdk(q, q);
             let tau = (aqq - app) / (2.0 * off_diagonal);
             let t = if tau >= 0.0 {
                 1.0 / (tau + (1.0 + tau * tau).sqrt())
@@ -53,13 +54,13 @@ pub fn diagonalize_symmetric(matrix: Matrix3) -> DiagonalizedSymmetric {
     }
 
     let mut eigen = [
-        (a.element(0, 0).max(EPS), 0usize),
-        (a.element(1, 1).max(EPS), 1usize),
-        (a.element(2, 2).max(EPS), 2usize),
+        (a.element_sdk(0, 0).max(EPS), 0usize),
+        (a.element_sdk(1, 1).max(EPS), 1usize),
+        (a.element_sdk(2, 2).max(EPS), 2usize),
     ];
     eigen.sort_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
 
-    let mut columns = [axes.col0, axes.col1, axes.col2];
+    let mut columns = [axes.x_axis, axes.y_axis, axes.z_axis];
     let mut ordered = [
         columns[eigen[0].1],
         columns[eigen[1].1],
@@ -81,58 +82,66 @@ pub fn diagonalize_symmetric(matrix: Matrix3) -> DiagonalizedSymmetric {
         }
         columns[index] = *column;
     }
-    let mut axes = Matrix3::from_cols(columns[0], columns[1], columns[2]);
+    let mut axes = Mat3::from_cols(columns[0], columns[1], columns[2]);
     let determinant = determinant(&axes);
     if determinant < 0.0 {
         columns[2] = -columns[2];
-        axes = Matrix3::from_cols(columns[0], columns[1], columns[2]);
+        axes = Mat3::from_cols(columns[0], columns[1], columns[2]);
     }
-    let mut orientation = axes.to_quaternion();
+    let mut orientation = Quat::from_matrix_sdk(axes);
     if !orientation.w.is_finite() || orientation.length_squared() <= 0.0 {
-        orientation = Quaternion::IDENTITY;
+        orientation = Quat::IDENTITY;
     } else {
-        orientation.normalize();
+        orientation = quat_normalize(orientation);
     }
 
     DiagonalizedSymmetric {
-        diagonal: Vector4::from_xyz(eigen[0].0, eigen[1].0, eigen[2].0),
+        diagonal: Vec4::from_xyz(eigen[0].0, eigen[1].0, eigen[2].0),
         axes,
         orientation,
     }
 }
 
-fn rotate(a: &mut Matrix3, axes: &mut Matrix3, p: usize, q: usize, c: f32, s: f32) {
+fn rotate(a: &mut Mat3, axes: &mut Mat3, p: usize, q: usize, c: f32, s: f32) {
     for k in 0..3 {
         if k == p || k == q {
             continue;
         }
-        let akp = a.element(k, p);
-        let akq = a.element(k, q);
+        let akp = a.element_sdk(k, p);
+        let akq = a.element_sdk(k, q);
         let new_kp = c * akp - s * akq;
         let new_kq = s * akp + c * akq;
-        a.set_element(k, p, new_kp);
-        a.set_element(p, k, new_kp);
-        a.set_element(k, q, new_kq);
-        a.set_element(q, k, new_kq);
+        a.set_element_sdk(k, p, new_kp);
+        a.set_element_sdk(p, k, new_kp);
+        a.set_element_sdk(k, q, new_kq);
+        a.set_element_sdk(q, k, new_kq);
     }
-    let app = a.element(p, p);
-    let aqq = a.element(q, q);
-    let apq = a.element(p, q);
-    a.set_element(p, p, c * c * app - 2.0 * s * c * apq + s * s * aqq);
-    a.set_element(q, q, s * s * app + 2.0 * s * c * apq + c * c * aqq);
-    a.set_element(p, q, 0.0);
-    a.set_element(q, p, 0.0);
+    let app = a.element_sdk(p, p);
+    let aqq = a.element_sdk(q, q);
+    let apq = a.element_sdk(p, q);
+    a.set_element_sdk(p, p, c * c * app - 2.0 * s * c * apq + s * s * aqq);
+    a.set_element_sdk(q, q, s * s * app + 2.0 * s * c * apq + c * c * aqq);
+    a.set_element_sdk(p, q, 0.0);
+    a.set_element_sdk(q, p, 0.0);
 
-    let vp = axes.column(p);
-    let vq = axes.column(q);
+    let vp = column(axes, p);
+    let vq = column(axes, q);
     let new_p = vp * c - vq * s;
     let new_q = vp * s + vq * c;
-    let mut columns = [axes.col0, axes.col1, axes.col2];
+    let mut columns = [axes.x_axis, axes.y_axis, axes.z_axis];
     columns[p] = new_p;
     columns[q] = new_q;
-    *axes = Matrix3::from_cols(columns[0], columns[1], columns[2]);
+    *axes = Mat3::from_cols(columns[0], columns[1], columns[2]);
 }
 
-fn determinant(matrix: &Matrix3) -> f32 {
-    matrix.col0.dot3(matrix.col1.cross(matrix.col2))
+fn column(matrix: &Mat3, index: usize) -> glam::Vec3 {
+    match index {
+        0 => matrix.x_axis,
+        1 => matrix.y_axis,
+        _ => matrix.z_axis,
+    }
+}
+
+fn determinant(matrix: &Mat3) -> f32 {
+    matrix.x_axis.dot(matrix.y_axis.cross(matrix.z_axis))
 }
